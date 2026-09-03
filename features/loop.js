@@ -89,7 +89,7 @@ const run = async ({
         if (!toolCalls.length) {
             history.push(...assistantMessages)                                  // 保存模型完整 assistant 消息。
             noToolCount += 1                                                    // 累计没有工具调用的轮次。
-            if (noToolCount === 2) temporaryPrompt = '[错误] 你刚才的响应中没有使用工具！请继续使用工具（这是一条系统提醒消息，请勿以对话形式回复）'      // 第 2 轮：插入临时提示推一下模型。
+            if (noToolCount === 2) temporaryPrompt = llm.noToolPrompt          // 第 2 轮：插入临时提示推一下模型。
             if (noToolCount >= 3) return { reason: 'no-tool' }  // 第 3 轮：放弃，直接返回结束原因。
             continue
         }

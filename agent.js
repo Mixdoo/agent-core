@@ -72,8 +72,10 @@ const buildLLM = config => ({
     apiKey: config.apiKey,                      // 鉴权密钥
     model: config.model,                        // 模型名称
     protocol: config.protocol,                  // 调用协议
+    temperature: config.temperature,            // 生成温度
     maxTokens: config.maxTokens,                // 上下文 Token 上限，压缩阈值判断也用它
     compactThreshold: config.compactThreshold,  // 触发自动压缩的比例，默认 0.8
+    noToolPrompt: config.noToolPrompt,          // 临时提示文本
     stream: config.stream,                      // 是否流式输出
     options: {
         headers: config.headers,                // 额外请求头
@@ -94,8 +96,11 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
             protocol: 'chat',       // 大多数兼容 OpenAI Chat 的服务使用这个协议。
             headers: {},            // 额外请求头没有传入时直接交给 LLM 使用空对象。
             body: {},               // 额外请求体没有传入时不覆盖模型请求参数。
+            temperature: undefined, // 生成温度，不设时使用模型默认值。
             maxTokens: undefined,   // 不设上限时不主动压缩，让模型服务决定是否超限。
             compactThreshold: 0.8,  // 接近上限时提前压缩，默认在 80% 处开始。
+            retryMaxDelay: 60,      // 重试退避时间上限（秒），防止单次等待过长。
+            noToolPrompt: '[错误] 你刚才的响应中没有使用工具！请继续使用工具（这是一条系统提醒消息，请勿以对话形式回复）', // 模型连续 2 轮不调工具时的临时提示。
             stream: true,           // 压缩总结默认使用流式请求。
             system: '',             // 没有系统提示词时仍允许 Agent 运行。
             ...config,              // 传入配置覆盖默认配置，且配置结构只包含 Agent 需要的字段。
@@ -125,6 +130,7 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
             system: agent.config.system,      // 系统提示词本轮不变，直接取当前配置。
             tools: agent.tools.schema,        // Loop 只需要给模型看的工具描述。
             llm: buildLLM(agent.config),      // 统一从配置构建，两处使用完全一致。
+            retry: { maxDelay: agent.config.retryMaxDelay }, // 重试配置传给 Loop。
             buildContext: Context.build,      // 上下文构建交给 Context 模块。
             compact: Compact.run,             // 压缩交给 Compact 模块。
             executeTool: request => Tool.execute({ ...request, handlers: agent.tools.handlers }), // 执行器需要的处理表由 Agent 补上，Loop 不用知道它。

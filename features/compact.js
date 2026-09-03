@@ -33,6 +33,7 @@ const run = async ({ messages, llm, stream = true, onCompact, signal }) => {
         onLLMEvent: onCompact,
     })
     const content = result.text.trim()
+    if (!content) throw new Error('压缩失败：模型返回空总结') // 空总结会导致 History.compact 校验失败，提前报错。
     await onCompact?.({ type: 'compact-finish', content })
     return content
 }

@@ -32,7 +32,7 @@ import { createAnthropic } from '@ai-sdk/anthropic'
 import { createGoogle } from '@ai-sdk/google'
 
 const chat = async ({
-    baseURL, apiKey, model, protocol = 'chat', system, messages, tools, toolChoice = 'required', stream = true, onLLMEvent, signal, options = {},
+    baseURL, apiKey, model, protocol = 'chat', system, messages, tools, toolChoice = 'required', temperature, stream = true, onLLMEvent, signal, options = {},
 }) => {
     // --- 检查输入 ---
     if (!baseURL || !model || !Array.isArray(messages)) throw new TypeError('baseURL, model and messages are required') // 没有地址、模型或消息就无法请求。
@@ -71,7 +71,7 @@ const chat = async ({
     if (!providerModel) throw new Error(`Unsupported protocol: ${protocol}`) // 防止拼错协议后静默失败。
 
     // --- 组织一次统一的 AI SDK 请求 ---
-    const input = { model: providerModel, system, messages: modelMessages, tools, toolChoice, abortSignal: signal } // 流式和非流式共用这份参数。
+    const input = { model: providerModel, system, messages: modelMessages, tools, toolChoice, temperature, abortSignal: signal } // 流式和非流式共用这份参数。
 
     // --- 非流式请求：等待模型完整返回 ---
     if (!stream) {
