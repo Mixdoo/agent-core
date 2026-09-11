@@ -14,8 +14,8 @@ import LLM from '../utils/llm.js'
 import Loop from '../features/loop.js'
 import Compact from '../features/compact.js'
 
-const BROKEN = new URL('./fixtures/broken', import.meta.url).pathname.replace(/^\//, '')               // Windows 下 pathname 会带前导斜杠。
-const CYCLIC_FORMAT = new URL('./fixtures/cyclicformat', import.meta.url).pathname.replace(/^\//, '')  // 单独放一个目录，免得污染其它用例的工具表。
+const BROKEN = new URL('./fixtures/broken', import.meta.url)               // scan 直接收 URL，不用自己拼路径——嵌进别人项目时手边就是它。
+const CYCLIC_FORMAT = new URL('./fixtures/cyclicformat', import.meta.url)  // 单独放一个目录，免得污染其它用例的工具表。
 
 // --- 造一段真实形态的历史：用户指令 + 若干轮工具调用 + 压缩总结 ---
 const withTurns = rounds => {
@@ -45,6 +45,40 @@ const pairing = messages => {
     const missing = [...called].find(id => !answered.has(id))
     return missing ? { ok: false, why: `工具调用 ${missing} 没有结果` } : { ok: true }
 }
+
+
+describe('可嵌入性', () => {
+    // 这个包会被打包成单文件嵌进别的项目，那时 default 导出就是唯一入口。
+    // 凡是嵌入方需要的东西都必须挂在上面，否则在产物里根本够不着——
+    // 以前 History 就够不着，而 history 是这个项目的权威数据源，上层却没法给它造一条合法消息。
+    test('入口带齐了嵌入方需要的全部模块', () => {
+        expect(Object.keys(Agent).sort()).toEqual(['compact', 'context', 'create', 'history', 'llm', 'tool', 'version'])
+        expect(Agent.version).toMatch(/^\d+\.\d+\.\d+/) // 排查问题时上层要能报出版本。
+    })
+
+    test('从入口就能造出合法的历史消息块', () => {
+        // 嵌入方要做的事：把 IM 消息转成 user 块、往历史里塞系统通知、从库里恢复会话。
+        // 没有这个就只能手写 { id, role, content } 并自己保证格式对。
+        expect(Agent.history.user({ content: '你好' }).role).toBe('user')
+        expect(Agent.history.compact({ content: '总结' }).compact).toBe(true)
+        expect(typeof Agent.history.assistant).toBe('function')
+        expect(typeof Agent.history.tool).toBe('function')
+    })
+
+    test('scan 直接收 URL，不用调用方自己拼路径', async () => {
+        // 嵌进别人项目时，工具目录的位置只能相对调用方自己的代码算，手边拿到的就是 URL。
+        // 以前只收字符串路径，Windows 上还得自己剥掉 pathname 的前导斜杠。
+        const tools = await Tool.scan(new URL('./fixtures/tools', import.meta.url))
+        expect(tools.schema.echo).toBeDefined()
+    })
+
+    test('scan 能合并多个目录，后面的覆盖前面的同名工具', async () => {
+        // 内置工具目录在前、用户工具目录在后，用户就能覆盖内置工具——不用为此写任何注册逻辑。
+        const merged = await Tool.scan(new URL('./fixtures/tools', import.meta.url), BROKEN)
+        expect(merged.schema.echo).toBeDefined()   // 第一个目录的还在。
+        expect(merged.schema.cyclic).toBeDefined() // 第二个目录的也进来了。
+    })
+})
 
 
 describe('Context 裁剪', () => {
@@ -378,7 +412,7 @@ describe('压缩这条路径', () => {
 
 
 describe('多模态', () => {
-    const MEDIA = new URL('./fixtures/media', import.meta.url).pathname.replace(/^\//, '')
+    const MEDIA = new URL('./fixtures/media', import.meta.url)
     const shot = [{ type: 'text', text: '这是什么' }, { type: 'image', image: 'data:image/png;base64,iVBORw0KGgo=' }]
 
     test('用户消息可以带图片', () => {
@@ -442,7 +476,7 @@ describe('多模态', () => {
 
 
 describe('常驻加固', () => {
-    const LIMITS = new URL('./fixtures/limits', import.meta.url).pathname.replace(/^\//, '')
+    const LIMITS = new URL('./fixtures/limits', import.meta.url)
 
     test('工具输出超限时从中间截断，并明确告诉模型', async () => {
         const tools = await Tool.scan(LIMITS)

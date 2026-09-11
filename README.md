@@ -497,6 +497,14 @@ Agent 当前的完整历史消息数组，可直接读写。
 扫描目录（含子目录）里所有 `.js` 文件，把其中形状对得上的注册成工具，其余文件跳过。
 
 ```js
+Agent.tool.scan('./tools')                                // 路径字符串（相对宿主进程的当前目录）
+Agent.tool.scan(new URL('./tools', import.meta.url))      // URL——嵌进别人项目时用这个
+Agent.tool.scan(builtinDir, userDir)                      // 多个目录，后面的覆盖前面的同名工具
+```
+
+多目录那条顺带给了你一个免费的覆盖机制：内置工具目录在前、用户工具目录在后，用户放一个同名工具就能替换掉内置的，不需要任何注册逻辑。
+
+```js
 const tools = await Agent.tool.scan('./tools')
 // tools.schema   → 给模型看的工具描述，传给 agent config 或 Loop.run
 // tools.handlers → 执行器用的处理表，Tool.execute 需要它
@@ -575,7 +583,7 @@ OpenAI 和 Anthropic 直接 400。
 ### `History`（工具函数，按需引入）
 
 ```js
-import History from '@kernel4632/agent-core/utils/history.js'
+const History = Agent.history   // 从唯一入口拿，打包成单文件之后也一样
 
 // 创建各种类型的历史块
 History.user({ content: '你好' })
@@ -623,9 +631,26 @@ bun run build
 ```js
 import Agent from './agent-core.js'
 
-const tools = await Agent.tool.scan('./tools')
+// 工具目录用 URL 指，永远相对你自己这份代码，不受宿主进程当前目录影响
+const tools = await Agent.tool.scan(new URL('./tools', import.meta.url))
 const agent = Agent.create({ config: { /* ... */ }, tools })
 ```
+
+`default` 导出就是全部入口，嵌入方需要的东西都挂在上面：
+
+| | |
+|---|---|
+| `Agent.version` | 包版本，排查问题时报得出来 |
+| `Agent.create(...)` | 创建 Agent 实例 |
+| `Agent.tool` | `.scan()` / `.execute()` |
+| `Agent.history` | `.user()` / `.assistant()` / `.tool()` / `.compact()`——造标准历史消息块 |
+| `Agent.context` | `.build()` |
+| `Agent.compact` | `.run()` |
+| `Agent.llm` | `.chat()` |
+
+`Agent.history` 是嵌入时最常用的那个：把 IM 消息转成 user 块、往历史里塞一条系统通知、从数据库恢复会话，都要靠它造出格式正确的消息。
+
+**沙箱需要一个 bun 运行时。** 普通 `bun run` 时用的就是宿主自己（`process.execPath`，不依赖 PATH）；宿主被 `bun build --compile` 成单可执行文件时，会退回 PATH 上的 `bun`——这种分发方式需要目标机器装了 bun。
 
 工具目录不会被打包——它本来就该是运行时扫描的，放文件即加功能这件事在打包后照样成立。
 

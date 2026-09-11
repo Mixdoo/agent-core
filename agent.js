@@ -63,6 +63,7 @@ import Loop from './features/loop.js'         // 负责驱动"请求模型 → �
 import Tool from './features/tool.js'         // 负责扫描和执行工具文件
 import LLM from './utils/llm.js'              // 底层模型请求封装，也暴露给调用方直接使用
 import History from './utils/history.js'      // 负责创建标准格式的历史消息块
+import { version } from './package.json'      // 版本号只在 package.json 里写一次，打包时会被内联进产物
 
 
 // --- 内部工具：把 Agent 配置对象转换成 LLM.chat 需要的格式 ---
@@ -214,12 +215,16 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
 }
 
 
-// 导出时附带常用模块，让调用方不需要单独引入就能使用。
+// 导出时附带全部常用模块。这个包会被打包成单文件嵌进别的项目，那时 default 导出就是唯一的入口——
+// 凡是嵌入方需要的东西都必须挂在这里，否则在打包产物里根本够不着。
 const Agent = {
-    create,          // 创建 Agent 实例
-    tool: Tool,      // 工具扫描和执行：Agent.tool.scan() / Agent.tool.execute()
+    version,          // 包版本，来自 package.json；排查问题时上层要能报出来
+    create,           // 创建 Agent 实例
+    tool: Tool,       // 工具扫描和执行：Agent.tool.scan() / Agent.tool.execute()
+    history: History, // 造标准历史消息块：Agent.history.user() / assistant() / tool() / compact()
     context: Context, // 上下文构建：Agent.context.build()
-    llm: LLM,        // 底层模型请求：Agent.llm.chat()
+    compact: Compact, // 生成压缩总结：Agent.compact.run()
+    llm: LLM,         // 底层模型请求：Agent.llm.chat()
 }
 
 export default Agent

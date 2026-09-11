@@ -36,9 +36,18 @@
 因为阻塞型工具（等 IM 消息、盯文件变化）是它支持的正常用法，全局超时会把这类工具全废掉。
 */
 
-import { pathToFileURL } from 'node:url'
+import { pathToFileURL, fileURLToPath } from 'node:url'
+import { basename } from 'node:path'
 import { jsonSchema } from 'ai'
 import sandboxSource from './sandbox.js' with { type: 'text' } // 沙箱源码以文本引入，打包成单文件时会被原样内联成字符串。
+
+// 沙箱要用一个"能跑脚本的 bun"来启动。宿主自己通常就是，用它比在 PATH 上碰运气可靠：
+// 不依赖环境变量，也不会和宿主用的 bun 版本不一致。
+// 但宿主被 bun build --compile 成单可执行文件时，execPath 是那个 exe 自己，
+// 拿它当解释器等于把整个 app 再跑一遍——实测确实会，而且看起来像是工具挂了，很难查。
+// 所以只认"execPath 本身就是个 bun 可执行文件"这一种情况，认不出来就退回 PATH 上的 bun：
+// 判反的代价不对称，退回去只是回到最普通的做法，判错了却会让 app 自我重入。
+const runtime = /^bun(\.exe)?$/i.test(basename(process.execPath)) ? process.execPath : 'bun'
 
 // 一池沙箱，全进程共用。不按工具集合分池：取消已经按 signal 精确到轮次了，
 // 再按集合分池只会让每次 Tool.scan 都新建一池、旧池的空闲进程永远没人回收。
@@ -50,14 +59,26 @@ let sequence = 0                                                // 调用流水�
 
 // --- 扫描工具目录，返回一份完全独立的工具集合 ---
 // 不写任何模块级变量，所以多次扫描互不影响，多个 Agent 可以各用各的工具目录。
-const scan = async (directory) => {
+//
+//   Tool.scan('./tools')                                   一个目录
+//   Tool.scan(builtinDir, userDir)                         多个目录，后面的覆盖前面的同名工具
+//   Tool.scan(new URL('./tools', import.meta.url))         直接给 URL——嵌进别人项目时手边就是它
+//
+// 路径字符串是相对宿主进程当前目录解析的。作为被嵌入的库，这一点很容易出错，
+// 所以直接收 URL：`new URL('./tools', import.meta.url)` 永远指向调用方自己那份代码旁边的目录。
+const scan = async (...directories) => {
     const schema = {}   // 工具名 → 给 LLM 的工具描述（不含执行信息）。
     const handlers = {} // 工具名 → 工具在哪个文件里、它自己声明的超时（不给 LLM 看）。
     const files = []
 
     // 先收集完整文件列表再排序，保证每次扫描同一目录的加载顺序都一样。
-    for await (const file of new Bun.Glob('**/*.js').scan({ cwd: directory, absolute: true, onlyFiles: true })) files.push(file)
-    files.sort()
+    // 目录之间保持传入顺序，所以"内置工具目录在前、用户工具目录在后"就等于让用户能覆盖内置工具。
+    for (const directory of directories.flat()) {
+        const cwd = directory instanceof URL ? fileURLToPath(directory) : String(directory)
+        const found = []
+        for await (const file of new Bun.Glob('**/*.js').scan({ cwd, absolute: true, onlyFiles: true })) found.push(file)
+        files.push(...found.sort())
+    }
 
     for (const file of files) {
         const url = pathToFileURL(file).href                                 // 绝对 file:// 地址；沙箱靠它自己重新加载工具文件（函数没法跨进程传）。
@@ -138,7 +159,7 @@ const open = () => {
     let ready
     const waiting = new Promise(resolve => { ready = resolve })
 
-    const child = Bun.spawn(['bun', '-'], {
+    const child = Bun.spawn([runtime, '-'], {
         stdin: 'pipe',
         stdout: 'inherit', // 工具的输出走 IPC，这里留给 bun 自己的启动报错，坏了能看见。
         stderr: 'inherit',
