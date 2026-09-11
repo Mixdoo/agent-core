@@ -13,6 +13,7 @@
         handlers: tools.handlers,    // 工具地址表，用来找到 finish 在哪个文件里
         signal: abortSignal,         // 触发即杀，工具瞬间死
         onOutput: output => {},      // 工具产生一段输出时调用，调用方决定如何展示或转发
+        limit: 32000,                // 这次输出最多留多少字符，超出的从中间截断（不传则不截）
     })
     // result = { output, stop }            工具正常结束，output 是模型能直接读的输出块
     // result = { output, error }           工具抛错了，错误也作为一条结果交给模型
@@ -28,6 +29,11 @@
 取消时只杀 signal 相同的那些 Worker——Loop 给同一轮所有并行工具的本来就是同一个 signal，
 "取消"在语义上就是"这一轮全部取消"；另一台 Agent 共用同一份工具集合时不会被连坐。
 空闲 Worker 一律 unref，所以跑过工具的进程该退出时仍然能退出。
+
+池子有上限，超出的调用排队：模型一轮返回 30 个工具调用时不会瞬间起 30 个 Worker。
+
+工具想要超时保护，自己在工具文件里写 timeout（毫秒）。这个包**没有全局超时**，
+因为阻塞型工具（等 IM 消息、盯文件变化）是它支持的正常用法，全局超时会把这类工具全废掉。
 */
 
 import { pathToFileURL } from 'node:url'
@@ -39,6 +45,10 @@ const workerUrl = URL.createObjectURL(new Blob([workerSource], { type: 'text/jav
 
 const sandboxes = new WeakMap() // 工具集合 → 它专属的沙箱。按集合隔离，多个 Agent 各用各的，互不干扰。
 let sequence = 0                // 调用流水号，一个沙箱同时跑多次调用时靠它区分谁是谁。
+
+// 同一套工具最多同时占用几个 Worker。模型一轮返回 30 个调用时，超出的排队，
+// 而不是瞬间起 30 个 Worker——实测并发 20 个就占 466MB。
+const LIMIT = 8
 
 
 // --- 扫描工具目录，返回一份完全独立的工具集合 ---
@@ -61,7 +71,7 @@ const scan = async (directory) => {
             // 跳过而不是报错，工具目录里才能自由放共享常量、辅助函数和测试文件。
             if (!tool?.name || typeof tool.execute !== 'function') continue
 
-            const { execute, toModelOutput, ...modelTool } = tool            // 执行相关的字段剥离出来，剩下的才给模型看。
+            const { execute, toModelOutput, timeout, ...modelTool } = tool   // 执行相关的字段剥离出来，剩下的才给模型看。
 
             // schema 只放模型需要的东西：工具叫什么、干什么、要什么参数。
             schema[tool.name] = {
@@ -71,7 +81,7 @@ const scan = async (directory) => {
                     : jsonSchema({ type: 'object', properties: {}, ...tool.inputSchema }), // 缺什么补什么：无参工具也必然带一份合法 Schema（少了它 Anthropic 和 OpenAI 都会 400），工具自己写了的字段一个不丢。
             }
 
-            handlers[tool.name] = { url }                                    // 只记住工具在哪个文件；具体是文件里的哪一个，Worker 按名字自己找。
+            handlers[tool.name] = { url, timeout }                           // 只记住工具在哪个文件和它自己声明的超时；具体是文件里的哪一个，Worker 按名字自己找。
         }
     }
 
@@ -84,23 +94,35 @@ const sandboxOf = handlers => {
     const cached = sandboxes.get(handlers)
     if (cached) return cached
 
-    const sandbox = { idle: [], busy: new Map() } // idle：空闲 Worker；busy：正在干活的 Worker → 它手上那次调用。
+    const sandbox = { idle: [], busy: new Map(), queue: [] } // idle：空闲的；busy：干活的 Worker → 它手上那次调用；queue：池子满时等着借 Worker 的调用。
     sandboxes.set(handlers, sandbox)
     return sandbox
 }
 
 
-// --- 借一个 Worker：优先用空闲的，没有才新建 ---
+// --- 一个 Worker 空出来了：优先交给排队的人，没人排队才还池 ---
+const hand = (sandbox, worker) => {
+    const next = sandbox.queue.shift()
+    if (next) return next(worker)   // 直接转手，省掉一次 unref/ref 往返。
+
+    worker.unref()                  // 空闲 Worker 不能吊住事件循环，否则跑过一次工具的进程就再也退不出去。
+    sandbox.idle.push(worker)
+}
+
+
+// --- 一个 Worker 废了（自己死掉、或超时被杀）：它不能再被借出去，排队的人得换一个新的 ---
+const retire = (sandbox, worker) => {
+    sandbox.busy.delete(worker)
+    sandbox.idle = sandbox.idle.filter(one => one !== worker)
+    const next = sandbox.queue.shift()
+    if (next) next(spawn(sandbox))
+}
+
+
+// --- 新开一个 Worker，并挂好它这一生的全部收尾路径 ---
 // 一次调用独占一个 Worker，所以 Worker 里"现在是哪次调用"永远没有歧义——
 // 并发跑两个工具时，它们的 console 输出不会互相串台。
-// 用完还池，所以常驻内存只跟峰值并发数有关，不跟调用次数有关。
-const borrow = sandbox => {
-    const reused = sandbox.idle.pop()
-    if (reused) {
-        reused.ref()    // 借出期间要吊住事件循环，否则工具还没跑完进程就退了。
-        return reused
-    }
-
+const spawn = sandbox => {
     const worker = new Worker(workerUrl)
 
     worker.addEventListener('message', ({ data }) => {
@@ -114,8 +136,7 @@ const borrow = sandbox => {
         }
 
         sandbox.busy.delete(worker)                                     // 这次干完了，
-        worker.unref()                                                  // 空闲 Worker 不能吊住事件循环，否则跑过一次工具的进程就再也退不出去。
-        sandbox.idle.push(worker)                                       // 还回池里等下一次。
+        hand(sandbox, worker)                                           // 让给下一个人，或者还池。
         if (data.type === 'error') call.finish({ output: { type: 'error-text', value: `工具执行失败：${data.message}` }, error: data.message }) // 工具失败也是一条结果，模型需要知道。
         else call.finish({ output: data.output, stop: data.stop })      // output 在 Worker 里就已经成形，主线程不再加工。
     })
@@ -124,8 +145,7 @@ const borrow = sandbox => {
     // 没有 message 也没有 error 结果；不接住它们，这次调用就永远不结算，整个 Agent 会无声卡死。
     const collapse = reason => {
         const call = sandbox.busy.get(worker)
-        sandbox.busy.delete(worker)
-        sandbox.idle = sandbox.idle.filter(one => one !== worker)       // 死掉的 Worker 不能再被借出去。
+        retire(sandbox, worker)
         call?.finish({ output: { type: 'error-text', value: `工具执行失败：${reason}` }, error: reason })
     }
     worker.addEventListener('close', event => collapse(`工具沙箱退出（代码 ${event.code}）`))
@@ -136,7 +156,7 @@ const borrow = sandbox => {
 
 
 // --- 执行一个工具。handlers 必须由调用方明确传入，不存在默认工具表 ---
-const execute = ({ name, input, handlers, signal, onOutput }) => {
+const execute = ({ name, input, handlers, signal, onOutput, limit }) => {
     const handler = handlers?.[name] // 用工具名从地址表里找到它在哪个文件。
     if (!handler?.url) throw new Error(`Tool ${name} was not found in handlers`) // 认 url 而不是认对象，'__proto__' 这种名字才不会蒙混过关。
 
@@ -159,20 +179,38 @@ const execute = ({ name, input, handlers, signal, onOutput }) => {
             call.finish(interrupted(call))                               // 还没借到 Worker 就被取消的这次调用，也在这里收口，不然它永远不结算。
         }
 
-        // 四条收尾路径（跑完、抛错、Worker 死掉、被取消）共用这一个出口，所以"结算两次"在结构上不存在。
+        // 五条收尾路径（跑完、抛错、Worker 死掉、超时、被取消）共用这一个出口，所以"结算两次"在结构上不存在。
         call.finish = result => {
             if (call.done) return                                        // 已经结算过了，后到的消息不再改变结果。
             call.done = true
+            clearTimeout(call.timer)                                     // 超时看门狗跟着这次调用一起结束。
             signal?.removeEventListener('abort', stop)                   // 一次调用只挂一个监听器，跑完就摘，不随调用次数累积。
             resolve(result)
+        }
+
+        // 拿到 Worker 就开跑。排队期间被取消的，拿到也不跑，直接把 Worker 让给下一个。
+        const start = worker => {
+            if (call.done) return hand(sandbox, worker)
+            sandbox.busy.set(worker, call)
+
+            // 只有工具自己声明了 timeout 才有看门狗。不设全局超时是有意的：
+            // 阻塞型工具（等 IM 消息、盯文件变化）是这个包支持的正常用法，全局超时会把它们全废掉。
+            if (handler.timeout) call.timer = setTimeout(() => {
+                retire(sandbox, worker)                                  // 挂死的工具只能杀，杀掉的 Worker 不回池。
+                worker.terminate()
+                call.finish({ output: { type: 'error-text', value: `${call.output.join('')}\n工具执行超时（${handler.timeout}ms）` }, error: 'timeout' })
+            }, handler.timeout)
+
+            worker.postMessage({ callId: call.id, url: handler.url, name, input, limit }) // 告诉沙箱：去哪个文件、找哪个名字的工具、用什么参数、输出最多留多长。
         }
 
         signal?.addEventListener('abort', stop, { once: true })
         if (signal?.aborted) return stop()                               // 进来之前就已经取消了，直接停。
 
-        const worker = borrow(sandbox)
-        sandbox.busy.set(worker, call)
-        worker.postMessage({ callId: call.id, url: handler.url, name, input }) // 告诉沙箱：去哪个文件、找哪个名字的工具、用什么参数。
+        const free = sandbox.idle.pop()
+        if (free) { free.ref(); start(free) }                            // 池里有空闲的，直接用；借出期间要吊住事件循环。
+        else if (sandbox.busy.size >= LIMIT) sandbox.queue.push(start)   // 池子满了，排队等别人还。
+        else start(spawn(sandbox))                                       // 还没到上限，新开一个。
     })
 }
 

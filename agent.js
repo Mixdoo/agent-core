@@ -75,6 +75,7 @@ const buildLLM = config => ({
     temperature: config.temperature,            // 生成温度
     toolChoice: config.toolChoice,              // 由模型自己决定是否调工具，还是每轮强制调
     cache: config.cache,                        // 是否发送 OpenAI 提示词缓存字段
+    maxToolOutput: config.maxToolOutput,        // 单次工具输出的字符上限，超出从中间截断
     maxTokens: config.maxTokens,                // 上下文 Token 上限，压缩阈值判断也用它
     compactThreshold: config.compactThreshold,  // 触发自动压缩的比例
     noToolPrompt: config.noToolPrompt,          // 临时提示文本
@@ -101,7 +102,8 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
             temperature: undefined, // 生成温度，不设时使用模型默认值。
             toolChoice: 'auto',     // 让模型自己决定要不要调工具。写死 required 会让它永远无法正常收尾，部分模型还直接 400。
             cache: false,           // prompt_cache_key 是 OpenAI 私有字段，中转站大多不认，默认不发。
-            maxTokens: undefined,   // 不设上限时不主动压缩，让模型服务决定是否超限。
+            maxToolOutput: 32000,   // 单次工具输出上限（字符）。不设限时一个 cat 大日志的工具就能把会话撑死：实测 1MB 输出 = 31 万 token。
+            maxTokens: 120000,      // 上下文 Token 上限，超过就压缩。默认值按主流模型的最小窗口（约 128k）取，用别的模型请按实际窗口改。
             compactThreshold: 0.8,  // 接近上限时提前压缩，默认在 80% 处开始。
             retryMaxDelay: 60,      // 重试退避时间上限（秒），防止单次等待过长。
             noToolPrompt: '[错误] 你刚才的响应中没有使用工具！请继续使用工具（这是一条系统提醒消息，请勿以对话形式回复）', // 模型连续 2 轮不调工具时的临时提示。
@@ -143,7 +145,7 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
                 retry: { maxDelay: agent.config.retryMaxDelay }, // 重试配置传给 Loop。
                 buildContext: Context.build,      // 上下文构建交给 Context 模块。
                 compact: Compact.run,             // 压缩交给 Compact 模块。
-                executeTool: request => Tool.execute({ ...request, handlers: agent.tools.handlers }), // 执行器需要的处理表由 Agent 补上，Loop 不用知道它。
+                executeTool: request => Tool.execute({ ...request, handlers: agent.tools.handlers, limit: agent.config.maxToolOutput }), // 执行器需要的处理表和输出上限由 Agent 补上，Loop 不用知道它们。
                 sessionId: agent.id,             // 会话 ID 用于权限询问时区分实例。
                 signal: controller.signal,        // 取消信号，stop() 触发时 Loop 立即响应。
                 ...agent.callbacks,               // 所有回调一次展开，新增回调类型时这里不用改。

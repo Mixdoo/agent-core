@@ -5,6 +5,8 @@ const { messages, token } = Context.build({
     system: "你是编程助手。",     // 会进入 messages 并参与 Token 估算
     tools: {},                    // 工具定义参与 Token 估算，不进入 messages
 })
+// 另外还返回 kept：这次裁剪真正用上的那些原始历史消息。
+// 压缩之后 Loop 拿它把没用上的消息从 history 里删掉，否则常驻 Agent 的 history 会一直涨到 OOM。
 
 裁剪的最小单位是「回合」，不是「消息」。
 build() 一进来就把平铺历史读成回合：工具结果按 toolCallId 回到发起它的那个回合，
@@ -109,6 +111,7 @@ const build = ({ history, system = '', tools = {} }) => {
     let counted
     return {
         messages,
+        kept: flat,     // 这次裁剪真正用上的那些原始历史消息。压缩之后 Loop 靠它把没用上的从 history 里回收掉。
         get token() {
             counted ??= countTokens(JSON.stringify({ messages, tools })) // 工具定义不属于 messages，但模型请求仍会携带它们，所以估算时一并计算。
             return counted

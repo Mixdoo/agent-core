@@ -7,7 +7,7 @@
 
     import source from './tool-worker.js' with { type: 'text' }
     const worker = new Worker(URL.createObjectURL(new Blob([source], { type: 'text/javascript' })))
-    worker.postMessage({ callId: '1', url: 'file:///D:/tools/read.js', name: 'read', input: { path: 'a.txt' } })
+    worker.postMessage({ callId: '1', url: 'file:///D:/tools/read.js', name: 'read', input: { path: 'a.txt' }, limit: 32000 })
 
 一个 Worker 长期存活、同时服务多次调用，所以每条消息都带 callId，主线程靠它把结果认领回对应的那次调用。
 
@@ -122,10 +122,25 @@ const collect = async result => {
 }
 
 
+// --- 截断：一次工具输出不能大到把整个会话撑死 ---
+// 不截断时实测：1MB 的工具返回值 = 31 万 token，超过大多数模型的整个上下文窗口。
+// 而且它会永久留在历史里，连压缩都救不回来——压缩本身就要把这坨东西发给模型去总结。
+// 一个 cat 大日志的工具就能触发，这不是边缘情况。
+// 头尾都留：开头说明这是什么，结尾通常是结论或报错。
+const clip = (output, limit) => {
+    const text = typeof output.value === 'string' ? output.value : JSON.stringify(output.value)
+    if (!limit || text.length <= limit) return output
+
+    const head = text.slice(0, Math.floor(limit * 0.7))                 // 前七成：够模型判断这是什么内容。
+    const tail = text.slice(-Math.floor(limit * 0.3))                   // 后三成：结论和错误通常在末尾。
+    return { type: 'text', value: `${head}\n\n……[输出过长，中间省略 ${text.length - limit} 个字符。请缩小范围或分页重新获取]……\n\n${tail}` } // 明确告诉模型被截了，它才知道该换个问法。
+}
+
+
 // --- 成形：在跨进程之前就把返回值变成模型能读的输出块 ---
 // 放在这里而不是主线程，是因为这一步会执行工具作者写的 toModelOutput、也会做 JSON 化，
 // 两者都可能抛错；抛在这里只是一条正常的工具失败，抛在主线程会让那次调用永远不结算。
-const shape = (tool, result) => {
+const shape = (tool, result, limit) => {
     const value = result?.output ?? result                              // 工具可以返回 { output } 对象，也可以直接返回值。
     const output = tool.toModelOutput ? tool.toModelOutput(value)       // 工具自带格式化函数时优先用它。
         : value === undefined || value === null || value === '' ? { type: 'text', value: '工具执行成功，但没有输出' }
@@ -134,7 +149,7 @@ const shape = (tool, result) => {
 
     // 跨进程只传纯 JSON，自带格式化的那条路也一样要过这一关：
     // Date 变字符串、NaN 变 null、循环引用在这里变成一条正常的工具错误，不会写进 history 把 Agent 毒死。
-    return JSON.parse(JSON.stringify(output))
+    return clip(JSON.parse(JSON.stringify(output)), limit)
 }
 
 
@@ -145,7 +160,7 @@ self.onmessage = async ({ data }) => {
         const module = await import(data.url)                                   // Worker 是独立环境，工具文件在这里重新加载。
         const tool = [module.default].flat().find(one => one.name === data.name) // 按名字认工具，和主线程建表时用的是同一条规则，不会错位。
         const result = await collect(await tool.execute(data.input))
-        postMessage({ callId: data.callId, type: 'done', output: shape(tool, result), stop: result?.stop === true }) // stop 是工具主动要求结束整个循环。
+        postMessage({ callId: data.callId, type: 'done', output: shape(tool, result, data.limit), stop: result?.stop === true }) // stop 是工具主动要求结束整个循环。
     } catch (error) {
         postMessage({ callId: data.callId, type: 'error', message: error?.message || String(error) }) // 工具抛错、toModelOutput 抛错、返回值 JSON 化失败，对模型来说都是"这个工具没成功"。
     } finally {

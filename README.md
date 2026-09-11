@@ -358,7 +358,8 @@ import Agent from '@kernel4632/agent-core'
 | `toolChoice` | `'auto'` | `auto` 让模型自己决定要不要调工具；`required` 强制每轮都调 |
 | `cache` | `false` | 是否发送 OpenAI 的 `prompt_cache_key`。中转站大多不认这个私有字段，默认不发 |
 | `temperature` | `undefined` | 生成温度，不设时用模型默认值 |
-| `maxTokens` | `undefined` | Token 上限，超过触发自动压缩 |
+| `maxToolOutput` | `32000` | 单次工具输出的字符上限，超出从中间截断并告知模型 |
+| `maxTokens` | `120000` | Token 上限，超过触发自动压缩。**按你的模型窗口调整** |
 | `compactThreshold` | `0.8` | 压缩触发比例，0.8 表示到达 80% 时压缩 |
 | `retryMaxDelay` | `60` | 重试退避上限（秒） |
 | `noToolPrompt` | 见源码 | 模型连续 2 轮不调工具时插入的临时提示 |
@@ -381,7 +382,10 @@ import Agent from '@kernel4632/agent-core'
 | `onToolOutput` | 工具有流式输出 | `{ tool, stream, data, toolCallId, toolName }` |
 | `onToolResult` | 工具执行完成 | `{ toolName, output, ... }` |
 | `onRetry` | 请求失败重试 | `{ attempt, error, delay }` |
-| `onCompact` | 上下文压缩 | `compact-start` / AI SDK 事件 / `compact-finish` |
+| `onCompact` | 上下文压缩 | `compact-start` / AI SDK 事件 / `compact-finish` / `compact-trim` |
+
+> `compact-trim` 带着 `dropped`——压缩之后被移出 `history` 的那些原始消息。想存档就在这里自己存，
+> 这是它们最后一次出现的地方。
 
 #### `agent.send(options)`
 
@@ -465,6 +469,7 @@ const result = await Agent.tool.execute({
     handlers: tools.handlers,
     signal: abortController.signal,   // 可选
     onOutput: output => {},           // 可选，接收流式输出
+    limit: 32000,                     // 可选，输出字符上限，超出从中间截断；不传则不截断
 })
 // result.output → 工具输出，格式为 { type: 'text'|'json', value: ... }
 ```
@@ -606,7 +611,39 @@ Worker 那一半（`features/tool-worker.js`）在打包时会被当成文本内
 
 **Q：上下文太长会怎样？**
 
-设置 `config.maxTokens` 后，当上下文超过该值的 80%（可用 `compactThreshold` 调整），Loop 会自动调用 Compact 把历史压缩成一段总结，然后继续运行。无需手动处理。
+上下文超过 `config.maxTokens` 的 80%（可用 `compactThreshold` 调整）时，Loop 会自动调用 Compact 把历史压缩成一段总结，然后继续运行。
+
+压缩还会**把用不上的原始消息从 `agent.history` 里移走**——不然压缩只缩小了发给模型的内容，数组本身照样一直涨，常驻 Agent 跑几天必然 OOM。被移走的消息通过 `onCompact` 的 `compact-trim` 事件交给你，想存档就在那里存。
+
+每轮最多压一次。压完还超限就照常发出去，由模型服务判断收不收；下一轮还超自然会再压。**不会**为了压到达标而连续调用模型——那样一轮能烧掉上千次请求。
+
+---
+
+**Q：工具返回一个巨大的结果会怎样？**
+
+超过 `config.maxToolOutput`（默认 32000 字符）的部分会从中间截断，头尾都保留，并插入一段明确的提示告诉模型"输出过长、请缩小范围或分页重新获取"。
+
+这条默认开着是有原因的：实测一个返回 1MB 文本的工具（`cat` 一个日志文件就够了）= **31 万 token**，超过大多数模型的整个上下文窗口，而且它会永久留在历史里——连压缩都救不回来，因为压缩本身要把这坨东西发给模型去总结。
+
+---
+
+**Q：工具卡住不返回会怎样？**
+
+默认会一直等——因为**阻塞型工具是被支持的正常用法**：等 IM 消息、盯文件变化、守着一个长任务，这些工具就是要长期不返回。有全局超时反而会把它们全废掉。
+
+需要超时保护的工具自己在工具文件里声明：
+
+```js
+export default {
+    name: 'fetch_page',
+    description: '抓一个网页',
+    timeout: 30000,        // 毫秒。超时后 Worker 被直接杀掉，模型收到一条超时结果
+    inputSchema: { /* ... */ },
+    async execute(input) { /* ... */ },
+}
+```
+
+`agent.stop()` 任何时候都能立刻掐断，不管工具声没声明超时。
 
 ---
 
@@ -622,7 +659,9 @@ Worker 那一半（`features/tool-worker.js`）在打包时会被当成文本内
 
 **Q：多个工具是串行还是并行执行的？**
 
-并行。模型在一轮里要求调用多个工具时，所有工具同时开跑（[`Promise.all`](features/loop.js:101)），结果按原顺序收集后一起写回历史。
+并行。模型在一轮里要求调用多个工具时，所有工具同时开跑，结果按原顺序收集后一起写回历史。
+
+同时最多跑 8 个（一个工具独占一个 Worker），超出的排队。模型偶尔会一轮返回几十个工具调用，不设上限就会瞬间起几十个 Worker——实测并发 20 个就占 466MB。
 
 ---
 
