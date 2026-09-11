@@ -300,6 +300,33 @@ export default {
 }
 ```
 
+### 返回图片的工具
+
+工具可以直接返回一个成形的输出块。截图、生成图表这类工具就靠这个把图交给模型：
+
+```js
+// tools/screenshot.js
+export default {
+    name: 'screenshot',
+    description: '截取当前屏幕',
+    inputSchema: { type: 'object', properties: {} },
+    async execute() {
+        const png = await grabScreen()          // 你自己的截图实现，拿到 base64
+        return {
+            output: {
+                type: 'content',                // 多模态输出块
+                value: [
+                    { type: 'text', text: '当前屏幕：' },
+                    { type: 'media', data: png, mediaType: 'image/png' },
+                ],
+            },
+        }
+    },
+}
+```
+
+`output` 里给的块会被原样交给模型，不会再被套一层。`maxToolOutput` 的截断**只作用于文字块**——图截一刀就彻底废了，所以媒体内容一个字节都不动。
+
 ### 工具权限询问
 
 在敏感操作前可以要求用户确认：
@@ -390,7 +417,7 @@ import Agent from '@kernel4632/agent-core'
 
 ```js
 const result = await agent.send({
-    input: '帮我写个函数',          // 用户输入（必填）
+    input: '帮我写个函数',          // 用户输入（必填）。也可以是内容块数组，见下方"发图片"
     config: { model: '新模型' },    // 可选：覆盖部分配置
     history: [],                   // 可选：替换历史
     tools: newTools,               // 可选：替换工具集
@@ -411,6 +438,19 @@ const newTask = agent.send({ input: '改执行新任务' }) // 自动停止旧�
 await oldTask.catch(() => {}) // 旧任务可能以 AbortError 结束
 const result = await newTask
 ```
+
+**发图片：** `input` 除了字符串，也可以是 AI SDK 风格的内容块数组。截图、用户在 IM 里发来的图都走这条路。
+
+```js
+await agent.send({
+    input: [
+        { type: 'text', text: '这张截图里哪个按钮是提交？' },
+        { type: 'image', image: 'data:image/png;base64,' + png },   // 也可以传 URL 或 Uint8Array
+    ],
+})
+```
+
+能不能看懂取决于模型本身。实测 `kimi-k2.6` 可以，`gpt-oss-120b` 没有视觉能力、会直接报 `content must be a string`——是大声失败，不是静默忽略。
 
 #### `agent.stop()`
 
@@ -530,6 +570,7 @@ import History from '@kernel4632/agent-core/utils/history.js'
 
 // 创建各种类型的历史块
 History.user({ content: '你好' })
+History.user({ content: [{ type: 'text', text: '这是什么' }, { type: 'image', image: dataUrl }] })  // 带图片
 History.assistant({ content: '你好', toolCalls: [{ id: 'call-1', name: 'add', arguments: { a: 1, b: 2 } }] })
 History.tool({ toolCallId: 'call-1', toolName: 'add', content: '3' })
 History.compact({ content: '之前的对话总结...' })
@@ -619,6 +660,8 @@ Worker 那一半（`features/tool-worker.js`）在打包时会被当成文本内
 **Q：工具返回一个巨大的结果会怎样？**
 
 超过 `config.maxToolOutput`（默认 32000 字符）的部分会从中间截断，头尾都保留，并插入一段明确的提示告诉模型"输出过长、请缩小范围或分页重新获取"。
+
+截断**只作用于文字**。多模态输出块里的图片、文件一个字节都不动——截一刀就彻底废了，截图工具的返回值本来就大。
 
 这条默认开着是有原因的：实测一个返回 1MB 文本的工具（`cat` 一个日志文件就够了）= **31 万 token**，超过大多数模型的整个上下文窗口，而且它会永久留在历史里——连压缩都救不回来，因为压缩本身要把这坨东西发给模型去总结。
 

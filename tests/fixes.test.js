@@ -313,6 +313,57 @@ describe('Tool 执行', () => {
 })
 
 
+describe('多模态', () => {
+    const MEDIA = new URL('./fixtures/media', import.meta.url).pathname.replace(/^\//, '')
+    const shot = [{ type: 'text', text: '这是什么' }, { type: 'image', image: 'data:image/png;base64,iVBORw0KGgo=' }]
+
+    test('用户消息可以带图片', () => {
+        // AI SDK 的 UserContent 本来就是 string | Array<TextPart | ImagePart | FilePart>，
+        // 以前是 History.user 自己只收字符串，把门关上了——电脑任务 agent 连截图都递不进去。
+        expect(History.user({ content: shot }).content).toEqual(shot)
+        expect(History.user({ content: '还是纯文本' }).content).toBe('还是纯文本') // 字符串照旧，不强行包成数组。
+    })
+
+    test('空的内容块数组仍然被拒绝', () => {
+        expect(() => History.user({ content: [] })).toThrow('empty array') // 空消息会被供应商拒收。
+    })
+
+    test('agent.send 可以直接发图片', async () => {
+        const agent = Agent.create() // 没配 baseURL，这次 send 必然失败——我们只关心它没在入口那道检查就被拒掉。
+        const error = await agent.send({ input: shot }).catch(caught => caught)
+
+        expect(String(error?.message ?? '')).not.toContain('input must be')
+        expect(agent.history[0].content).toEqual(shot) // 图片原样进了历史。
+    })
+
+    test('图片能原样走到发给模型的消息里', () => {
+        const { messages } = Context.build({ history: [History.user({ content: shot })] })
+        expect(messages[0].content).toEqual(shot) // 裁剪只摘思考和没人应答的调用，不碰图片。
+    })
+
+    test('工具返回已成形的输出块时不再被二次包装', async () => {
+        // README 里 finish 工具就是 return { output: { type:'text', value } } 这么写的。
+        // 以前会被当成普通返回值再套一层，模型看到 {"type":"json","value":{"type":"text",...}}。
+        const tools = await Tool.scan(MEDIA)
+        const result = await Tool.execute({ name: 'screenshot', input: {}, handlers: tools.handlers, limit: 32000 })
+
+        expect(result.output.type).toBe('content')
+        expect(result.output.value.map(part => part.type)).toEqual(['text', 'media'])
+    })
+
+    test('截断只动文字，图片一个字节都不碰', async () => {
+        const tools = await Tool.scan(MEDIA)
+        const result = await Tool.execute({ name: 'bigshot', input: {}, handlers: tools.handlers, limit: 32000 })
+        const [words, media] = result.output.value
+
+        expect(words.text.length).toBeLessThan(33000)          // 20 万字的说明该截还是截。
+        expect(words.text).toContain('输出过长')
+        expect(media.data.length).toBeGreaterThan(100000)      // 图截一刀就彻底废了，必须原样放行。
+        expect(media.mediaType).toBe('image/png')
+    })
+})
+
+
 describe('常驻加固', () => {
     const LIMITS = new URL('./fixtures/limits', import.meta.url).pathname.replace(/^\//, '')
 

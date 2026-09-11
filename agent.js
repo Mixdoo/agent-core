@@ -119,7 +119,9 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
 
     // 发送指令：更新本次传入的持久参数，登记运行状态，然后启动新任务。
     agent.send = ({ input, ...options }) => {
-        if (typeof input !== 'string' || !input.trim()) throw new TypeError('input must be a non-empty string') // 没有本次输入就没有可执行指令。
+        // 输入可以是一句话，也可以是 AI SDK 风格的内容块数组——发图片、发文件走数组这条路。
+        const empty = typeof input === 'string' ? !input.trim() : !Array.isArray(input) || !input.length
+        if (empty) throw new TypeError('input must be a non-empty string or a non-empty content array') // 没有本次输入就没有可执行指令。
         if ('history' in options) agent.history = options.history                                           // 传入空数组也代表明确覆盖历史。
         if ('config' in options) agent.config = { ...agent.config, ...options.config }                     // 配置按字段覆盖，未传字段继续保留。
         if ('tools' in options) agent.tools = options.tools                                                 // 工具是整体替换，不在 Agent 内部猜测如何合并。

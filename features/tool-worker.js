@@ -122,18 +122,29 @@ const collect = async result => {
 }
 
 
+// AI SDK 认得的模型输出块类型。工具可以直接返回一个成形的块（README 里 finish 工具就是这么写的），
+// 认出来才不会给它再套一层 json —— 套了之后模型看到的是 {"type":"json","value":{"type":"text",...}}。
+const BLOCK = new Set(['text', 'json', 'content', 'error-text', 'error-json', 'execution-denied'])
+
+
+// --- 截断一段文本：头尾都留，开头说明这是什么，结尾通常是结论或报错 ---
+const cut = (text, limit) => text.length <= limit ? text
+    : `${text.slice(0, Math.floor(limit * 0.7))}\n\n……[输出过长，中间省略 ${text.length - limit} 个字符。请缩小范围或分页重新获取]……\n\n${text.slice(-Math.floor(limit * 0.3))}` // 明确告诉模型被截了，它才知道该换个问法。
+
+
 // --- 截断：一次工具输出不能大到把整个会话撑死 ---
 // 不截断时实测：1MB 的工具返回值 = 31 万 token，超过大多数模型的整个上下文窗口。
 // 而且它会永久留在历史里，连压缩都救不回来——压缩本身就要把这坨东西发给模型去总结。
 // 一个 cat 大日志的工具就能触发，这不是边缘情况。
-// 头尾都留：开头说明这是什么，结尾通常是结论或报错。
+// 但只截文本：图片这类媒体内容截一刀就彻底废了，截图工具的返回值本来就大，原样放行。
 const clip = (output, limit) => {
-    const text = typeof output.value === 'string' ? output.value : JSON.stringify(output.value)
-    if (!limit || text.length <= limit) return output
+    if (!limit) return output
 
-    const head = text.slice(0, Math.floor(limit * 0.7))                 // 前七成：够模型判断这是什么内容。
-    const tail = text.slice(-Math.floor(limit * 0.3))                   // 后三成：结论和错误通常在末尾。
-    return { type: 'text', value: `${head}\n\n……[输出过长，中间省略 ${text.length - limit} 个字符。请缩小范围或分页重新获取]……\n\n${tail}` } // 明确告诉模型被截了，它才知道该换个问法。
+    // 多模态结果：逐块处理，文字块该截就截，媒体块一个字节不动。
+    if (output.type === 'content') return { ...output, value: output.value.map(part => part.type === 'text' ? { ...part, text: cut(part.text, limit) } : part) }
+
+    const text = typeof output.value === 'string' ? output.value : JSON.stringify(output.value)
+    return text.length <= limit ? output : { type: 'text', value: cut(text, limit) }
 }
 
 
@@ -143,6 +154,7 @@ const clip = (output, limit) => {
 const shape = (tool, result, limit) => {
     const value = result?.output ?? result                              // 工具可以返回 { output } 对象，也可以直接返回值。
     const output = tool.toModelOutput ? tool.toModelOutput(value)       // 工具自带格式化函数时优先用它。
+        : BLOCK.has(result?.output?.type) ? result.output               // 工具自己就给了成形的输出块——图片和多模态结果走的就是这条路。
         : value === undefined || value === null || value === '' ? { type: 'text', value: '工具执行成功，但没有输出' }
         : typeof value === 'string' ? { type: 'text', value }
         : { type: 'json', value }

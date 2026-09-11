@@ -54,7 +54,12 @@ const contentParts = (content, name = 'content') => {
 }
 
 // 创建用户历史块；Context.build() 最终会只取 role 和 content。
-const user = ({ id, content }) => ({ id: messageId(id), role: 'user', content: text(content, 'content') })
+// content 既可以是一段纯文本，也可以是 AI SDK 风格的内容块数组——图片和文件就走数组这条路
+// （AI SDK 的 UserContent 本来就是 string | Array<TextPart | ImagePart | FilePart>）。
+const user = ({ id, content }) => {
+    if (Array.isArray(content) && !content.length) throw new TypeError('content must not be an empty array') // 空消息会被供应商拒收。
+    return { id: messageId(id), role: 'user', content: Array.isArray(content) ? content : text(content, 'content') }
+}
 
 // 创建 assistant 历史块；内容块和工具调用最终都放在同一个 content 数组里。
 const assistant = ({ id, content = null, toolCalls = [] }) => ({
