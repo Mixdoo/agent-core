@@ -368,23 +368,33 @@ describe('常驻加固', () => {
         expect('timeout' in tools.schema.impatient).toBe(false)
     })
 
-    test('压缩之后把用不上的历史回收掉，并交还给上层', async () => {
+    test('压缩只往 history 里加总结，一条历史都不许删', async () => {
+        // history 是这个项目唯一的权威数据来源，该保留多少由持有它的上层决定。
+        // 核心包替它丢数据是越权——压缩控制的是"这一轮发给模型的内容有多大"，不是"历史能留多少"。
         const server = Bun.serve({
             port: 39941,
             async fetch(request) { await request.json(); return Response.json({ choices: [{ index: 0, message: { role: 'assistant', content: '这是一段总结' }, finish_reason: 'stop' }], usage: {} }) },
         })
 
         const agent = Agent.create({ config: { baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'k', model: 'm', stream: false, maxTokens: 600, compactThreshold: 0.8 } })
-        for (let i = 0; i < 40; i += 1) agent.history.push({ role: 'user', content: `第 ${i} 轮的一些内容，凑长度用的文本`.repeat(3) })
+        const seeded = Array.from({ length: 40 }, (_, i) => ({ role: 'user', content: `第 ${i} 轮的一些内容，凑长度用的文本`.repeat(3) }))
+        agent.history.push(...seeded)
 
-        let dropped = 0
-        await agent.send({ input: '继续', callbacks: { onCompact: event => { if (event.type === 'compact-trim') dropped = event.dropped.length } } }).catch(() => {})
+        await agent.send({ input: '继续' }).catch(() => {})
 
-        expect(agent.history.length).toBeLessThan(20)                                            // 不回收的话数组只增不减，常驻 Agent 跑几天必然 OOM。
-        expect(dropped).toBeGreaterThan(0)                                                       // 丢掉的交给上层，想存档自己存。
-        expect(agent.history.some(message => String(message.content).includes('第 0 轮'))).toBe(true) // 最初目标不能被压掉。
-        expect(agent.history.some(message => message.compact === true)).toBe(true)               // 总结留下了。
+        expect(agent.history.length).toBeGreaterThan(seeded.length)                 // 只增不减。
+        for (const message of seeded) expect(agent.history).toContain(message)      // 每一条原始消息都还在，而且是同一个对象引用。
+        expect(agent.history.some(message => message.compact === true)).toBe(true)  // 总结是"加"进来的一条。
         server.stop(true)
+    })
+
+    test('压缩确实把发给模型的内容压小了（只是不动 history）', async () => {
+        const history = Array.from({ length: 40 }, (_, i) => History.user({ content: `第 ${i} 轮的内容`.repeat(20) }))
+        const before = Context.build({ history }).token
+        history.push(History.compact({ content: '前面四十轮的总结' }))
+
+        expect(Context.build({ history }).token).toBeLessThan(before) // 裁剪发生在上下文这一侧。
+        expect(history.length).toBe(41)                               // history 本身只是多了一条。
     })
 
     test('maxTokens 有默认值，常驻 Agent 不会永不压缩', () => {

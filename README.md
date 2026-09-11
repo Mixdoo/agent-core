@@ -382,10 +382,7 @@ import Agent from '@kernel4632/agent-core'
 | `onToolOutput` | 工具有流式输出 | `{ tool, stream, data, toolCallId, toolName }` |
 | `onToolResult` | 工具执行完成 | `{ toolName, output, ... }` |
 | `onRetry` | 请求失败重试 | `{ attempt, error, delay }` |
-| `onCompact` | 上下文压缩 | `compact-start` / AI SDK 事件 / `compact-finish` / `compact-trim` |
-
-> `compact-trim` 带着 `dropped`——压缩之后被移出 `history` 的那些原始消息。想存档就在这里自己存，
-> 这是它们最后一次出现的地方。
+| `onCompact` | 上下文压缩 | `compact-start` / AI SDK 事件 / `compact-finish` |
 
 #### `agent.send(options)`
 
@@ -613,7 +610,7 @@ Worker 那一半（`features/tool-worker.js`）在打包时会被当成文本内
 
 上下文超过 `config.maxTokens` 的 80%（可用 `compactThreshold` 调整）时，Loop 会自动调用 Compact 把历史压缩成一段总结，然后继续运行。
 
-压缩还会**把用不上的原始消息从 `agent.history` 里移走**——不然压缩只缩小了发给模型的内容，数组本身照样一直涨，常驻 Agent 跑几天必然 OOM。被移走的消息通过 `onCompact` 的 `compact-trim` 事件交给你，想存档就在那里存。
+**压缩只往 `agent.history` 里追加一条总结，永远不删任何东西。** `history` 是唯一权威数据来源，该保留多少由持有它的你来决定——压缩控制的是"这一轮发给模型的内容有多大"，不是"历史能留多少"。
 
 每轮最多压一次。压完还超限就照常发出去，由模型服务判断收不收；下一轮还超自然会再压。**不会**为了压到达标而连续调用模型——那样一轮能烧掉上千次请求。
 

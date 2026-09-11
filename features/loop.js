@@ -70,18 +70,10 @@ const run = async ({
             const content = await compact({ messages: context.messages, llm, stream: llm.stream, onCompact, signal }) // 自动压缩只在接近上限时触发；Compact 本身不判断上下文大小。
             history.push(History.compact({ content }))                       // 总结写回 history。
             context = buildContext({ history, system, tools })                // 用压缩后的历史重建上下文。
-
-            // 总结已经覆盖了旧消息，把这次裁剪没用上的那些从 history 里回收掉。
-            // 不回收的话，压缩只缩小了"发给模型的内容"，history 数组本身会一直涨——常驻 Agent 跑几天必然 OOM。
-            // 原地 splice 而不是换个新数组：外部和 Agent 共享的是同一个引用，换掉就断了。
-            // 被丢掉的消息一并交给 onCompact，上层想存档就自己存。
-            const keep = new Set(context.kept)
-            const dropped = history.filter(message => !keep.has(message))
-            if (dropped.length) {
-                history.splice(0, history.length, ...history.filter(message => keep.has(message)))
-                await onCompact?.({ type: 'compact-trim', dropped })
-            }
         }
+        // 压缩只往 history 里追加一条总结，永远不删任何东西：
+        // history 是这个项目唯一的权威数据来源，该保留多少由持有它的上层决定，核心包无权替它丢数据。
+        // 压缩控制的是"这一轮发给模型的内容有多大"，不是"历史能留多少"。
 
         // --- 请求模型（含自动重试）---
         if (signal?.aborted) throw new DOMException('Agent loop aborted', 'AbortError')
