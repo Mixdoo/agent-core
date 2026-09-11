@@ -4,9 +4,11 @@ const { messages, token } = Context.build({
     history: History.get(),       // 完整历史
     system: "你是编程助手。",     // 会进入 messages 并参与 Token 估算
     tools: {},                    // 工具定义参与 Token 估算，不进入 messages
+    budget: 120000,               // 可选。上下文的 Token 预算，用来决定保留多少旧内容
 })
 
-build() 只读 history，从不修改它。history 是唯一权威数据来源，裁剪只发生在"这一次交给模型的内容"上。
+build() 只读 history，从不修改它。history 是唯一权威数据来源，
+裁剪只发生在"这一次交给模型的内容"上。
 
 裁剪的最小单位是「回合」，不是「消息」。
 build() 一进来就把平铺历史读成回合：工具结果按 toolCallId 回到发起它的那个回合，
@@ -23,14 +25,25 @@ build() 一进来就把平铺历史读成回合：工具结果按 toolCallId 回
 5 assistant tool-call C     →     [ assistant(C), tool C ]
 6 tool      result C        ↗
 
-输出顺序固定：最初目标 → 最新总结 → 总结前最近现场 → 总结后全部新回合。
+有总结时，最新那条总结不是当成一条消息塞进对话，而是折进 system —— 见下面 brief 的注释。
+剩下的 messages 顺序是：最初目标 → 总结前的最近现场 → 总结之后的全部新回合。
 */
 
 import { countTokens } from 'gpt-tokenizer'
 
 // 开场留住用户最初说过的话（按用户回合数），总结前留住当前任务的最近现场（按回合数）。
+// 这两个数字是上限，真正能留多少还要看预算——光按条数留，一条巨大的消息就能让压缩永远收敛不了。
 const KEEP_FIRST = 3
 const KEEP_BEFORE_SUMMARY = 3
+
+// 旧内容最多能占掉预算的多少。总结之后的新回合不受限——那是当前正在推进的工作，
+// 它涨起来是正常的，Loop 会在下一次超阈值时再压一次。
+const GOAL_SHARE = 0.2
+const RECENT_SHARE = 0.3
+
+// 粗略的"一个 token 大约几个字符"。只用来在候选回合之间分预算，不用来判断超没超阈值——
+// 那件事由出口那次真实的 countTokens 说了算。这里宁可估小（多留余量）也不估大。
+const PER_TOKEN = 2
 
 // AI SDK 的 content 既可以是内容块数组，也可以是一段纯文本；纯文本里不会有工具调用。
 const parts = message => (Array.isArray(message.content) ? message.content : [])
@@ -65,6 +78,31 @@ const toTurns = history => {
     return turns
 }
 
+// 一个回合有多大。用字符数而不是 token：裁剪要对每个候选回合都量一次，
+// 而 countTokens 是重活（实测一段三万字的连续串能跑六秒）。字符数用来分预算足够了。
+const size = turn => turn.reduce((total, message) => total + JSON.stringify(message.content).length, 0)
+
+// --- 在预算内按给定顺序挑回合，装不下就到此为止 ---
+const within = (turns, budget) => {
+    const picked = []
+    let used = 0
+    for (const turn of turns) {
+        used += size(turn)
+        if (used > budget) break
+        picked.push(turn)
+    }
+    return picked
+}
+
+// --- 把最新总结折进 system，而不是当成一条消息塞进对话里 ---
+// 裸的 role:'user' 总结会被模型读成"用户塞给我一张表"，于是它从头重做整个任务：
+// 真实中转站上实测 gpt-oss-120b 有 5/6 概率退回第一步，而且因为它一直在调工具，
+// Loop 的两个出口（tool-stop / 连续 3 轮不调工具）全都够不着，send() 永不返回、钱一直烧。
+// 同一段总结换成下面这个身份说明，同样的模型 6/6 能正确接着往下做。
+const brief = (system, summary) => summary
+    ? `${system}\n\n【你此前工作的压缩记录】\n下面是你自己之前已经完成的工作，其中的数据都已经由工具确认过。不要重新核对，直接在此基础上继续。\n\n${summary}`.trim()
+    : system
+
 // History 只比 AI SDK 多了 id、compact 这些顶层内部字段，去掉它们后直接交给模型。
 // 这里同时摘掉两种不该出现在请求里的内容块：
 // 思考内容留在 history 里供上层 UI 渲染，但不回传——它是某一次响应的厂商产物，不是持久对话状态，
@@ -79,31 +117,44 @@ const forModel = (message, answered) => ({
         : message.content,
 })
 
-const build = ({ history, system = '', tools = {} }) => {
+const build = ({ history, system = '', tools = {}, budget }) => {
     // --- 还原回合：从这里开始，历史只以回合为单位被处理 ---
     const turns = toTurns(history)
 
     // --- 定位最新总结：从后往前找，多次压缩后只有最后那一条算数 ---
     const summaryIndex = turns.findLastIndex(turn => turn[0].compact === true)
-    let selected = turns                                                                                                            // 没有总结时，完整历史就是最准确的上下文。
+    const room = Number.isFinite(budget) ? budget * PER_TOKEN : Infinity // 旧内容能用的字符预算。
+    let selected = turns                                                 // 没有总结时，完整历史就是最准确的上下文。
+    let summary = ''
 
-    // --- 挑回合：最初目标 + 最新总结 + 总结前的最近现场 + 总结后的全部新回合 ---
+    // --- 有总结时分三段挑：最初目标 + 总结前的最近现场 + 总结之后的全部新回合 ---
     if (summaryIndex >= 0) {
-        const before = turns.slice(0, summaryIndex)                                                                                 // 最新总结已经覆盖的范围，裁剪只在这里面挑。
-        const covered = before.findLastIndex(turn => turn[0].compact === true)                                                      // 上一条总结：比它更老的原文已被总结过两次，不再回头捡。
-        const goal = before.filter(turn => turn[0].role === 'user' && !turn[0].compact).slice(0, KEEP_FIRST)                         // 最初目标是用户自己说过的话，不拖着当时的工具现场一起钉在开头。
-        const recent = before.slice(Math.max(covered + 1, summaryIndex - KEEP_BEFORE_SUMMARY)).filter(turn => !goal.includes(turn))  // 最近现场；已经进入最初目标的回合不重复出现。
+        summary = turns[summaryIndex][0].content                                                                // 总结本身不进 messages，它要折进 system。
+        const before = turns.slice(0, summaryIndex)                                                             // 最新总结已经覆盖的范围，裁剪只在这里面挑。
+        const covered = before.findLastIndex(turn => turn[0].compact === true)                                  // 上一条总结：比它更老的原文已被总结过两次，不再回头捡。
 
-        selected = [...goal, turns[summaryIndex], ...recent, ...turns.slice(summaryIndex + 1)]                                       // 顺序固定：总结作背景，现场作细节，新回合接在最后。
+        // 最初目标：用户自己说过的话，不拖着当时的工具现场。有上限也有预算——
+        // 用户第一条消息就粘一大段日志时，光按条数留会让压缩永远收敛不了（实测 120/120 轮压完仍超限）。
+        // 超预算时整条不留，不是把目标弄丢了：总结本身就被要求保留"用户最初的目标"（见 Compact 的指令），
+        // 而总结在 system 里，永远不会被裁掉。钉在这里的原文只是便宜时的加分项。
+        const goal = within(before.filter(turn => turn[0].role === 'user' && !turn[0].compact).slice(0, KEEP_FIRST), room * GOAL_SHARE)
+
+        // 最近现场：从离总结最近的往回收，预算不够就丢更老的——
+        // 这样"用户上一轮刚说的那句话"一定在，而不是只剩三天前的开场白。
+        const pool = before.slice(Math.max(covered + 1, summaryIndex - KEEP_BEFORE_SUMMARY)).filter(turn => !goal.includes(turn))
+        const recent = within([...pool].reverse(), room * RECENT_SHARE).reverse()
+
+        selected = [...goal, ...recent, ...turns.slice(summaryIndex + 1)]                                       // 时间顺序：最初目标 → 最近现场 → 总结后的新回合。
     }
 
     // --- 出口：回合只是 Context 内部的形状，交给模型的仍然是平铺消息 ---
-    const flat = selected.flat()                                                                                                    // 回合内部保持原始顺序，展平后就是一段时间上连续的消息。
+    const flat = selected.flat()                                                                                // 回合内部保持原始顺序，展平后就是一段时间上连续的消息。
     const answered = new Set(flat.flatMap(message => parts(message).filter(part => part.type === 'tool-result').map(part => part.toolCallId))) // 这批消息里真正拿到结果的调用。
+    const instructions = brief(system, summary)                                                                 // 系统提示词 + 最新总结。
 
     const messages = [
-        ...(system ? [{ role: 'system', content: system }] : []),                                                                   // system 进入 messages，并一起参与 Token 估算。
-        ...flat.map(message => forModel(message, answered)).filter(message => message.content.length),                              // 被摘空的消息（只剩思考、或只剩没人应答的调用）整条丢掉。
+        ...(instructions ? [{ role: 'system', content: instructions }] : []),                                   // system 进入 messages，并一起参与 Token 估算。
+        ...flat.map(message => forModel(message, answered)).filter(message => message.content.length),           // 被摘空的消息（只剩思考、或只剩没人应答的调用）整条丢掉。
     ]
 
     // Token 只在真的有人读的时候才算：没设 maxTokens 时 Loop 压根不看它，

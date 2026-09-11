@@ -118,7 +118,7 @@ bun main.js
 ├── features/             ← 功能模块（每个只做一件事）
 │   ├── loop.js           ← 主循环：LLM → 工具 → LLM → ...
 │   ├── tool.js           ← 工具扫描 + 工具执行（主线程这一半）
-│   ├── tool-worker.js    ← 工具真正跑起来的地方（Worker 那一半）
+│   ├── sandbox.js        ← 工具真正跑起来的地方（子进程那一半）
 │   ├── context.js        ← 把历史消息裁剪成模型上下文
 │   └── compact.js        ← 上下文太长时自动压缩总结
 │
@@ -128,8 +128,13 @@ bun main.js
     └── retry.js          ← 失败自动重试（指数退避）
 ```
 
-`tool.js` 和 `tool-worker.js` 是同一件事的两半，所以放在一起：前者在主线程里找工具、管沙箱，
-后者被前者当成文本内联、在 Worker 里加载并执行工具。分成两个文件是平台限制（Worker 必须是独立的一段源码），不是分层。
+`tool.js` 和 `sandbox.js` 是同一件事的两半，所以放在一起：前者在主线程里找工具、管沙箱，
+后者被前者当成文本内联、在独立的 bun 子进程里加载并执行工具。分成两个文件是平台限制，不是分层。
+
+**为什么沙箱是子进程而不是 Worker 线程**：Worker 被 `terminate()` 之后 Bun 不归还它占的约 22MB，
+而且杀线程带不走它 `Bun.spawn` 出来的孙进程。常驻 agent 天天要杀沙箱（工具崩溃、超时、用户打断），
+两笔账会一直累积。换成子进程之后实测 200 次「起→用→杀」主进程只涨 2MB（Worker 版是 4.4GB），
+孙进程一起带走，主进程退出时沙箱也全部跟着死。复用时单次调用 0.08ms，比 Worker 还快。
 
 ### 数据流
 
@@ -317,13 +322,15 @@ export default {
                 type: 'content',                // 多模态输出块
                 value: [
                     { type: 'text', text: '当前屏幕：' },
-                    { type: 'media', data: png, mediaType: 'image/png' },
+                    { type: 'file', mediaType: 'image/png', data: { type: 'data', data: png } },
                 ],
             },
         }
     },
 }
 ```
+
+`content` 块里只能放 `text` / `file` / `file-data` / `file-url` 四种部件。放别的（比如旧版 AI SDK 的 `media`）会被沙箱当场挡住、变成一条普通的工具失败——这是有意的：非法块一旦穿过去写进 `history`，AI SDK 会在本地校验时抛错、请求根本发不出去、重试也认不出来，而 `history` 只增不删，于是之后每次 `send` 都撞同一堵墙，重启装回历史也一样。
 
 `output` 里给的块会被原样交给模型，不会再被套一层。`maxToolOutput` 的截断**只作用于文字块**——图截一刀就彻底废了，所以媒体内容一个字节都不动。
 
@@ -388,7 +395,9 @@ import Agent from '@kernel4632/agent-core'
 | `maxToolOutput` | `32000` | 单次工具输出的字符上限，超出从中间截断并告知模型 |
 | `maxTokens` | `120000` | Token 上限，超过触发自动压缩。**按你的模型窗口调整** |
 | `compactThreshold` | `0.8` | 压缩触发比例，0.8 表示到达 80% 时压缩 |
+| `maxToolConcurrency` | `8` | 同时最多跑几个工具，超出的排队。阻塞型工具会长期占名额，会话多时要调大 |
 | `retryMaxDelay` | `60` | 重试退避上限（秒） |
+| `retryMaxElapsed` | `300` | 一直失败最多再试多久（秒）。到点把错误交给上层 |
 | `noToolPrompt` | 见源码 | 模型连续 2 轮不调工具时插入的临时提示 |
 | `headers` | `{}` | 额外请求头 |
 | `body` | `{}` | 额外请求体 |
@@ -408,7 +417,7 @@ import Agent from '@kernel4632/agent-core'
 | `onToolCall` | 工具即将执行 | `{ toolCallId, toolName, input }` |
 | `onToolOutput` | 工具有流式输出 | `{ tool, stream, data, toolCallId, toolName }` |
 | `onToolResult` | 工具执行完成 | `{ toolName, output, ... }` |
-| `onRetry` | 请求失败重试 | `{ attempt, error, delay }` |
+| `onRetry` | 请求失败重试 | `{ attempt, error, delay }`（主请求和压缩请求共用） |
 | `onCompact` | 上下文压缩 | `compact-start` / AI SDK 事件 / `compact-finish` |
 
 #### `agent.send(options)`
@@ -620,9 +629,10 @@ const agent = Agent.create({ config: { /* ... */ }, tools })
 
 工具目录不会被打包——它本来就该是运行时扫描的，放文件即加功能这件事在打包后照样成立。
 
-Worker 那一半（`features/tool-worker.js`）在打包时会被当成文本内联进单文件，
-运行时从一个 `blob:` 地址启动，所以产物挪到任何目录都能正常执行工具。
-这也是 `tool-worker.js` 里不能出现任何 `import` 的原因：blob 身份下的相对路径和裸包名会按进程当前目录解析，必然出错。
+沙箱那一半（`features/sandbox.js`）在打包时会被当成文本内联进单文件，运行时通过 `bun -` 从 stdin 喂给一个新的子进程，
+所以产物挪到任何目录都能正常执行工具，也不会往磁盘上写临时文件。
+这也是 `sandbox.js` 里不能出现任何 `import` 的原因：它以匿名程序的身份运行，相对路径和裸包名会按进程当前目录解析，必然出错。
+（用 stdin 而不是 `bun -e`：后者在 8KB 到 32KB 之间就会 `ENAMETOOLONG`，而沙箱源码已经接近这个量级。）
 
 ---
 
@@ -630,7 +640,7 @@ Worker 那一半（`features/tool-worker.js`）在打包时会被当成文本内
 
 **Q：支持 Node.js 吗？**
 
-不支持。工具执行依赖 Bun 的 [`Worker`](features/tool-worker.js) 和 [`Bun.Glob`](features/tool.js)，必须用 Bun 运行。
+不支持，而且这是刻意的。工具沙箱用 [`Bun.spawn` + IPC](features/sandbox.js)，扫描用 [`Bun.Glob`](features/tool.js)，打包靠 `import ... with { type: 'text' }`，都只有 Bun 有。
 
 ---
 
@@ -652,6 +662,10 @@ Worker 那一半（`features/tool-worker.js`）在打包时会被当成文本内
 上下文超过 `config.maxTokens` 的 80%（可用 `compactThreshold` 调整）时，Loop 会自动调用 Compact 把历史压缩成一段总结，然后继续运行。
 
 **压缩只往 `agent.history` 里追加一条总结，永远不删任何东西。** `history` 是唯一权威数据来源，该保留多少由持有它的你来决定——压缩控制的是"这一轮发给模型的内容有多大"，不是"历史能留多少"。
+
+**最新的那条总结会折进 `system`，而不是当成一条用户消息塞进对话里**，并且带一句"这是你自己之前做过的工作，数据已由工具确认"。裸的 `role:'user'` 总结会被模型读成"用户塞给我一张表"，于是它从头重做整个任务——真实端点实测 `gpt-oss-120b` 改之前 1/6 能正确续跑，改之后 6/6。
+
+保留多少旧内容是**按预算**算的，不是按条数：最初目标最多占 20%、总结前的现场最多占 30%，总结之后的新回合不受限。只按条数留的话，用户第一条消息粘一大段日志就能让压缩永远收敛不了（实测 120/120 轮压完仍超阈值）。放不下的最初目标不会丢——总结本身就被要求保留用户的原始目标，而总结在 `system` 里，永远不会被裁掉。
 
 每轮最多压一次。压完还超限就照常发出去，由模型服务判断收不收；下一轮还超自然会再压。**不会**为了压到达标而连续调用模型——那样一轮能烧掉上千次请求。
 
@@ -701,7 +715,9 @@ export default {
 
 并行。模型在一轮里要求调用多个工具时，所有工具同时开跑，结果按原顺序收集后一起写回历史。
 
-同时最多跑 8 个（一个工具独占一个 Worker），超出的排队。模型偶尔会一轮返回几十个工具调用，不设上限就会瞬间起几十个 Worker——实测并发 20 个就占 466MB。
+同时最多跑 `config.maxToolConcurrency` 个（默认 8，一个工具独占一个沙箱），超出的排队。模型偶尔会一轮返回几十个工具调用，不设上限就会瞬间起几十个进程。
+
+注意阻塞型工具会**长期占着名额**：8 个会话各挂一个 `wait_for_message`，第 9 个会话的任何工具都排不进来。多会话的 bot 要按会话数把这个值调大。
 
 ---
 

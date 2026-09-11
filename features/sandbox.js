@@ -1,52 +1,59 @@
 /*
-工具在这里真正执行。它不是普通模块，不能 import 进来调用：
+工具真正跑起来的地方。它不是普通模块，不能 import 进来调用：
 
-    import ToolWorker from './tool-worker.js'  // 错误：本文件没有任何导出
+    import Sandbox from './sandbox.js'   // 错误：本文件没有任何导出
 
-正确用法是被 features/tool.js 当成文本内联、从 blob: 地址启动成一个 Worker：
+正确用法是被 features/tool.js 当成文本内联，再喂给一个新的 bun 进程：
 
-    import source from './tool-worker.js' with { type: 'text' }
-    const worker = new Worker(URL.createObjectURL(new Blob([source], { type: 'text/javascript' })))
-    worker.postMessage({ callId: '1', url: 'file:///D:/tools/read.js', name: 'read', input: { path: 'a.txt' }, limit: 32000 })
+    import source from './sandbox.js' with { type: 'text' }
+    const child = Bun.spawn(['bun', '-'], { stdin: 'pipe', ipc: handle })
+    child.stdin.write(source); child.stdin.end()
 
-一个 Worker 长期存活、同时服务多次调用，所以每条消息都带 callId，主线程靠它把结果认领回对应的那次调用。
+为什么是子进程而不是 Worker 线程：Worker 被 terminate 之后 Bun 不归还它占的约 22MB，
+而且杀线程带不走它 spawn 出来的孙进程（每个还活着、还在烧 CPU）。常驻 agent 天天要杀沙箱
+（工具崩溃、工具超时、用户打断），于是两笔账都会一直累积。换成子进程之后，杀一次内存完整还给
+操作系统、孙进程一起带走——实测 200 次「起→用→杀」主进程只涨 2MB，而 Worker 版是 4.4GB。
 
-    主线程 → Worker   { callId, url, name, input }                              执行哪个文件里的哪个工具
-    Worker → 主线程   { callId, type: 'output', stream, data }                  工具产生了一段实时输出
-    Worker → 主线程   { callId, type: 'done', output, stop }                    工具跑完了，output 已经是模型能直接读的形态
-    Worker → 主线程   { callId, type: 'error', message }                        工具抛错了
+一个沙箱长期存活、一次只服务一次调用，所以每条消息都带 callId，主线程靠它认领结果。
 
-工具文件长这样，默认导出一个工具或一组工具：
+    主线程 → 沙箱   { callId, url, name, input, limit }      执行哪个文件里的哪个工具，输出最多留多长
+    沙箱 → 主线程   { ready: true }                          我起来了，可以派活
+    沙箱 → 主线程   { callId, type: 'output', stream, data } 工具产生了一段实时输出
+    沙箱 → 主线程   { callId, type: 'done', output, stop }   跑完了，output 已经是模型能直接读的形态
+    沙箱 → 主线程   { callId, type: 'error', message }       工具抛错了
+
+工具文件默认导出一个工具或一组工具：
 
     export default {
         name: 'read',
         description: '读取文件',
         inputSchema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+        timeout: 30000,                                  // 可选，不写就一直等（阻塞型工具靠这个）
         async execute(input) { return await Bun.file(input.path).text() },
     }
 
 工具作者不需要写任何流式输出代码：console.log 和 Bun.spawn 的子进程输出都会被自动转发；
 execute 写成 async * 时，每个 yield 也会实时发出去。
 
-约束（方案成立的前提，改这个文件时必须守住）：
-本文件内不能出现任何 import 或 require。它以 blob: 身份运行，相对路径和裸包名会按进程 cwd 解析、必然出错；
+约束（改这个文件时必须守住）：本文件内不能出现任何 import 或 require。
+它以 stdin 喂进来的匿名程序身份运行，相对路径和裸包名会按进程当前目录解析、必然出错；
 工具文件由主线程以绝对 file:// URL 传进来，不受这条限制影响。
 */
 
 
 const decoder = new TextDecoder()               // 子进程输出是字节流，转成文本才能发给主线程。
 const encoder = new TextEncoder()               // 重放给工具的那一份要再变回字节流。
-const KEEP = 8 << 20                            // 替工具留着的子进程输出上限（8MB）：正常的构建/测试日志都装得下，工具永远不读时内存也有明确天花板。
+const KEEP = 8 << 20                            // 替工具留着的子进程输出上限（8MB）：正常构建/测试日志都装得下，工具永远不读时内存也有天花板。
 
-let current = null                              // 当前正在执行的 callId，console 输出靠它认领归属；空闲时为 null。
+let current = null                              // 当前正在执行的 callId；空闲时为 null。
 
 // --- 把一段实时输出报给主线程 ---
 // 空闲时直接丢弃：工具返回之后还在打日志（自己起了不 await 的后台任务），
 // 那些输出不属于任何一次调用，发出去只会被记到下一次调用头上。
-const report = (stream, data) => current && postMessage({ callId: current, type: 'output', stream, data })
+const report = (stream, data) => current && process.send({ callId: current, type: 'output', stream, data })
 
 
-// --- 子进程输出：执行器是唯一读者，读到的每段既发给主线程，也留一份给工具自己读 ---
+// --- 子进程输出：沙箱是唯一读者，读到的每段既发给主线程，也留一份给工具自己读 ---
 // 不用 tee()：tee 的两路里只要有一路没人读，另一路读多少就在内存里堆多少，没有上限。
 const relay = (source, stream) => {
     const kept = []                                                     // 留给工具读的副本，只保留尾部 KEEP 字节。
@@ -79,6 +86,7 @@ const relay = (source, stream) => {
 
 
 // --- 劫持 Bun.spawn：工具照常写 spawn，子进程输出自动变成流式事件 ---
+// 沙箱被杀时这些孙进程会跟着一起死，所以这里不需要额外做生命周期管理。
 const spawn = Bun.spawn
 Bun.spawn = (command, options = {}) => {
     const child = spawn(command, {
@@ -102,7 +110,6 @@ Bun.spawn = (command, options = {}) => {
 
 
 // --- 劫持 console：工具里的 console.log 直接变成流式输出 ---
-// 只发给主线程、不再写本进程 stdout：同一条输出同时走 postMessage 和 console 会稳定触发 Bun 的内部断言，整个进程 panic。
 for (const name of ['log', 'info', 'warn', 'error']) {
     // 字符串原样输出，其余交给 Bun.inspect —— 和 console 自己的行为一致；
     // 不用 String()，它会被 Object.create(null) 这类没有 toString 的值抛穿，把跑成功的工具报成失败。
@@ -122,9 +129,14 @@ const collect = async result => {
 }
 
 
-// AI SDK 认得的模型输出块类型。工具可以直接返回一个成形的块（README 里 finish 工具就是这么写的），
+// AI SDK 认得的输出块类型。工具可以直接返回一个成形的块（README 里 finish 和截图工具都这么写），
 // 认出来才不会给它再套一层 json —— 套了之后模型看到的是 {"type":"json","value":{"type":"text",...}}。
 const BLOCK = new Set(['text', 'json', 'content', 'error-text', 'error-json', 'execution-denied'])
+
+// content 块里允许出现的部件类型。不在这张表里的部件会被 AI SDK 在本地拒绝，
+// 而且是在 standardizePrompt 里抛、请求根本发不出去、Retry 认不出来——一旦写进 history 就是永久的。
+// 所以在这里挡住：非法块变成一条普通的工具失败，让模型知道并换个方式，而不是把会话毒死。
+const PART = new Set(['text', 'file', 'file-data', 'file-url'])
 
 
 // --- 截断一段文本：头尾都留，开头说明这是什么，结尾通常是结论或报错 ---
@@ -133,9 +145,8 @@ const cut = (text, limit) => text.length <= limit ? text
 
 
 // --- 截断：一次工具输出不能大到把整个会话撑死 ---
-// 不截断时实测：1MB 的工具返回值 = 31 万 token，超过大多数模型的整个上下文窗口。
-// 而且它会永久留在历史里，连压缩都救不回来——压缩本身就要把这坨东西发给模型去总结。
-// 一个 cat 大日志的工具就能触发，这不是边缘情况。
+// 不截断时实测：1MB 的工具返回值 = 31 万 token，超过大多数模型的整个上下文窗口，
+// 而且它会永久留在历史里——连压缩都救不回来，压缩本身就要把这坨东西发给模型去总结。
 // 但只截文本：图片这类媒体内容截一刀就彻底废了，截图工具的返回值本来就大，原样放行。
 const clip = (output, limit) => {
     if (!limit) return output
@@ -149,8 +160,8 @@ const clip = (output, limit) => {
 
 
 // --- 成形：在跨进程之前就把返回值变成模型能读的输出块 ---
-// 放在这里而不是主线程，是因为这一步会执行工具作者写的 toModelOutput、也会做 JSON 化，
-// 两者都可能抛错；抛在这里只是一条正常的工具失败，抛在主线程会让那次调用永远不结算。
+// 放在沙箱里而不是主线程，是因为这一步要执行工具作者写的 toModelOutput、要做 JSON 化、要校验块形状，
+// 三件事都可能抛错；抛在这里只是一条正常的工具失败，抛在主线程会让那次调用永远不结算。
 const shape = (tool, result, limit) => {
     const value = result?.output ?? result                              // 工具可以返回 { output } 对象，也可以直接返回值。
     const output = tool.toModelOutput ? tool.toModelOutput(value)       // 工具自带格式化函数时优先用它。
@@ -159,6 +170,11 @@ const shape = (tool, result, limit) => {
         : typeof value === 'string' ? { type: 'text', value }
         : { type: 'json', value }
 
+    // 边界校验：形状不对就在这里变成工具失败，绝不让它穿过去写进 history。
+    if (!BLOCK.has(output?.type)) throw new TypeError(`工具输出块的 type 不合法：${JSON.stringify(output?.type)}，只能是 ${[...BLOCK].join(' / ')}`)
+    const bad = output.type === 'content' && output.value.find(part => !PART.has(part?.type))
+    if (bad) throw new TypeError(`content 块里的 ${JSON.stringify(bad.type)} 部件不合法，只能是 ${[...PART].join(' / ')}。图片用 { type: 'file', mediaType, data: { type: 'data', data } }`)
+
     // 跨进程只传纯 JSON，自带格式化的那条路也一样要过这一关：
     // Date 变字符串、NaN 变 null、循环引用在这里变成一条正常的工具错误，不会写进 history 把 Agent 毒死。
     return clip(JSON.parse(JSON.stringify(output)), limit)
@@ -166,16 +182,19 @@ const shape = (tool, result, limit) => {
 
 
 // --- 收到一次执行请求：找工具 → 跑工具 → 把成形后的结果发回去 ---
-self.onmessage = async ({ data }) => {
+process.on('message', async data => {
     current = data.callId                                                       // 本次调用的身份，console 输出也归到它名下。
     try {
-        const module = await import(data.url)                                   // Worker 是独立环境，工具文件在这里重新加载。
+        const module = await import(data.url)                                   // 沙箱是独立进程，工具文件在这里重新加载。
         const tool = [module.default].flat().find(one => one.name === data.name) // 按名字认工具，和主线程建表时用的是同一条规则，不会错位。
         const result = await collect(await tool.execute(data.input))
-        postMessage({ callId: data.callId, type: 'done', output: shape(tool, result, data.limit), stop: result?.stop === true }) // stop 是工具主动要求结束整个循环。
+        process.send({ callId: data.callId, type: 'done', output: shape(tool, result, data.limit), stop: result?.stop === true }) // stop 是工具主动要求结束整个循环。
     } catch (error) {
-        postMessage({ callId: data.callId, type: 'error', message: error?.message || String(error) }) // 工具抛错、toModelOutput 抛错、返回值 JSON 化失败，对模型来说都是"这个工具没成功"。
+        process.send({ callId: data.callId, type: 'error', message: error?.message || String(error) }) // 工具抛错、toModelOutput 抛错、输出块非法、JSON 化失败，对模型来说都是"这个工具没成功"。
     } finally {
         current = null                                                          // 交还身份：这之后再有输出就不属于任何一次调用了。
     }
-}
+})
+
+
+process.send({ ready: true }) // 告诉主线程可以派活了；在这之前发过来的消息会排队，但握手让借用逻辑不必猜。

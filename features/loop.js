@@ -18,9 +18,7 @@ const result = await Loop.run({
             headers: {},
             body: {},
         },
-    },
-    retry: {
-        maxDelay: 60000,
+        retryMaxDelay: 60,         // 重试退避上限（秒）。重试是 LLM.chat 自带的，压缩那次请求也走同一套。
     },
     // --- 功能模块（必填，平齐的功能模块作为参数传）---
     buildContext: Context.build,       // 上下文构建模块
@@ -44,11 +42,10 @@ const result = await Loop.run({
  */
 
 import History from '../utils/history.js'
-import Retry from '../utils/retry.js'
 import LLM from '../utils/llm.js'
 
 const run = async ({
-    history, system, tools, llm, retry = {}, buildContext, compact, executeTool, sessionId, signal,                     // 数据、LLM 参数、功能模块和取消信号
+    history, system, tools, llm, buildContext, compact, executeTool, sessionId, signal,                                 // 数据、LLM 参数、功能模块和取消信号
     onStart, onLLMStart, onLLMFinish, onPermission, onLLMEvent, onRetry, onToolCall, onToolOutput, onToolResult, onCompact, // 全部回调，没传的自动跳过
 }) => {
     await onStart?.()          // 外部需要时知道循环已经开始；没有回调就跳过。等它完成，回调抛错才能顺着 send() 冒出去，而不是变成没人接的拒绝。
@@ -65,26 +62,21 @@ const run = async ({
         // 循环只会一轮一轮地烧钱——实测 maxTokens 配小时能烧到 5500 次请求，
         // 每轮降一点点的情况下加了"没变小就停"的护栏也还能烧 122 次。
         // 压一次之后仍然超限就照常发出去，由模型服务判断收不收；下一轮如果还超，自然会再压一次。
-        let context = buildContext({ history, system, tools })
+        let context = buildContext({ history, system, tools, budget: llm.maxTokens })
         if (Number.isFinite(llm.maxTokens) && context.token >= llm.maxTokens * (llm.compactThreshold ?? 0.8)) {
-            const content = await compact({ messages: context.messages, llm, stream: llm.stream, onCompact, signal }) // 自动压缩只在接近上限时触发；Compact 本身不判断上下文大小。
+            const content = await compact({ messages: context.messages, llm, stream: llm.stream, onCompact, onRetry, signal }) // 自动压缩只在接近上限时触发；Compact 本身不判断上下文大小。
             history.push(History.compact({ content }))                       // 总结写回 history。
-            context = buildContext({ history, system, tools })                // 用压缩后的历史重建上下文。
+            context = buildContext({ history, system, tools, budget: llm.maxTokens })                // 用压缩后的历史重建上下文。
         }
         // 压缩只往 history 里追加一条总结，永远不删任何东西：
         // history 是这个项目唯一的权威数据来源，该保留多少由持有它的上层决定，核心包无权替它丢数据。
         // 压缩控制的是"这一轮发给模型的内容有多大"，不是"历史能留多少"。
 
-        // --- 请求模型（含自动重试）---
+        // --- 请求模型 ---
+        // 重试不在这里：它是 LLM.chat 自带的，压缩那次请求走的是同一条路、同一套退避。
         if (signal?.aborted) throw new DOMException('Agent loop aborted', 'AbortError')
-        const result = await Retry.run({
-            operation: async () => {
-                const request = { messages: temporaryPrompt ? [...context.messages, History.user({ content: temporaryPrompt })] : context.messages, tools } // 临时提示只挂在本次请求上。
-                await onLLMStart?.(request)                              // 每次重试都是一次真实模型请求。
-                return LLM.chat({ ...llm, ...request, signal, onLLMEvent }) // 配置和本次请求内容一起交给 LLM。
-            },
-            signal, onRetry, maxDelay: retry.maxDelay, // 取消信号、重试通知和退避上限（秒）。
-        })
+        const request = { messages: temporaryPrompt ? [...context.messages, History.user({ content: temporaryPrompt })] : context.messages, tools } // 临时提示只挂在本次请求上。
+        const result = await LLM.chat({ ...llm, ...request, signal, onLLMEvent, onLLMStart, onRetry })
         await onLLMFinish?.(result) // 上层拿到完整 result，自行选择 usage 或其他字段。
         temporaryPrompt = null      // 提示已经用过，下一轮默认不再携带。
 

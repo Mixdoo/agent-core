@@ -19,19 +19,33 @@ const content = await Compact.run({
 
 import LLM from '../utils/llm.js'
 
+// 压缩的指令。说清楚"留什么、丢什么"，模型才知道这份总结是拿来接着干活的，不是拿来复述的。
+const SUMMARIZE = `请把以上对话压缩成一段总结，供你自己后续继续工作时使用。
+保留：已经确认的事实与数据、已完成的步骤及其结论、还没做完的事、用户最初的目标。
+丢弃：寒暄、重复的中间过程、已经被后续结果推翻的内容。
+只输出总结本身，不要说"好的"，不要继续对话。`
+
 // Compact 只负责把上下文变成总结文本，是否需要压缩由调用方决定。
-const run = async ({ messages, llm, stream = true, onCompact, signal }) => {
+const run = async ({ messages, llm, stream = true, onCompact, onRetry, signal }) => {
     await onCompact?.({ type: 'compact-start', messages })
+
     const result = await LLM.chat({
         ...llm,
-        system: '请总结这段对话，只输出总结内容。',
-        messages: [
-            { role: 'user', content: `以下是需要压缩的对话内容：\n\n${JSON.stringify(messages)}\n\n请只输出这段对话的压缩总结，不要继续对话内容。` },
-        ],
+        system: '你在压缩一段你自己参与过的工作记录。只输出总结内容本身。',
+
+        // 要压缩的消息原样当成 messages 发过去，不要 JSON.stringify 塞进一条 user 消息里：
+        // 那样引号会被二次转义，实测压缩请求能膨胀到它要压的上下文的 1.51 倍（工具输出是 JSON 时），
+        // 于是"压缩"这个本该救命的动作，反而成了第一个把上下文窗口撑爆的请求——
+        // 实测正常轮次最高才 92201 token 很安全，压缩请求 157011 直接 400 且不可重试。
+        // 原来的 system 要滤掉：它已经被上面那条换掉了，留着会变成一条夹在对话中间的 system 消息。
+        messages: [...messages.filter(message => message.role !== 'system'), { role: 'user', content: SUMMARIZE }],
+
         stream,
         signal,
+        onRetry,               // 压缩失败能重试——它和主循环走的是同一条 LLM.chat，同一套退避。
         onLLMEvent: onCompact,
     })
+
     const content = result.text.trim()
     if (!content) throw new Error('压缩失败：模型返回空总结') // 空总结会导致 History.compact 校验失败，提前报错。
     await onCompact?.({ type: 'compact-finish', content })

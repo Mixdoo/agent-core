@@ -15,7 +15,8 @@ const server = Bun.serve({
     async fetch(request) {
         const body = await request.json()
         const lastMessage = body.messages.at(-1)
-        const text = lastMessage?.content?.includes('需要压缩') ? '压缩后的内容' : '模型回答'
+        // 压缩请求的最后一条消息是 Compact 的指令；靠它区分这次是压缩还是正常对话。
+        const text = lastMessage?.content?.includes('压缩成一段总结') ? '压缩后的内容' : '模型回答'
         if (body.stream) {
             const encoder = new TextEncoder()
             // 真实的 OpenAI 兼容服务一定会给出 finish_reason；少了它 AI SDK 会发一个 error 事件，

@@ -12,6 +12,7 @@ import Context from '../features/context.js'
 import Tool from '../features/tool.js'
 import LLM from '../utils/llm.js'
 import Loop from '../features/loop.js'
+import Compact from '../features/compact.js'
 
 const BROKEN = new URL('./fixtures/broken', import.meta.url).pathname.replace(/^\//, '')               // Windows 下 pathname 会带前导斜杠。
 const CYCLIC_FORMAT = new URL('./fixtures/cyclicformat', import.meta.url).pathname.replace(/^\//, '')  // 单独放一个目录，免得污染其它用例的工具表。
@@ -313,6 +314,69 @@ describe('Tool 执行', () => {
 })
 
 
+describe('压缩这条路径', () => {
+    test('总结折进 system 并说明身份，不再当成一条用户消息', () => {
+        // 裸的 role:'user' 总结会被模型读成"用户塞给我一张表"，于是它从头重做整个任务。
+        // 真实端点实测：gpt-oss-120b 改之前 1/6 能正确续跑，改之后 6/6。
+        const history = [
+            History.user({ content: '核对 12 个箱子' }),
+            History.compact({ content: '已经核对完 C01 到 C06' }),
+            History.user({ content: '继续' }),
+        ]
+        const { messages } = Context.build({ history, system: '你是助手' })
+
+        expect(messages[0].role).toBe('system')
+        expect(messages[0].content).toContain('你是助手')                 // 原来的系统提示词还在。
+        expect(messages[0].content).toContain('你此前工作的压缩记录')       // 总结带着身份说明进了 system。
+        expect(messages[0].content).toContain('已经核对完 C01 到 C06')
+        expect(messages.slice(1).some(message => String(message.content).includes('已经核对完'))).toBe(false) // 对话里不再有裸的总结消息。
+    })
+
+    test('压缩请求不再把整份上下文二次编码', async () => {
+        // 以前是 JSON.stringify 塞进一条 user 消息，引号被二次转义，
+        // 压缩请求能膨胀到它要压的上下文的 1.51 倍——"压缩"反而成了第一个撑爆窗口的请求。
+        let sent = 0
+        const server = Bun.serve({
+            port: 39961,
+            async fetch(request) { sent = JSON.stringify(await request.json()).length; return Response.json({ choices: [{ index: 0, message: { role: 'assistant', content: '总结' }, finish_reason: 'stop' }], usage: {} }) },
+        })
+
+        const history = [History.user({ content: '处理数据' })]
+        for (let i = 1; i <= 10; i += 1) {
+            history.push(History.assistant({ content: null, toolCalls: [{ id: `c${i}`, name: 'api', arguments: { n: i } }] }))
+            history.push(History.tool({ toolCallId: `c${i}`, toolName: 'api', content: { type: 'json', value: { rows: Array.from({ length: 30 }, (_, k) => ({ k, note: '带"引号"的内容' })) } } }))
+        }
+        const context = Context.build({ history, system: '你是助手' })
+        await Compact.run({ messages: context.messages, llm: { baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'k', model: 'm' }, stream: false })
+
+        expect(sent / JSON.stringify(context.messages).length).toBeLessThan(1.35) // 二次转义时是 1.51；剩下的是请求信封本身。
+        server.stop(true)
+    })
+
+    test('巨大的开场消息不会让压缩永远收敛不了', () => {
+        // 用户第一条就粘一大段日志时，"最初目标"按条数被永久钉住，压缩压完仍然超限，
+        // 于是每一轮都白压一次——实测 120/120 轮都没降到阈值以下。现在它要占预算，占不下就不留。
+        const history = [History.user({ content: '日志'.repeat(7000) })]
+        for (let i = 1; i <= 6; i += 1) history.push(History.user({ content: `第 ${i} 步` }))
+        history.push(History.compact({ content: '短总结' }))
+        history.push(History.user({ content: '继续' }))
+
+        const budgeted = Context.build({ history, budget: 6000 }).token
+        expect(budgeted).toBeLessThan(6000 * 0.8)                               // 压缩之后真的降到阈值以下了。
+        expect(budgeted).toBeLessThan(Context.build({ history }).token)         // 不给预算时它会把那坨日志原样钉着。
+    })
+
+    test('总结之后的新回合不受预算限制', () => {
+        // 总结后的内容是当前正在推进的工作，它涨起来是正常的，Loop 会在下一次超阈值时再压一次。
+        const history = [History.user({ content: '开始' }), History.compact({ content: '总结' })]
+        for (let i = 0; i < 8; i += 1) history.push(History.user({ content: `新消息 ${i}` }))
+
+        const { messages } = Context.build({ history, budget: 10 })             // 预算小到几乎为零。
+        expect(messages.filter(message => String(message.content).startsWith('新消息')).length).toBe(8)
+    })
+})
+
+
 describe('多模态', () => {
     const MEDIA = new URL('./fixtures/media', import.meta.url).pathname.replace(/^\//, '')
     const shot = [{ type: 'text', text: '这是什么' }, { type: 'image', image: 'data:image/png;base64,iVBORw0KGgo=' }]
@@ -348,7 +412,7 @@ describe('多模态', () => {
         const result = await Tool.execute({ name: 'screenshot', input: {}, handlers: tools.handlers, limit: 32000 })
 
         expect(result.output.type).toBe('content')
-        expect(result.output.value.map(part => part.type)).toEqual(['text', 'media'])
+        expect(result.output.value.map(part => part.type)).toEqual(['text', 'file'])
     })
 
     test('截断只动文字，图片一个字节都不碰', async () => {
@@ -356,10 +420,23 @@ describe('多模态', () => {
         const result = await Tool.execute({ name: 'bigshot', input: {}, handlers: tools.handlers, limit: 32000 })
         const [words, media] = result.output.value
 
-        expect(words.text.length).toBeLessThan(33000)          // 20 万字的说明该截还是截。
+        expect(words.text.length).toBeLessThan(33000)            // 20 万字的说明该截还是截。
         expect(words.text).toContain('输出过长')
-        expect(media.data.length).toBeGreaterThan(100000)      // 图截一刀就彻底废了，必须原样放行。
+        expect(media.data.data.length).toBeGreaterThan(100000)   // 图截一刀就彻底废了，必须原样放行。
         expect(media.mediaType).toBe('image/png')
+    })
+
+    test('作废的 media 形状被当场挡住，而不是穿过去毒死 history', async () => {
+        // { type:'media' } 是 AI SDK v5 的名字，v7 的联合类型里没有。让它穿过去的话，
+        // AI SDK 会在 standardizePrompt 本地抛 AI_InvalidPromptError——请求发不出去、Retry 认不出来、
+        // 而 history 只增不删，于是之后每次 send 都撞同一个错，重启装回历史也一样。
+        const tools = await Tool.scan(MEDIA)
+        const result = await Tool.execute({ name: 'legacyshot', input: {}, handlers: tools.handlers, limit: 32000 })
+
+        expect(result.error).toBeTruthy()
+        expect(result.output.type).toBe('error-text')
+        expect(result.output.value).toContain('media')           // 错误信息要说清楚哪个部件不合法。
+        expect(result.output.value).toContain('file')            // 以及该用什么。
     })
 })
 
@@ -448,6 +525,31 @@ describe('常驻加固', () => {
         expect(history.length).toBe(41)                               // history 本身只是多了一条。
     })
 
+    test('反复杀沙箱不会累积内存', async () => {
+        // 沙箱是子进程不是 Worker 线程，就是为了这件事：Worker 被 terminate 之后 Bun 不归还那约 22MB，
+        // 而常驻 agent 天天要杀沙箱（工具崩溃、超时、用户打断），一天下来就是几个 GB。
+        const tools = await Tool.scan(BROKEN)
+        Bun.gc(true)
+        const before = process.memoryUsage.rss()
+        for (let i = 0; i < 30; i += 1) await Tool.execute({ name: 'suicide', input: {}, handlers: tools.handlers })
+        Bun.gc(true)
+
+        expect((process.memoryUsage.rss() - before) / 1048576).toBeLessThan(150) // Worker 版这里是 30 × 22MB ≈ 660MB 起步。
+    })
+
+    test('取消时写进结果的实时输出也有上限', async () => {
+        // maxToolOutput 以前只管"工具正常返回"这一条路。取消和超时把主线程里无上限累积的输出
+        // 原样拼进结果写进 history——一次 3 秒的打断实测写进 356 万字符（111 倍上限），而且永远删不掉。
+        const tools = await Tool.scan(LIMITS)
+        const controller = new AbortController()
+        setTimeout(() => controller.abort(), 1200)
+
+        const result = await Tool.execute({ name: 'chatty', input: {}, handlers: tools.handlers, signal: controller.signal, limit: 32000 })
+
+        expect(result.interrupted).toBe(true)
+        expect(result.output.value.length).toBeLessThan(40000)
+    })
+
     test('maxTokens 有默认值，常驻 Agent 不会永不压缩', () => {
         expect(Agent.create().config.maxTokens).toBeGreaterThan(0) // 默认 undefined 时历史会一直涨到供应商拒收。
         expect(Agent.create().config.maxToolOutput).toBeGreaterThan(0)
@@ -472,14 +574,43 @@ describe('LLM 边界', () => {
         },
     })
 
+    // retryMaxElapsed: 0 = 一次都不重试。这几条测的是"错误有没有如实抛出来"，
+    // 不是重试行为；不关掉的话 LLM.chat 会老老实实对着这个永远 503 的假服务重试满 5 分钟。
+    const noRetry = { retryMaxElapsed: 0 }
+
     test('流式请求里的供应商错误会被抛出来，不再伪装成正常回答', async () => {
-        const call = LLM.chat({ baseURL: `http://127.0.0.1:${failing.port}/v1`, apiKey: 'k', model: 'm', messages: [{ role: 'user', content: 'hi' }], stream: true })
+        const call = LLM.chat({ baseURL: `http://127.0.0.1:${failing.port}/v1`, apiKey: 'k', model: 'm', messages: [{ role: 'user', content: 'hi' }], stream: true, ...noRetry })
         expect(call).rejects.toThrow() // 以前它会返回一个空文本的"成功"结果，上层完全看不出请求失败过。
     })
 
     test('抛出来的错误带着 AI SDK 的可重试标记，Retry 才认得出', async () => {
-        const error = await LLM.chat({ baseURL: `http://127.0.0.1:${failing.port}/v1`, apiKey: 'k', model: 'm', messages: [{ role: 'user', content: 'hi' }], stream: true }).catch(caught => caught)
+        const error = await LLM.chat({ baseURL: `http://127.0.0.1:${failing.port}/v1`, apiKey: 'k', model: 'm', messages: [{ role: 'user', content: 'hi' }], stream: true, ...noRetry }).catch(caught => caught)
         expect(error.isRetryable).toBe(true) // 503 该重试；以前这里是 AI_NoOutputGeneratedError，没有这个字段，重试从来不会发生。
+    })
+
+    test('一直失败也会在时间预算内收手，不会永远重试', async () => {
+        // 重试搬进 LLM.chat 之后，次数不设限；上界改成时间。
+        // 没有这条上界的话服务挂一整天 send() 也不 resolve 不 reject，上层连"出事了"都不知道。
+        const started = Date.now()
+        const error = await LLM.chat({ baseURL: `http://127.0.0.1:${failing.port}/v1`, apiKey: 'k', model: 'm', messages: [{ role: 'user', content: 'hi' }], stream: false, retryMaxElapsed: 2 }).catch(caught => caught)
+
+        expect(error).toBeInstanceOf(Error)
+        expect(Date.now() - started).toBeLessThan(15000) // 到点就把最后一次的错误交出来。
+    })
+
+    test('压缩请求和主请求走同一套重试', async () => {
+        // 压缩那次请求以前是裸的：同一个 500，打在普通轮次上会重试到底，打在压缩上 306ms 就抛穿 send()，
+        // 把跑了几小时的会话直接打死。现在它和主请求共用 LLM.chat，自然共用重试。
+        const tries = []
+        const error = await Compact.run({
+            messages: [{ role: 'user', content: '要压缩的内容' }],
+            llm: { baseURL: `http://127.0.0.1:${failing.port}/v1`, apiKey: 'k', model: 'm', retryMaxElapsed: 2 },
+            stream: false,
+            onRetry: info => tries.push(info.attempt),
+        }).catch(caught => caught)
+
+        expect(error).toBeInstanceOf(Error)
+        expect(tries.length).toBeGreaterThan(0) // 真的重试过，而不是第一次就放弃。
     })
 
     test('默认不发 OpenAI 私有的提示词缓存字段', async () => {

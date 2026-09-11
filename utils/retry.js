@@ -12,6 +12,9 @@ const result = await Retry.run({
 
     // 重试退避时间上限，默认 60 秒
     maxDelay: 60,
+
+    // 一直失败最多再试多久，默认 300 秒
+    maxElapsed: 300,
 })
  */
 
@@ -25,19 +28,24 @@ const isRetryable = error => {
     return error?.isRetryable === true
 }
 
-const run = async ({ operation, signal, onRetry, maxDelay = 60 }) => {
+const run = async ({ operation, signal, onRetry, maxDelay = 60, maxElapsed = 300 }) => {
     if (typeof operation !== 'function') throw new TypeError('operation must be a function')
     if (!Number.isFinite(maxDelay) || maxDelay < 0) throw new TypeError('maxDelay must be a non-negative number')
 
+    // 上界是时间，不是次数。常驻 agent 遇到瞬时故障应该一直试下去，但"服务挂了一整天"也得有个头——
+    // 不设头的话调用方既不 resolve 也不 reject，上层连"出事了"都不知道，没法退避、告警或换模型。
+    const deadline = Date.now() + maxElapsed * 1000
+
     return pRetry(operation, {
-        retries: Infinity, // 文件头没有最大次数参数，保持原先“可重试就持续重试”的约定。
+        retries: Infinity, // 次数不设限，由上面的时间预算收口。
         signal, // p-retry 会在请求之间和等待期间响应用户取消。
         minTimeout: 1000, // 第一次等待一秒，后续自动按指数增长。
         maxTimeout: maxDelay * 1000, // 文件头的秒单位转换为 p-retry 使用的毫秒。
         shouldRetry: async info => {
-            const retry = isRetryable(info.error)
-            if (retry) await onRetry?.({ attempt: info.attemptNumber, error: info.error, delay: info.retryDelay })
-            return retry
+            if (!isRetryable(info.error)) return false
+            if (Date.now() >= deadline) return false // 试到超预算，把最后一次的错误原样交给调用方。
+            await onRetry?.({ attempt: info.attemptNumber, error: info.error, delay: info.retryDelay })
+            return true
         },
     })
 }
