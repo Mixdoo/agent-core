@@ -118,7 +118,7 @@ bun main.js
 ├── features/             ← 功能模块（每个只做一件事）
 │   ├── loop.js           ← 主循环：LLM → 工具 → LLM → ...
 │   ├── tool.js           ← 工具扫描 + 工具执行（主线程这一半）
-│   ├── sandbox.js        ← 工具真正跑起来的地方（子进程那一半）
+│   ├── tool-process.js   ← 工具真正跑起来的地方（子进程那一半）
 │   ├── context.js        ← 把历史消息裁剪成模型上下文
 │   └── compact.js        ← 上下文太长时自动压缩总结
 │
@@ -128,13 +128,15 @@ bun main.js
     └── retry.js          ← 失败自动重试（指数退避）
 ```
 
-`tool.js` 和 `sandbox.js` 是同一件事的两半，所以放在一起：前者在主线程里找工具、管沙箱，
+`tool.js` 和 `tool-process.js` 是同一件事的两半，所以放在一起：前者在主线程里找工具、管工具进程，
 后者被前者当成文本内联、在独立的 bun 子进程里加载并执行工具。分成两个文件是平台限制，不是分层。
 
-**为什么沙箱是子进程而不是 Worker 线程**：Worker 被 `terminate()` 之后 Bun 不归还它占的约 22MB，
-而且杀线程带不走它 `Bun.spawn` 出来的孙进程。常驻 agent 天天要杀沙箱（工具崩溃、超时、用户打断），
+**工具进程隔离的是生命周期，不是环境。** 工具在里面拥有和 Agent 完全相同的权限：读写任意文件、执行任意命令、联网、读到父进程的全部环境变量。这是有意的——电脑任务 agent 的工具本来就得能干这些。它真正隔离的是四样：**失控**（死循环工具能被一刀杀掉，实测 0ms）、**崩溃**（工具死了 Agent 继续跑）、**内存**（独立堆）、**Agent 状态**（工具碰不到 `history`、`config`、`running`）。
+
+**为什么用子进程而不是 Worker 线程**：Worker 被 `terminate()` 之后 Bun 不归还它占的约 22MB，
+而且杀线程带不走它 `Bun.spawn` 出来的孙进程。常驻 agent 天天要杀工具进程（工具崩溃、超时、用户打断），
 两笔账会一直累积。换成子进程之后实测 200 次「起→用→杀」主进程只涨 2MB（Worker 版是 4.4GB），
-孙进程一起带走，主进程退出时沙箱也全部跟着死。复用时单次调用 0.08ms，比 Worker 还快。
+孙进程一起带走，主进程退出时工具进程也全部跟着死。复用时单次调用 0.08ms，比 Worker 还快。
 
 ### 数据流
 
@@ -149,7 +151,7 @@ agent.send(input)
        ├─ LLM.chat()         请求模型（支持流式，失败自动重试）
        │
        ├─ [有工具调用]
-       │    ├─ Tool.execute() 在独立 Worker 里并行执行所有工具
+       │    ├─ Tool.execute() 在独立子进程里并行执行所有工具
        │    └─ 把工具结果写入 history，继续下一轮循环
        │
        └─ [没有工具调用]
@@ -219,7 +221,7 @@ const agent = Agent.create({
 
 ### 调用子进程的工具
 
-工具在 Worker 里运行，`Bun.spawn` 的 stdout/stderr 会自动转发给 `onToolOutput`，不需要额外处理：
+工具在独立子进程里运行，`Bun.spawn` 的 stdout/stderr 会自动转发给 `onToolOutput`，不需要额外处理：
 
 ```js
 // tools/run-script.js
@@ -330,7 +332,7 @@ export default {
 }
 ```
 
-`content` 块里只能放 `text` / `file` / `file-data` / `file-url` 四种部件。放别的（比如旧版 AI SDK 的 `media`）会被沙箱当场挡住、变成一条普通的工具失败——这是有意的：非法块一旦穿过去写进 `history`，AI SDK 会在本地校验时抛错、请求根本发不出去、重试也认不出来，而 `history` 只增不删，于是之后每次 `send` 都撞同一堵墙，重启装回历史也一样。
+`content` 块里只能放 `text` / `file` / `file-data` / `file-url` 四种部件。放别的（比如旧版 AI SDK 的 `media`）会被工具进程当场挡住、变成一条普通的工具失败——这是有意的：非法块一旦穿过去写进 `history`，AI SDK 会在本地校验时抛错、请求根本发不出去、重试也认不出来，而 `history` 只增不删，于是之后每次 `send` 都撞同一堵墙，重启装回历史也一样。
 
 `output` 里给的块会被原样交给模型，不会再被套一层。`maxToolOutput` 的截断**只作用于文字块**——图截一刀就彻底废了，所以媒体内容一个字节都不动。
 
@@ -650,14 +652,14 @@ const agent = Agent.create({ config: { /* ... */ }, tools })
 
 `Agent.history` 是嵌入时最常用的那个：把 IM 消息转成 user 块、往历史里塞一条系统通知、从数据库恢复会话，都要靠它造出格式正确的消息。
 
-**沙箱需要一个 bun 运行时。** 普通 `bun run` 时用的就是宿主自己（`process.execPath`，不依赖 PATH）；宿主被 `bun build --compile` 成单可执行文件时，会退回 PATH 上的 `bun`——这种分发方式需要目标机器装了 bun。
+**工具进程需要一个 bun 运行时。** 普通 `bun run` 时用的就是宿主自己（`process.execPath`，不依赖 PATH）；宿主被 `bun build --compile` 成单可执行文件时，会退回 PATH 上的 `bun`——这种分发方式需要目标机器装了 bun。
 
 工具目录不会被打包——它本来就该是运行时扫描的，放文件即加功能这件事在打包后照样成立。
 
-沙箱那一半（`features/sandbox.js`）在打包时会被当成文本内联进单文件，运行时通过 `bun -` 从 stdin 喂给一个新的子进程，
+工具进程那一半（`feature./tool-process.js`）在打包时会被当成文本内联进单文件，运行时通过 `bun -` 从 stdin 喂给一个新的子进程，
 所以产物挪到任何目录都能正常执行工具，也不会往磁盘上写临时文件。
-这也是 `sandbox.js` 里不能出现任何 `import` 的原因：它以匿名程序的身份运行，相对路径和裸包名会按进程当前目录解析，必然出错。
-（用 stdin 而不是 `bun -e`：后者在 8KB 到 32KB 之间就会 `ENAMETOOLONG`，而沙箱源码已经接近这个量级。）
+这也是 `tool-process.js` 里不能出现任何 `import` 的原因：它以匿名程序的身份运行，相对路径和裸包名会按进程当前目录解析，必然出错。
+（用 stdin 而不是 `bun -e`：后者在 8KB 到 32KB 之间就会 `ENAMETOOLONG`，而工具进程源码已经接近这个量级。）
 
 ---
 
@@ -665,7 +667,7 @@ const agent = Agent.create({ config: { /* ... */ }, tools })
 
 **Q：支持 Node.js 吗？**
 
-不支持，而且这是刻意的。工具沙箱用 [`Bun.spawn` + IPC](features/sandbox.js)，扫描用 [`Bun.Glob`](features/tool.js)，打包靠 `import ... with { type: 'text' }`，都只有 Bun 有。
+不支持，而且这是刻意的。工具进程用 [`Bun.spawn` + IPC](features/tool-process.js)，扫描用 [`Bun.Glob`](features/tool.js)，打包靠 `import ... with { type: 'text' }`，都只有 Bun 有。
 
 ---
 
@@ -716,7 +718,7 @@ const agent = Agent.create({ config: { /* ... */ }, tools })
 export default {
     name: 'fetch_page',
     description: '抓一个网页',
-    timeout: 30000,        // 毫秒。超时后 Worker 被直接杀掉，模型收到一条超时结果
+    timeout: 30000,        // 毫秒。超时后工具进程被直接杀掉，模型收到一条超时结果
     inputSchema: { /* ... */ },
     async execute(input) { /* ... */ },
 }
@@ -731,7 +733,7 @@ export default {
 不会。工具失败会被捕获，错误信息会作为工具结果告诉模型，模型可以自行决定是否重试或换一种方式。
 
 这条覆盖得相当彻底：工具自己抛错、工具文件语法错误、工具返回了没法序列化的值（循环引用、函数、类实例）、
-`toModelOutput` 自己抛错、甚至工具在沙箱里调 `process.exit` 把整个 Worker 干掉——
+`toModelOutput` 自己抛错、甚至工具调 `process.exit` 把整个工具进程干掉——
 全都会变成一条模型能读的工具结果，而不是让这次调用永远挂着。
 
 ---
@@ -740,7 +742,7 @@ export default {
 
 并行。模型在一轮里要求调用多个工具时，所有工具同时开跑，结果按原顺序收集后一起写回历史。
 
-同时最多跑 `config.maxToolConcurrency` 个（默认 8，一个工具独占一个沙箱），超出的排队。模型偶尔会一轮返回几十个工具调用，不设上限就会瞬间起几十个进程。
+同时最多跑 `config.maxToolConcurrency` 个（默认 8，一个工具独占一个工具进程），超出的排队。模型偶尔会一轮返回几十个工具调用，不设上限就会瞬间起几十个进程。
 
 注意阻塞型工具会**长期占着名额**：8 个会话各挂一个 `wait_for_message`，第 9 个会话的任何工具都排不进来。多会话的 bot 要按会话数把这个值调大。
 

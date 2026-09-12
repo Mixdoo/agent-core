@@ -172,7 +172,7 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
     agent.stop = async () => {
         if (!agent.running) return { ok: false }           // 空闲 Agent 没有需要停止的任务。
         const running = agent.running                      // 保存当前运行对象，避免等待期间状态被其他逻辑替换。
-        running.controller.abort()                         // 让 Loop、LLM 和 Worker 看到取消信号。
+        running.controller.abort()                         // 让 Loop、LLM 和工具进程看到取消信号。
         await running.task.catch(() => {})                 // 等待当前任务结束，但不把停止异常变成新的异常。
         if (agent.running === running) agent.running = null // 任务已结束后由 stop 直接清空状态，不依赖 finally 的微任务时序；等待期间来了新任务就不动它。
         return { ok: true }

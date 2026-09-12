@@ -1,26 +1,32 @@
 /*
 工具真正跑起来的地方。它不是普通模块，不能 import 进来调用：
 
-    import Sandbox from './sandbox.js'   // 错误：本文件没有任何导出
+    import Sandbox from './tool-process.js'   // 错误：本文件没有任何导出
 
 正确用法是被 features/tool.js 当成文本内联，再喂给一个新的 bun 进程：
 
-    import source from './sandbox.js' with { type: 'text' }
+    import source from './tool-process.js' with { type: 'text' }
     const child = Bun.spawn(['bun', '-'], { stdin: 'pipe', ipc: handle })
     child.stdin.write(source); child.stdin.end()
 
+它隔离的是生命周期，不是环境。工具在这里拥有和 Agent 完全相同的权限：
+读写任意文件、执行任意命令、联网、读到父进程的全部环境变量（包括 apiKey）。
+这是有意的——「电脑任务 agent」的工具本来就得能干这些，约束工具是上层的事，不是这个包的事。
+它真正隔离的是四样：失控（死循环工具能被一刀杀掉）、崩溃（工具死了 Agent 继续）、
+内存（独立堆）、以及 Agent 自己的状态（工具碰不到 history、config、running）。
+
 为什么是子进程而不是 Worker 线程：Worker 被 terminate 之后 Bun 不归还它占的约 22MB，
-而且杀线程带不走它 spawn 出来的孙进程（每个还活着、还在烧 CPU）。常驻 agent 天天要杀沙箱
+而且杀线程带不走它 spawn 出来的孙进程（每个还活着、还在烧 CPU）。常驻 agent 天天要杀工具进程
 （工具崩溃、工具超时、用户打断），于是两笔账都会一直累积。换成子进程之后，杀一次内存完整还给
 操作系统、孙进程一起带走——实测 200 次「起→用→杀」主进程只涨 2MB，而 Worker 版是 4.4GB。
 
-一个沙箱长期存活、一次只服务一次调用，所以每条消息都带 callId，主线程靠它认领结果。
+一个工具进程长期存活、一次只服务一次调用，所以每条消息都带 callId，主线程靠它认领结果。
 
-    主线程 → 沙箱   { callId, url, name, input, limit }      执行哪个文件里的哪个工具，输出最多留多长
-    沙箱 → 主线程   { ready: true }                          我起来了，可以派活
-    沙箱 → 主线程   { callId, type: 'output', stream, data } 工具产生了一段实时输出
-    沙箱 → 主线程   { callId, type: 'done', output, stop }   跑完了，output 已经是模型能直接读的形态
-    沙箱 → 主线程   { callId, type: 'error', message }       工具抛错了
+    主线程 → 工具进程   { callId, url, name, input, limit }      执行哪个文件里的哪个工具，输出最多留多长
+    工具进程 → 主线程   { ready: true }                          我起来了，可以派活
+    工具进程 → 主线程   { callId, type: 'output', stream, data } 工具产生了一段实时输出
+    工具进程 → 主线程   { callId, type: 'done', output, stop }   跑完了，output 已经是模型能直接读的形态
+    工具进程 → 主线程   { callId, type: 'error', message }       工具抛错了
 
 工具文件默认导出一个工具或一组工具：
 
@@ -53,7 +59,7 @@ let current = null                              // 当前正在执行的 callId�
 const report = (stream, data) => current && process.send({ callId: current, type: 'output', stream, data })
 
 
-// --- 子进程输出：沙箱是唯一读者，读到的每段既发给主线程，也留一份给工具自己读 ---
+// --- 子进程输出：工具进程是唯一读者，读到的每段既发给主线程，也留一份给工具自己读 ---
 // 不用 tee()：tee 的两路里只要有一路没人读，另一路读多少就在内存里堆多少，没有上限。
 const relay = (source, stream) => {
     const kept = []                                                     // 留给工具读的副本，只保留尾部 KEEP 字节。
@@ -86,7 +92,7 @@ const relay = (source, stream) => {
 
 
 // --- 劫持 Bun.spawn：工具照常写 spawn，子进程输出自动变成流式事件 ---
-// 沙箱被杀时这些孙进程会跟着一起死，所以这里不需要额外做生命周期管理。
+// 工具进程被杀时这些孙进程会跟着一起死，所以这里不需要额外做生命周期管理。
 const spawn = Bun.spawn
 Bun.spawn = (command, options = {}) => {
     const child = spawn(command, {
@@ -160,7 +166,7 @@ const clip = (output, limit) => {
 
 
 // --- 成形：在跨进程之前就把返回值变成模型能读的输出块 ---
-// 放在沙箱里而不是主线程，是因为这一步要执行工具作者写的 toModelOutput、要做 JSON 化、要校验块形状，
+// 放在工具进程里而不是主线程，是因为这一步要执行工具作者写的 toModelOutput、要做 JSON 化、要校验块形状，
 // 三件事都可能抛错；抛在这里只是一条正常的工具失败，抛在主线程会让那次调用永远不结算。
 const shape = (tool, result, limit) => {
     const value = result?.output ?? result                              // 工具可以返回 { output } 对象，也可以直接返回值。
@@ -185,7 +191,7 @@ const shape = (tool, result, limit) => {
 process.on('message', async data => {
     current = data.callId                                                       // 本次调用的身份，console 输出也归到它名下。
     try {
-        const module = await import(data.url)                                   // 沙箱是独立进程，工具文件在这里重新加载。
+        const module = await import(data.url)                                   // 工具进程是独立进程，工具文件在这里重新加载。
         const tool = [module.default].flat().find(one => one.name === data.name) // 按名字认工具，和主线程建表时用的是同一条规则，不会错位。
         const result = await collect(await tool.execute(data.input))
         process.send({ callId: data.callId, type: 'done', output: shape(tool, result, data.limit), stop: result?.stop === true }) // stop 是工具主动要求结束整个循环。

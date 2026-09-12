@@ -18,7 +18,7 @@ export default [
           return { output: { type: 'content', value: [{ type: 'text', text: 'x'.repeat(200000) }, image(PIXEL.repeat(2000))] } }
       } },
 
-    // 用已经作废的 v5 形状：必须被沙箱当场挡住，变成一条普通的工具失败
+    // 用已经作废的 v5 形状：必须被工具进程当场挡住，变成一条普通的工具失败
     { name: 'legacyshot', description: '用作废的 media 形状返回图片', inputSchema: { type: 'object', properties: {} },
       async execute() {
           return { output: { type: 'content', value: [{ type: 'media', data: PIXEL, mediaType: 'image/png' }] } }

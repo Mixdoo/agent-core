@@ -1,4 +1,4 @@
-// 每个沙箱首次加载时生成自己的身份，用来数池子到底起了几个沙箱。
+// 每个工具进程首次加载时生成自己的身份，用来数池子到底起了几个工具进程。
 globalThis.__WID__ ??= Math.random().toString(36).slice(2, 8)
 
 export default [
@@ -6,7 +6,7 @@ export default [
       inputSchema: { type: 'object', properties: { kb: { type: 'number' } }, required: ['kb'] },
       async execute(input) { return 'x'.repeat(input.kb * 1024) } },
 
-    { name: 'wid', description: '报告自己跑在哪个沙箱里',
+    { name: 'wid', description: '报告自己跑在哪个工具进程里',
       inputSchema: { type: 'object', properties: {} },
       async execute() { await Bun.sleep(80); return globalThis.__WID__ } },
 

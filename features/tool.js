@@ -1,5 +1,5 @@
 /*
-工具这个主体的全部操作都在这里：从目录里找出工具、把工具交给沙箱执行。
+工具这个主体的全部操作都在这里：从目录里找出工具、把工具交给工具进程执行。
 
     // 积木 1：扫描工具目录，得到一份独立的工具集合
     const tools = await Tool.scan('./tools')
@@ -20,15 +20,15 @@
     // result = { output, error }           工具抛错了，错误也作为一条结果交给模型
     // result = { output, interrupted }     被 signal 取消，已产出的内容一起还给模型
 
-工具跑在独立的 bun 子进程里（见 sandbox.js），所以工具碰不到 Agent 的任何状态，
+工具跑在独立的 bun 子进程里（见 tool-process.js），所以工具碰不到 Agent 的任何状态，
 死循环的工具也能被一刀杀掉——进程内的 await 永远做不到这一点。
 
 为什么是子进程而不是 Worker 线程：Worker 被 terminate 之后 Bun 不归还它占的约 22MB，
-而且杀线程带不走它 spawn 出来的孙进程。常驻 agent 天天要杀沙箱（工具崩溃、超时、用户打断），
+而且杀线程带不走它 spawn 出来的孙进程。常驻 agent 天天要杀工具进程（工具崩溃、超时、用户打断），
 两笔账会一直累积。换成子进程后实测 200 次「起→用→杀」主进程只涨 2MB（Worker 版是 4.4GB），
-孙进程一起带走，而且主进程退出时沙箱全部跟着死，不留孤儿。
+孙进程一起带走，而且主进程退出时工具进程全部跟着死，不留孤儿。
 
-沙箱是一池、全进程共用，用完还池。一次调用独占一个沙箱，所以并发跑的两个工具
+工具进程是一池、全进程共用，用完还池。一次调用独占一个工具进程，所以并发跑的两个工具
 不会把 console 输出串到一起。取消只杀 signal 相同的那些——Loop 给同一轮所有并行工具的
 本来就是同一个 signal，"取消"在语义上就是"这一轮全部取消"，别的 Agent 不会被连坐。
 
@@ -39,9 +39,9 @@
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { basename } from 'node:path'
 import { jsonSchema } from 'ai'
-import sandboxSource from './sandbox.js' with { type: 'text' } // 沙箱源码以文本引入，打包成单文件时会被原样内联成字符串。
+import toolProcessSource from './tool-process.js' with { type: 'text' } // 工具进程源码以文本引入，打包成单文件时会被原样内联成字符串。
 
-// 沙箱要用一个"能跑脚本的 bun"来启动。宿主自己通常就是，用它比在 PATH 上碰运气可靠：
+// 工具进程要用一个"能跑脚本的 bun"来启动。宿主自己通常就是，用它比在 PATH 上碰运气可靠：
 // 不依赖环境变量，也不会和宿主用的 bun 版本不一致。
 // 但宿主被 bun build --compile 成单可执行文件时，execPath 是那个 exe 自己，
 // 拿它当解释器等于把整个 app 再跑一遍——实测确实会，而且看起来像是工具挂了，很难查。
@@ -49,11 +49,11 @@ import sandboxSource from './sandbox.js' with { type: 'text' } // 沙箱源码�
 // 判反的代价不对称，退回去只是回到最普通的做法，判错了却会让 app 自我重入。
 const runtime = /^bun(\.exe)?$/i.test(basename(process.execPath)) ? process.execPath : 'bun'
 
-// 一池沙箱，全进程共用。不按工具集合分池：取消已经按 signal 精确到轮次了，
+// 一池工具进程，全进程共用。不按工具集合分池：取消已经按 signal 精确到轮次了，
 // 再按集合分池只会让每次 Tool.scan 都新建一池、旧池的空闲进程永远没人回收。
-// live 是"活着的沙箱"，正在启动的也算在内——上限要按它算：开沙箱是异步的，
+// live 是"活着的工具进程"，正在启动的也算在内——上限要按它算：开工具进程是异步的，
 // 只按 busy 算的话，同一 tick 里涌进来的并发调用全都看到 busy 是空的，于是各开各的，上限形同虚设。
-const pool = { live: new Set(), idle: [], busy: new Map(), queue: [], limit: 8 } // busy：沙箱 → 它手上那次调用；queue：池满时等着借沙箱的调用。
+const pool = { live: new Set(), idle: [], busy: new Map(), queue: [], limit: 8 } // busy：工具进程 → 它手上那次调用；queue：池满时等着借工具进程的调用。
 let sequence = 0                                                // 调用流水号，一池同时跑多次调用时靠它区分谁是谁。
 
 
@@ -81,7 +81,7 @@ const scan = async (...directories) => {
     }
 
     for (const file of files) {
-        const url = pathToFileURL(file).href                                 // 绝对 file:// 地址；沙箱靠它自己重新加载工具文件（函数没法跨进程传）。
+        const url = pathToFileURL(file).href                                 // 绝对 file:// 地址；工具进程靠它自己重新加载工具文件（函数没法跨进程传）。
         const module = await import(url)
 
         for (const tool of [module.default].flat()) {                        // 一个文件可以导出一个工具，也可以导出一组工具。
@@ -99,7 +99,7 @@ const scan = async (...directories) => {
                     : jsonSchema({ type: 'object', properties: {}, ...tool.inputSchema }), // 缺什么补什么：无参工具也必然带一份合法 Schema（少了它 Anthropic 和 OpenAI 都会 400），工具自己写的字段一个不丢。
             }
 
-            handlers[tool.name] = { url, timeout }                           // 只记住工具在哪个文件和它的超时；具体是文件里的哪一个，沙箱按名字自己找。
+            handlers[tool.name] = { url, timeout }                           // 只记住工具在哪个文件和它的超时；具体是文件里的哪一个，工具进程按名字自己找。
         }
     }
 
@@ -132,29 +132,29 @@ const buffer = limit => {
 }
 
 
-// --- 一个沙箱空出来了：优先交给排队的人，没人排队才还池 ---
+// --- 一个工具进程空出来了：优先交给排队的人，没人排队才还池 ---
 const release = child => {
     const next = pool.queue.shift()
     if (next) return next(child)   // 直接转手，省掉一次 unref/ref 往返。
 
-    child.unref()                  // 空闲沙箱不能吊住事件循环，否则跑过一次工具的进程就再也退不出去。
+    child.unref()                  // 空闲工具进程不能吊住事件循环，否则跑过一次工具的进程就再也退不出去。
     pool.idle.push(child)
 }
 
 
-// --- 一个沙箱废了（自己死掉、或被我们杀掉）：它不能再被借出去，排队的人得换一个新的 ---
+// --- 一个工具进程废了（自己死掉、或被我们杀掉）：它不能再被借出去，排队的人得换一个新的 ---
 const retire = child => {
     if (!pool.live.delete(child)) return // 已经退役过了。主动杀掉时这里会走一遍，child.exited 之后还会再走一遍。
     pool.busy.delete(child)
     pool.idle = pool.idle.filter(one => one !== child)
     const next = pool.queue.shift()
-    if (next) open().then(next)          // 现开一个给他；开沙箱是异步的，排队的人多等这一下。
+    if (next) open().then(next)          // 现开一个给他；开工具进程是异步的，排队的人多等这一下。
 }
 
 
-// --- 开一个新沙箱：一个独立的 bun 进程，源码从 stdin 喂进去 ---
+// --- 开一个新工具进程：一个独立的 bun 进程，源码从 stdin 喂进去 ---
 // 用 stdin 而不是临时文件或 bun -e：不落盘、不用清理、没有命令行长度上限
-// （bun -e 在 8KB 到 32KB 之间就会 ENAMETOOLONG，而沙箱源码已经接近 8KB，没有余量）。
+// （bun -e 在 8KB 到 32KB 之间就会 ENAMETOOLONG，而工具进程源码已经接近 8KB，没有余量）。
 const open = () => {
     let ready
     const waiting = new Promise(resolve => { ready = resolve })
@@ -164,10 +164,10 @@ const open = () => {
         stdout: 'inherit', // 工具的输出走 IPC，这里留给 bun 自己的启动报错，坏了能看见。
         stderr: 'inherit',
         ipc(message) {
-            if (message.ready) return ready(child) // 握手：沙箱起来了才派活。
+            if (message.ready) return ready(child) // 握手：工具进程起来了才派活。
 
             const call = pool.busy.get(child)
-            if (call?.id !== message.callId) return  // 上一次调用的迟到消息；这个沙箱已经换人了，丢掉。
+            if (call?.id !== message.callId) return  // 上一次调用的迟到消息；这个工具进程已经换人了，丢掉。
 
             if (message.type === 'output') {
                 call.output.push(String(message.data))                                          // 攒着，中断时把已产出的内容一起还给模型。
@@ -178,28 +178,28 @@ const open = () => {
             pool.busy.delete(child)                                                             // 这次干完了，
             release(child)                                                                      // 让给下一个人，或者还池。
             if (message.type === 'error') call.finish({ output: { type: 'error-text', value: `工具执行失败：${message.message}` }, error: message.message }) // 工具失败也是一条结果，模型需要知道。
-            else call.finish({ output: message.output, stop: message.stop })                    // output 在沙箱里就已经成形，主线程不再加工。
+            else call.finish({ output: message.output, stop: message.stop })                    // output 在工具进程里就已经成形，主线程不再加工。
         },
     })
 
     pool.live.add(child)  // 同步记账，必须在返回 promise 之前：同一 tick 里的并发调用要立刻看得见它。
-    child.stdin.write(sandboxSource)
+    child.stdin.write(toolProcessSource)
     child.stdin.end()
 
-    // 沙箱整个死掉（工具里 process.exit、原生崩溃、工具文件语法错误）时既没有 done 也没有 error。
+    // 工具进程整个死掉（工具里 process.exit、原生崩溃、工具文件语法错误）时既没有 done 也没有 error。
     // 不接住它，这次调用就永远不结算，整个 Agent 会无声卡死。
     // 被我们主动杀掉时这里也会走一遍，但那次调用早已结算过，finish 自带一次性语义，不会重复。
     child.exited.then(code => {
         const call = pool.busy.get(child)
         retire(child)
-        call?.finish({ output: { type: 'error-text', value: `工具执行失败：工具沙箱退出（代码 ${code}）` }, error: 'sandbox-exited' })
+        call?.finish({ output: { type: 'error-text', value: `工具执行失败：工具进程退出（代码 ${code}）` }, error: 'process-exited' })
     })
 
     return waiting
 }
 
 
-// --- 借一个沙箱：池里有空闲的就用，没到上限就新开，满了就排队 ---
+// --- 借一个工具进程：池里有空闲的就用，没到上限就新开，满了就排队 ---
 const acquire = () => {
     const free = pool.idle.pop()
     if (free) { free.ref(); return Promise.resolve(free) }         // 借出期间要吊住事件循环，否则工具还没跑完进程就退了。
@@ -229,10 +229,10 @@ const execute = ({ name, input, handlers, signal, onOutput, limit = 32000, concu
                 child.kill()                            // 工具此刻在跑什么都不重要，进程被杀就是杀，孙进程一起带走。
                 running.finish(interrupted(running))
             }
-            call.finish(interrupted(call))              // 还没借到沙箱就被取消的这次调用，也在这里收口，不然它永远不结算。
+            call.finish(interrupted(call))              // 还没借到工具进程就被取消的这次调用，也在这里收口，不然它永远不结算。
         }
 
-        // 五条收尾路径（跑完、抛错、沙箱死掉、超时、被取消）共用这一个出口，所以"结算两次"在结构上不存在。
+        // 五条收尾路径（跑完、抛错、工具进程死掉、超时、被取消）共用这一个出口，所以"结算两次"在结构上不存在。
         call.finish = result => {
             if (call.done) return                       // 已经结算过了，后到的消息不再改变结果。
             call.done = true
@@ -241,7 +241,7 @@ const execute = ({ name, input, handlers, signal, onOutput, limit = 32000, concu
             resolve(result)
         }
 
-        // 拿到沙箱就开跑。排队期间被取消的，拿到也不跑，直接把沙箱让给下一个。
+        // 拿到工具进程就开跑。排队期间被取消的，拿到也不跑，直接把工具进程让给下一个。
         const start = child => {
             if (call.done) return release(child)
             pool.busy.set(child, call)
@@ -250,11 +250,11 @@ const execute = ({ name, input, handlers, signal, onOutput, limit = 32000, concu
             // 阻塞型工具（等 IM 消息、盯文件变化）是这个包支持的正常用法，全局超时会把它们全废掉。
             if (handler.timeout) call.timer = setTimeout(() => {
                 retire(child)
-                child.kill()                            // 挂死的工具只能杀；杀掉的沙箱不回池。
+                child.kill()                            // 挂死的工具只能杀；杀掉的工具进程不回池。
                 call.finish({ output: { type: 'error-text', value: `${call.output.text()}\n工具执行超时（${handler.timeout}ms）` }, error: 'timeout' })
             }, handler.timeout)
 
-            child.send({ callId: call.id, url: handler.url, name, input, limit }) // 告诉沙箱：去哪个文件、找哪个名字的工具、用什么参数、输出最多留多长。
+            child.send({ callId: call.id, url: handler.url, name, input, limit }) // 告诉工具进程：去哪个文件、找哪个名字的工具、用什么参数、输出最多留多长。
         }
 
         signal?.addEventListener('abort', stop, { once: true })

@@ -251,20 +251,20 @@ describe('Tool 执行', () => {
         expect(result.output.type).toBe('error-text')
     })
 
-    test('工具把沙箱进程杀掉时这次调用仍然会结算', async () => {
+    test('工具把工具进程杀掉时这次调用仍然会结算', async () => {
         const tools = await Tool.scan(BROKEN)
         const result = await Tool.execute({ name: 'suicide', input: {}, handlers: tools.handlers }) // 以前只触发 close 事件，没人监听。
 
         expect(result.error).toBeTruthy()
-        expect(result.output.value).toContain('沙箱')
+        expect(result.output.value).toContain('工具进程')
     })
 
-    test('沙箱被杀之后还能继续执行工具', async () => {
+    test('工具进程被杀之后还能继续执行工具', async () => {
         const tools = await Tool.scan(BROKEN)
         await Tool.execute({ name: 'suicide', input: {}, handlers: tools.handlers })
         const after = await Tool.execute({ name: 'first', input: {}, handlers: tools.handlers })
 
-        expect(after.output.value).toBe('I-am-first') // 沙箱塌了会自动重建，不需要调用方做任何事。
+        expect(after.output.value).toBe('I-am-first') // 工具进程塌了会自动重建，不需要调用方做任何事。
     })
 
     test('取消信号能瞬间杀掉死循环工具', async () => {
@@ -276,16 +276,16 @@ describe('Tool 执行', () => {
         const result = await Tool.execute({ name: 'forever', input: {}, handlers: tools.handlers, signal: controller.signal })
 
         expect(result.interrupted).toBe(true)
-        expect(Date.now() - started).toBeLessThan(2000) // 进程内的 await 永远做不到这件事，所以工具必须跑在 Worker 里。
+        expect(Date.now() - started).toBeLessThan(2000) // 进程内的 await 永远做不到这件事，所以工具必须跑在独立进程里。
     })
 
-    test('同一套工具复用一个沙箱，不再按次新建 Worker', async () => {
+    test('同一套工具复用一个工具进程，不再按次新建 Worker', async () => {
         const tools = await Tool.scan('./tests/fixtures/tools')
         const before = process.memoryUsage.rss()
         for (let i = 0; i < 40; i += 1) await Tool.execute({ name: 'echo', input: { value: String(i) }, handlers: tools.handlers })
         const grew = (process.memoryUsage.rss() - before) / 1048576
 
-        expect(grew).toBeLessThan(200) // 按次新建时每个 Worker 留下约 22MB，40 次就是 800MB 以上。
+        expect(grew).toBeLessThan(200) // 按次新建 Worker 时每个留下约 22MB；换成子进程后杀多少次都不累积。
     })
 
     test('signal 进来之前就已经取消时，这次调用立刻结算而不是永远挂着', async () => {
@@ -559,9 +559,9 @@ describe('常驻加固', () => {
         expect(history.length).toBe(41)                               // history 本身只是多了一条。
     })
 
-    test('反复杀沙箱不会累积内存', async () => {
-        // 沙箱是子进程不是 Worker 线程，就是为了这件事：Worker 被 terminate 之后 Bun 不归还那约 22MB，
-        // 而常驻 agent 天天要杀沙箱（工具崩溃、超时、用户打断），一天下来就是几个 GB。
+    test('反复杀工具进程不会累积内存', async () => {
+        // 用子进程而不是 Worker 线程，就是为了这件事：Worker 被 terminate 之后 Bun 不归还那约 22MB，
+        // 而常驻 agent 天天要杀工具进程（工具崩溃、超时、用户打断），一天下来就是几个 GB。
         const tools = await Tool.scan(BROKEN)
         Bun.gc(true)
         const before = process.memoryUsage.rss()
