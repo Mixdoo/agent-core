@@ -30,6 +30,7 @@ build() 一进来就把平铺历史读成回合：工具结果按 toolCallId 回
 */
 
 import { countTokens } from 'gpt-tokenizer'
+import History from '../utils/history.js' // 「什么是一个回合」由 History 定义，这里只是它的使用者
 
 // 开场留住用户最初说过的话（按用户回合数），总结前留住当前任务的最近现场（按回合数）。
 // 这两个数字是上限，真正能留多少还要看预算——光按条数留，一条巨大的消息就能让压缩永远收敛不了。
@@ -47,36 +48,6 @@ const PER_TOKEN = 2
 
 // AI SDK 的 content 既可以是内容块数组，也可以是一段纯文本；纯文本里不会有工具调用。
 const parts = message => (Array.isArray(message.content) ? message.content : [])
-
-// --- 折叠回合：工具结果认的是发起它的 toolCallId，不是它在数组里的邻居 ---
-// 分两趟走：先把回合拼出来、把每个回合欠下的调用登记完，再统一分配工具结果。
-// 一趟边填边查会退化成"只有排在调用后面的结果才认得出来"，历史被外部乱序拼接时结果会被悄悄丢掉。
-const toTurns = history => {
-    const turns = []                                                                    // 回合列表：每个回合是一组永不拆开的消息。
-    const caller = new Map()                                                            // toolCallId → 发起它的那个回合，工具结果靠这张表回家。
-    let open = null                                                                     // 正在累积的模型响应；遇到工具结果或新的用户消息就收口。
-
-    // --- 第一趟：拼回合，并登记每个回合欠下的工具调用 ---
-    for (const message of history) {
-        if (message.role === 'tool') { open = null; continue }                           // 工具结果自己不开回合，但它意味着上一轮响应已经说完了。
-
-        if (message.role === 'assistant' && open) open.push(message)                     // 同一次响应拆成的多条 assistant（思考、文字、调用）属于同一个回合。
-        else {
-            open = message.role === 'assistant' ? [message] : null                       // user 和总结各自独占一个回合，不接纳后续消息。
-            turns.push(open ?? [message])
-        }
-
-        for (const part of parts(message)) if (part.type === 'tool-call') caller.set(part.toolCallId, turns.at(-1)) // 登记本回合欠下的调用。
-    }
-
-    // --- 第二趟：工具结果按 id 回到发起它的回合，跟它排在谁后面完全无关 ---
-    for (const message of history) {
-        if (message.role !== 'tool') continue
-        caller.get(parts(message)[0]?.toolCallId)?.push(message)                         // 找不到发起者的结果不构成任何回合，自然消失。
-    }
-
-    return turns
-}
 
 // 一个回合有多大。用字符数而不是 token：裁剪要对每个候选回合都量一次，
 // 而 countTokens 是重活（实测一段三万字的连续串能跑六秒）。字符数用来分预算足够了。
@@ -119,7 +90,7 @@ const forModel = (message, answered) => ({
 
 const build = ({ history, system = '', tools = {}, budget }) => {
     // --- 还原回合：从这里开始，历史只以回合为单位被处理 ---
-    const turns = toTurns(history)
+    const turns = History.turns(history)
 
     // --- 定位最新总结：从后往前找，多次压缩后只有最后那一条算数 ---
     const summaryIndex = turns.findLastIndex(turn => turn[0].compact === true)

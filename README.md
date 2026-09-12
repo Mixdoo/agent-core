@@ -595,6 +595,22 @@ History.tool({ toolCallId: 'call-1', toolName: 'add', content: '3' })
 History.compact({ content: '之前的对话总结...' })
 ```
 
+**读历史**——渲染给用户看、数聊了几轮，这两件事的知识本来就在核心里，不用你照着内部结构重写：
+
+```js
+History.render(agent.history)
+// user: 帮我读一下配置
+// assistant: [思考] 我来读 [调用 read {"path":"a.json"}]
+// tool: [read 返回] {"port":8080}
+// user: 这张图呢 [图片]
+
+History.turns(agent.history)   // 折成回合：[[user], [assistant, tool], [user]]
+```
+
+`turns()` 的规则比看上去微妙——**工具结果认的是发起它的 `toolCallId`，不是它在数组里排在谁后面**。从数据库按 id 恢复会话时结果可能排在调用前面，自己推一遍很容易算错。`Context.build()` 裁剪上下文用的就是这同一份实现，所以"什么是一个回合"在整个包里只有一处定义。
+
+想自己排版的，用 `turns()` 拿到回合，再按内容块类型（`text` / `reasoning` / `tool-call` / `tool-result` / `image` / `file`）自己拼。
+
 ---
 
 ## 运行测试
@@ -645,7 +661,7 @@ const agent = Agent.create({ config: { /* ... */ }, tools })
 | `Agent.version` | 包版本，排查问题时报得出来 |
 | `Agent.create(...)` | 创建 Agent 实例 |
 | `Agent.tool` | `.scan()` / `.execute()` |
-| `Agent.history` | `.user()` / `.assistant()` / `.tool()` / `.compact()`——造标准历史消息块 |
+| `Agent.history` | `.user()` / `.assistant()` / `.tool()` / `.compact()` 造消息块；`.turns()` / `.render()` 读历史 |
 | `Agent.context` | `.build()` |
 | `Agent.compact` | `.run()` |
 | `Agent.llm` | `.chat()` |
