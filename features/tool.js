@@ -13,7 +13,7 @@
         handlers: tools.handlers,    // 工具地址表，用来找到 finish 在哪个文件里
         signal: abortSignal,         // 触发即杀，工具瞬间死
         onOutput: output => {},      // 工具产生一段输出时调用，调用方决定如何展示或转发
-        limit: 32000,                // 这次输出最多留多少字符，超出的从中间截断
+        limit: Infinity,             // 不设输出上限；需要保护上下文时由调用方主动设置
         concurrency: 8,              // 这一轮（同一个 signal）最多同时跑几个，超出的排队；不影响别的 Agent
     })
     // result = { output, stop }            工具正常结束，output 是模型能直接读的输出块
