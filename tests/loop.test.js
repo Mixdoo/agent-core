@@ -27,6 +27,44 @@ afterAll(() => server.stop(true))
 
 
 describe('Agent 的状态机', () => {
+    test('没有工具时只问模型一次，send 直接返回回答', async () => {
+        let calls = 0
+        const single = Bun.serve({
+            port: 0,
+            async fetch() {
+                calls += 1
+                return Response.json({ choices: [{ index: 0, message: { role: 'assistant', content: '你好' }, finish_reason: 'stop' }], usage: {} })
+            },
+        })
+        try {
+            const agent = Agent.create({ config: { ...config, baseURL: `http://127.0.0.1:${single.port}/v1` } })
+            const result = await agent.send('打个招呼')
+
+            expect(result).toEqual({ reason: 'no-tool', text: '你好' })
+            expect(calls).toBe(1) // 没有可用工具时，不要让模型连续三轮尝试调用不存在的工具。
+            expect(agent.history.at(-1).role).toBe('assistant')
+        } finally { single.stop(true) }
+    })
+
+    test('注册工具后仍保留原来的三轮无工具结束规则', async () => {
+        let calls = 0
+        const mock = Bun.serve({
+            port: 0,
+            async fetch() {
+                calls += 1
+                return Response.json({ choices: [{ index: 0, message: { role: 'assistant', content: '暂时不用工具' }, finish_reason: 'stop' }], usage: {} })
+            },
+        })
+        try {
+            const tools = await Agent.tool.scan(new URL('./fixtures/tools', import.meta.url))
+            const agent = Agent.create({ config: { ...config, baseURL: `http://127.0.0.1:${mock.port}/v1` }, tools })
+            const result = await agent.send('检查一下')
+
+            expect(result).toEqual({ reason: 'no-tool', text: '暂时不用工具' })
+            expect(calls).toBe(3)
+        } finally { mock.stop(true) }
+    })
+
     test('同一 tick 内连发两次 send，只有后一次在跑', async () => {
         const agent = Agent.create({ config })
         const first = agent.send({ input: '任务A' })

@@ -45,6 +45,7 @@ const result = await Loop.run({
     onToolResult: (result) => { },         // 工具执行完
     onCompact: (event) => { },             // 压缩过程通知
  })
+ // result = { reason: 'no-tool' | 'tool-stop', text: '最后一轮模型生成的文字' }
  */
 
 import History from '../utils/history.js'
@@ -92,9 +93,10 @@ const run = async ({
 
         if (!toolCalls.length) {
             history.push(...assistantMessages)                                  // 保存模型完整 assistant 消息。
+            if (!Object.keys(tools).length) return { reason: 'no-tool', text: result.text } // 没有注册工具就无法使用工具，一次回答即可结束。
             noToolCount += 1                                                    // 累计没有工具调用的轮次。
             if (noToolCount === 2) temporaryPrompt = llm.noToolPrompt          // 第 2 轮：插入临时提示推一下模型。
-            if (noToolCount >= 3) return { reason: 'no-tool' }  // 第 3 轮：放弃，直接返回结束原因。
+            if (noToolCount >= 3) return { reason: 'no-tool', text: result.text } // 第 3 轮：放弃，返回结束原因和最后一次回答。
             continue
         }
         noToolCount = 0 // 有工具调用，计数清零。
@@ -136,7 +138,7 @@ const run = async ({
         // --- 判断是否停止循环 ---
         if (toolResults.some(result => result.stop)) {                                          // 任何一个工具要求停止，整个循环就结束。
             if (signal?.aborted) throw new DOMException('Agent loop aborted', 'AbortError')      // 取消导致的停止，仍然按异常向上抛。
-            return { reason: 'tool-stop' }                                                       // 工具主动要求停止时，返回结束原因。
+            return { reason: 'tool-stop', text: result.text }                                   // 工具主动要求停止时，也返回这轮模型生成的文字。
         }
     }
 }

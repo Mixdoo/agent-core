@@ -36,7 +36,8 @@ const agent = Agent.create({
 })
 
 // 发送消息。没有再次传入的参数继续使用 Agent 当前状态。
-await agent.send('继续处理') // 只有一句话时直接传字符串；图片也可直接传内容块数组。
+const answer = await agent.send('继续处理') // 只有一句话时直接传字符串；图片也可直接传内容块数组。
+console.log(answer.text)            // 最后一轮模型生成的文字；answer.reason 是结束原因。
 await agent.send({
     input: "帮我写个爬虫",
     callbacks: {

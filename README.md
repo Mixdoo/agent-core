@@ -454,8 +454,9 @@ const result = await agent.send({
     callbacks: { onLLMEvent: e => {} }, // 可选：合并回调
 })
 
+// result.text → 最后一轮模型生成的文字
 // result.reason:
-//   'no-tool'    → 模型连续 3 轮没有调用工具，任务结束
+//   'no-tool'    → 没注册工具时一次回答结束；有工具时连续 3 轮没调用工具才结束
 //   'tool-stop'  → 某个工具返回了 stop: true
 ```
 
