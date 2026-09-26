@@ -34,14 +34,19 @@ try {
         fetch: () => Response.json({ choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }], usage: {} }),
     })
     try {
+        const external = import.meta.resolve('@ai-sdk/openai-compatible') // 模拟下游项目自己安装的 Provider，不用产物里打包的那份。
         const script = `
             import Agent from ${JSON.stringify(pathToFileURL(filename).href)}
+            import { createOpenAICompatible } from ${JSON.stringify(external)}
             if (Agent.version !== ${JSON.stringify(version)}) throw new Error('版本不匹配')
             const tools = await Agent.tool.scan(${JSON.stringify(join(root, 'tests', 'fixtures', 'tools'))})
             const output = await Agent.tool.execute({ name: 'echo', input: { value: 'build' }, handlers: tools.handlers })
             if (output.output.value !== 'done:build') throw new Error('工具子进程失败')
             const result = await Agent.llm.chat({ baseURL: ${JSON.stringify(`http://127.0.0.1:${server.port}/v1`)}, model: 'test', messages: [{ role: 'user', content: 'hi' }], stream: false })
             if (result.text !== 'ok') throw new Error('模型请求失败')
+            const model = createOpenAICompatible({ name: 'external', baseURL: ${JSON.stringify(`http://127.0.0.1:${server.port}/v1`)} }).chatModel('test')
+            const custom = await Agent.create({ config: { model, stream: false } }).send('hi')
+            if (custom.text !== 'ok') throw new Error('外部 Provider 模型实例失败')
         `
         const child = Bun.spawn([process.execPath, '-e', script], { cwd: temp, stdout: 'pipe', stderr: 'pipe' })
         const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()])

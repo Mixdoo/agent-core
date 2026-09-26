@@ -48,18 +48,33 @@ AI SDK 认识的生成参数就用上、不认识的就忽略。于是上游加�
 调用者在新旧 AI SDK 之间也不会被这个包卡住。
 传已创建的模型实例时，连接配置和原始请求体由创建它的 Provider 决定；本包只负责发送消息和生成参数。
 
+两条接入路径共用后面的请求流程，不各自维护一份流式、取消和重试实现：
+  模型名   → 本包创建连接 → AI SDK 请求 → 完整结果
+  模型实例 → 保留现成连接 → AI SDK 请求 → 完整结果
+因此换成实例后，onLLMEvent、onRetry、signal 和返回值仍然保持同一种用法。
+Agent 的自动压缩也使用 LLM.chat，所以不需要为压缩再建一份模型配置。
+
+模型实例必须与本包使用的 AI SDK 模型接口兼容，不代表任意版本都能混用。
+调用方包裹模型的日志、路由或其他中间件也属于这个实例，不在这里拆开或重建。
+headers 是 AI SDK 支持的请求级参数，因此两条路径都可以设置。
+body 和 cache 是本包创建连接时加上的 fetch 行为，无法补进一个已经创建好的实例。
+需要这两项的调用方，可以继续用模型名写法，或在创建自己的 Provider 时配置。
+
 这个文件是整个项目与模型供应商之间唯一的边界：
 要么返回一份完整结果，要么把供应商给的原始错误原样抛出去。
 "这次回答是不是其实失败了"不会流到上层，所以 Loop 和 Retry 都不需要再判断一遍。
 */
 
-import { generateText, streamText } from 'ai'
-import { createOpenAI } from '@ai-sdk/openai'
-import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
-import { createAnthropic } from '@ai-sdk/anthropic'
-import { createGoogle } from '@ai-sdk/google'
-import Retry from './retry.js'
+import { generateText, streamText } from 'ai'                        // 统一使用上游的生成和流式能力。
+import { createOpenAI } from '@ai-sdk/openai'                         // 模型名写法中的 Responses 连接。
+import { createOpenAICompatible } from '@ai-sdk/openai-compatible'    // 默认的 OpenAI Chat 兼容连接。
+import { createAnthropic } from '@ai-sdk/anthropic'                   // 模型名写法中的 Anthropic 连接。
+import { createGoogle } from '@ai-sdk/google'                         // 模型名写法中的 Gemini 连接。
+import Retry from './retry.js'                                       // 主请求和压缩请求共用的退避重试。
 
+// --- 发出一次模型请求 ---
+// 模型的来源在入口决定；来源确定后，同一份 input 供流式和非流式请求使用。
+// 本函数是公开接口，也是外部模型响应进入 Agent 的边界，因此只在这里判定请求是否失败。
 const chat = async ({
     baseURL, apiKey, model, protocol = 'chat', system, messages, tools, toolChoice = 'auto', stream = true, cache = false, onLLMEvent, onLLMStart, onRetry, retryMaxDelay, retryMaxElapsed, signal, provider = {},
 }) => {
@@ -88,12 +103,12 @@ const chat = async ({
         // 只有自己创建的 Provider 才能接管 fetch，并入调用方要求的原始请求体字段。
         if (Object.keys(finalBody).length) {
             settings.fetch = async (input, init) => {
-                let body = init?.body
+                let body = init?.body // AI SDK 已经组好的协议请求体，连接层只负责并入额外字段。
                 if (typeof body === 'string') {
-                    try { body = { ...JSON.parse(body), ...finalBody } }
-                    catch (error) { throw new TypeError('AI SDK request body is not valid JSON', { cause: error }) }
+                    try { body = { ...JSON.parse(body), ...finalBody } } // 明确指定的原始字段优先。
+                    catch (error) { throw new TypeError('AI SDK request body is not valid JSON', { cause: error }) } // 保留原始解析错误，便于定位上游响应形状。
                 }
-                return fetch(input, { ...init, body: body && JSON.stringify(body) })
+                return fetch(input, { ...init, body: body && JSON.stringify(body) }) // 保留 SDK 的请求头、方法和取消信号。
             }
         }
 
