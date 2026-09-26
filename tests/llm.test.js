@@ -85,3 +85,58 @@ describe('请求里到底发了什么', () => {
         expect((await send({ tools })).tool_choice).toBe('auto') // 写死 required 会让 gpt-oss-120b 在模型不想调工具时返回 tool_use_failed。
     })
 })
+
+
+/*
+AI SDK 的生成参数原样透传这一层。这些字段属于上游包，不属于这个项目：
+调用者写了什么就发什么，这个包不翻译、不改名、不白名单、不校验。
+凡是"这个包只接了 8 个字段"的写法都会在这里红——上游加新参数时不该让这个包跟着发版。
+*/
+describe('provider 生成参数透传', () => {
+    const send = async provider => {
+        recorded.length = 0
+        await LLM.chat({ baseURL: `http://127.0.0.1:${echo.port}/v1`, apiKey: 'k', model: 'm', messages: [{ role: 'user', content: 'hi' }], stream: false, provider })
+        return recorded[0]
+    }
+
+    test('高频采样参数落到请求体里的正确字段名', async () => {
+        // 这些是 OpenAI 风格的名字。名字翻译由 AI SDK 负责，这个包只负责把值送到它手上。
+        const body = await send({ temperature: 0.5, topP: 0.9, maxOutputTokens: 123, presencePenalty: 0.1, frequencyPenalty: 0.2, stopSequences: ['END'], seed: 7 })
+
+        expect(body.temperature).toBe(0.5)
+        expect(body.top_p).toBe(0.9)              // 下划线是这个协议的形状，不是我们决定的。
+        expect(body.max_tokens).toBe(123)
+        expect(body.presence_penalty).toBe(0.1)
+        expect(body.frequency_penalty).toBe(0.2)
+        expect(body.stop).toEqual(['END'])
+        expect(body.seed).toBe(7)
+    })
+
+    test('没写的生成参数一个都不出现在请求体里', async () => {
+        // 这个包不替调用者的模型默认 temperature 之类的值——那是在猜他的模型。
+        const body = await send(undefined)
+
+        for (const field of ['temperature', 'top_p', 'max_tokens', 'presence_penalty', 'frequency_penalty', 'stop', 'seed']) {
+            expect(body).not.toHaveProperty(field)
+        }
+    })
+
+    test('厂商私有参数原样送到请求体，不需要这个包认识它', async () => {
+        // providerOptions 是自由对象。AI SDK 每加一个新参数都要这个包跟着改，是封装库烂掉的根源。
+        const body = await send({ providerOptions: { agent: { some_future_knob: 'on' } } })
+        expect(body.some_future_knob).toBe('on')
+    })
+
+    test('provider 里的未知字段不会让请求失败', async () => {
+        // 上游改名或下线某个参数时，调用者的配置不该把整次请求打挂。
+        const body = await send({ temperature: 0.3, somethingUpstreamRemoved: true })
+        expect(body.temperature).toBe(0.3)
+    })
+
+    test('缓存字段仍然可以被 provider 里的自定义 body 覆盖', async () => {
+        // cache 是这个包的开关（默认关，因为中转站大多不认这组字段），
+        // 但调用者显式写在 provider 里的值必须赢——它是更具体的那一层。
+        const body = await send({ body: { prompt_cache_key: 'mine' } })
+        expect(body.prompt_cache_key).toBe('mine')
+    })
+})
