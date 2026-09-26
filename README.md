@@ -13,6 +13,7 @@
 - [自定义工具：从零到完整](#自定义工具从零到完整)
 - [API 参考](#api-参考)
 - [运行测试](#运行测试)
+- [打包成单文件](#打包成单文件)
 - [常见问题](#常见问题)
 
 ---
@@ -95,7 +96,7 @@ const agent = Agent.create({
 })
 
 // 发送指令，等待完成
-const result = await agent.send({ input: '帮我向小明打个招呼' })
+const result = await agent.send('帮我向小明打个招呼')
 console.log('Agent 结束，原因:', result.reason)   // 'no-tool' 表示模型认为任务完成
 ```
 
@@ -391,20 +392,36 @@ import Agent from '@kernel4632/agent-core'
 | `protocol` | `'chat'` | 协议：`chat` / `responses` / `anthropic` / `gemini` |
 | `system` | `''` | 系统提示词 |
 | `stream` | `true` | 是否流式输出 |
-| `toolChoice` | `'auto'` | `auto` 让模型自己决定要不要调工具；`required` 强制每轮都调 |
 | `cache` | `false` | 是否发送 OpenAI 的 `prompt_cache_key`。中转站大多不认这个私有字段，默认不发 |
-| `temperature` | `undefined` | 生成温度，不设时用模型默认值 |
+| `provider` | `{}` | AI SDK 的生成参数，整份交给 AI SDK；不设时用模型自己的默认值 |
 | `maxToolOutput` | `32000` | 单次工具输出的字符上限，超出从中间截断并告知模型 |
 | `maxTokens` | `120000` | Token 上限，超过触发自动压缩。**按你的模型窗口调整** |
 | `compactThreshold` | `0.8` | 压缩触发比例，0.8 表示到达 80% 时压缩 |
-| `maxToolConcurrency` | `8` | 同时最多跑几个工具，超出的排队。阻塞型工具会长期占名额，会话多时要调大 |
+| `maxToolConcurrency` | `8` | 此次 Agent 运行同时最多执行几个工具，超出的排队；不同 Agent 各自生效 |
 | `retryMaxDelay` | `60` | 重试退避上限（秒） |
 | `retryMaxElapsed` | `300` | 一直失败最多再试多久（秒）。到点把错误交给上层 |
 | `noToolPrompt` | 见源码 | 模型连续 2 轮不调工具时插入的临时提示 |
-| `headers` | `{}` | 额外请求头 |
-| `body` | `{}` | 额外请求体 |
 
-> `toolChoice` 保持 `auto` 时，模型才能在任务做完后正常收尾，`{ reason: 'no-tool' }` 这个结束方式也才有意义。
+`provider` 直接放 AI SDK 的生成参数，例如：
+
+```js
+const agent = Agent.create({
+    config: {
+        baseURL: 'https://api.example.com/v1', apiKey: 'sk-xxx', model: 'model-name',
+        provider: {
+            temperature: 0.3, topP: 0.9, maxOutputTokens: 4096,
+            toolChoice: 'auto',                 // 默认 auto；不传时由底层使用 auto
+            providerOptions: { openai: {} },    // 厂商专用设置直接交给 AI SDK
+            headers: { 'X-App': 'example' },    // 额外请求头
+            body: { custom_field: true },      // 额外请求体字段
+        },
+    },
+})
+```
+
+在 `agent.send({ input, config: { provider: { ... } } })` 里传入时，`provider` **整份替换**原值，其他未传的配置字段继续保留。`maxTokens` 是上下文预算，和 `provider.maxOutputTokens`（单次生成量）不是一回事。
+
+> `provider.toolChoice` 保持 `auto` 时，模型才能在任务做完后正常收尾，`{ reason: 'no-tool' }` 这个结束方式也才有意义。
 > 改成 `required` 会强制模型每轮都调工具，而且部分服务（实测 gpt-oss-120b）在模型不想调工具时会直接返回 `tool_use_failed`。
 
 **`callbacks` 回调：**
@@ -422,11 +439,13 @@ import Agent from '@kernel4632/agent-core'
 | `onRetry` | 请求失败重试 | `{ attempt, error, delay }`（主请求和压缩请求共用） |
 | `onCompact` | 上下文压缩 | `compact-start` / AI SDK 事件 / `compact-finish` |
 
-#### `agent.send(options)`
+#### `agent.send(input)` / `agent.send(options)`
 
-发送指令，启动 Agent 循环。如果上一次 `send` 还在运行，本次调用会先自动停止上一次任务，再启动新任务。
+只发送文字或内容块数组时直接传入；要覆盖配置、历史、工具或回调时传对象。如果上一次 `send` 还在运行，本次调用会先自动停止上一次任务，再启动新任务。
 
 ```js
+await agent.send('继续')
+
 const result = await agent.send({
     input: '帮我写个函数',          // 用户输入（必填）。也可以是内容块数组，见下方"发图片"
     config: { model: '新模型' },    // 可选：覆盖部分配置
@@ -544,6 +563,7 @@ const result = await Agent.llm.chat({
     apiKey: 'sk-xxx',
     model: 'gpt-4o',
     messages: [{ role: 'user', content: '你好' }],
+    provider: { temperature: 0.3 },            // 生成参数原样转给 AI SDK
     stream: true,                              // 默认 true
     onLLMEvent: event => console.log(event),   // 流式事件回调
 })
@@ -582,7 +602,7 @@ OpenAI 和 Anthropic 直接 400。
 
 ---
 
-### `History`（工具函数，按需引入）
+### `History`（从 `Agent.history` 获取）
 
 ```js
 const History = Agent.history   // 从唯一入口拿，打包成单文件之后也一样
@@ -619,11 +639,7 @@ History.turns(agent.history)   // 折成回合：[[user], [assistant, tool], [us
 bun test
 ```
 
-测试分三个文件：
-
-- [`tests/agent.test.js`](tests/agent.test.js) — 测试 Agent 创建和上下文构建（不需要网络）
-- [`tests/modules.test.js`](tests/modules.test.js) — 测试所有模块（内部会启动一个本地 mock 服务器）
-- [`tests/fixes.test.js`](tests/fixes.test.js) — 回归测试，每个用例盯住一个真实踩过的坑，命名就是"它当初错在哪"
+测试在 [`tests/`](tests/) 里按 Agent、模型、上下文、工具等模块分文件；模型测试使用本地模拟服务。
 
 查看覆盖率：
 
@@ -639,12 +655,7 @@ bun test --coverage
 bun run build
 ```
 
-产出两份，都能直接 `import`，都不再依赖这个项目的任何其它文件：
-
-| 产物 | 大小 | 说明 |
-|------|------|------|
-| `dist/agent-core.js` | ~33 KB | npm 依赖保持外部引用。放进已经装好 `ai`、`@ai-sdk/*` 等依赖的项目里用这份 |
-| `dist/agent-core.standalone.js` | ~5.3 MB | 依赖也一起打进去。目标项目连 `node_modules` 都没有时用这份 |
+只生成 `dist/agent-core.js`：Bun 运行时使用的依赖全部内联并压缩。构建脚本在没有 `node_modules` 的临时目录中导入产物，实际运行一次工具和模型模拟请求，成功后才替换 `dist/agent-core.js`。npm 包只包含这份产物、README 和 package.json；`npm pack` / `npm publish` 前会自动构建。产物顶部写有版本号和提交号，压缩不是加密。
 
 ```js
 import Agent from './agent-core.js'
@@ -672,7 +683,7 @@ const agent = Agent.create({ config: { /* ... */ }, tools })
 
 工具目录不会被打包——它本来就该是运行时扫描的，放文件即加功能这件事在打包后照样成立。
 
-工具进程那一半（`feature./tool-process.js`）在打包时会被当成文本内联进单文件，运行时通过 `bun -` 从 stdin 喂给一个新的子进程，
+工具进程那一半（`features/tool-process.js`）在打包时会被当成文本内联进单文件，运行时通过 `bun -` 从 stdin 喂给一个新的子进程，
 所以产物挪到任何目录都能正常执行工具，也不会往磁盘上写临时文件。
 这也是 `tool-process.js` 里不能出现任何 `import` 的原因：它以匿名程序的身份运行，相对路径和裸包名会按进程当前目录解析，必然出错。
 （用 stdin 而不是 `bun -e`：后者在 8KB 到 32KB 之间就会 `ENAMETOOLONG`，而工具进程源码已经接近这个量级。）
