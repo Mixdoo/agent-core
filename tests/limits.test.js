@@ -59,6 +59,16 @@ describe('常驻加固', () => {
         expect(elapsed).toBeGreaterThan(550)                            // 不到 4 轮说明上限没生效。
     })
 
+    test('上限调到 8 以上时不会被共享池悄悄截回 8', async () => {
+        const tools = await Tool.scan(LIMITS)
+        const round = new AbortController()
+        const ids = await Promise.all(Array.from({ length: 12 }, () =>
+            Tool.execute({ name: 'wid', input: { hold: 200 }, handlers: tools.handlers, signal: round.signal, concurrency: 12 })
+                .then(result => result.output.value)))
+
+        expect(new Set(ids).size).toBe(12) // 同一时刻借出 12 个独占进程，才算真正尊重 12 这个设置。
+    })
+
     test('一台 Agent 调并发上限，不会改到另一台 Agent', async () => {
         // 以前是 pool.limit = concurrency 直接改全局：宽的一进来就把窄的撑到 6，窄的 9 个活只要 2 轮。
         // 现在窄的那批只看自己的名额：9 个活、上限 2，要跑 5 轮，约 750ms。

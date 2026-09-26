@@ -51,9 +51,8 @@ const runtime = /^bun(\.exe)?$/i.test(basename(process.execPath)) ? process.exec
 
 // 一池工具进程，全进程共用。不按工具集合分池：取消已经按 signal 精确到轮次了，
 // 再按集合分池只会让每次 Tool.scan 都新建一池、旧池的空闲进程永远没人回收。
-// live 是"活着的工具进程"，正在启动的也算在内——上限要按它算：开工具进程是异步的，
-// 只按 busy 算的话，同一 tick 里涌进来的并发调用全都看到 busy 是空的，于是各开各的，上限形同虚设。
-const pool = { live: new Set(), idle: [], busy: new Map(), queue: [], limit: 8 } // busy：工具进程 → 它手上那次调用；queue：池满时等着借工具进程的调用。
+// 工具在忙时按各自的 signal 控制并发；空闲进程最多留 8 个，避免多个 Agent 跑完后长期占内存。
+const pool = { live: new Set(), idle: [], busy: new Map(), queue: [], limit: 8 } // busy：工具进程 → 它手上那次调用；queue：等着借工具进程的调用。
 let sequence = 0                                                // 调用流水号，一池同时跑多次调用时靠它区分谁是谁。
 
 
@@ -132,23 +131,24 @@ const buffer = limit => {
 }
 
 
-// --- 并发上限分两层 ---
-// pool.limit 是池子的天花板：全进程最多几个工具进程，管的是内存。
-// concurrency 是每一批活自己的上限，一批 = 同一个 signal，也就是 Loop 的同一轮工具调用。
-// 以前是 pool.limit = concurrency 直接改全局，两台 Agent 会互相改对方的上限，谁后调用谁说话。
-// 名额按 signal 记在 WeakMap 里：signal 用完就被回收，这张表不用手工清理。
-// 没传 signal 的调用各算各的，只受池子上限约束。
+// --- 每次运行各有自己的并发上限 ---
+// 同一个 signal 是同一次 Agent 运行；没有 signal 的直接调用共用默认批次。
+// 名额在 grant 里同步占用，避免同一 tick 内的多个工具同时越过上限。
 const batches = new WeakMap()
+const direct = { running: 0, limit: pool.limit }
 const batchOf = (signal, concurrency) => {
-    if (!signal || !concurrency) return null
+    if (!signal) {
+        direct.limit = concurrency ?? pool.limit
+        return direct
+    }
     if (!batches.has(signal)) batches.set(signal, { running: 0 })
     const batch = batches.get(signal)
-    batch.limit = concurrency // 同一轮用的是同一份配置，以最后一次传入的为准。
+    batch.limit = concurrency ?? pool.limit
     return batch
 }
 
-// 这次调用现在能不能上：自己这一批没满，而且池里有空闲进程或还能再开一个。
-const fits = call => (!call.batch || call.batch.running < call.batch.limit) && (pool.idle.length > 0 || pool.live.size < pool.limit)
+// 只看自己的批次；共享池负责复用进程，不再悄悄限制 Agent 明确设置的并发数。
+const fits = call => call.batch.running < call.batch.limit
 
 // 占名额和拿进程在同一个同步步骤里完成。拆开的话，同一个 tick 里涌进来的调用会全部通过检查，上限形同虚设。
 const grant = (call, take) => {
@@ -177,6 +177,11 @@ const release = child => {
     child.unref()                  // 空闲工具进程不能吊住事件循环，否则跑过一次工具的进程就再也退不出去。
     pool.idle.push(child)
     pump()
+    if (pool.idle.length > pool.limit) { // 忙时允许多开，闲下来后仍只留默认数量。
+        const extra = pool.idle.shift()
+        pool.live.delete(extra)
+        extra.kill()
+    }
 }
 
 
