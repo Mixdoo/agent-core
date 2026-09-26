@@ -135,15 +135,15 @@ const buffer = limit => {
 // 同一个 signal 是同一次 Agent 运行；没有 signal 的直接调用共用默认批次。
 // 名额在 grant 里同步占用，避免同一 tick 内的多个工具同时越过上限。
 const batches = new WeakMap()
-const direct = { running: 0, limit: pool.limit }
+const direct = { running: 0, limit: Infinity }
 const batchOf = (signal, concurrency) => {
     if (!signal) {
-        direct.limit = concurrency ?? pool.limit
+        direct.limit = concurrency ?? Infinity
         return direct
     }
     if (!batches.has(signal)) batches.set(signal, { running: 0 })
     const batch = batches.get(signal)
-    batch.limit = concurrency ?? pool.limit
+    batch.limit = concurrency ?? Infinity
     return batch
 }
 
@@ -249,7 +249,7 @@ const acquire = call => new Promise(take => {
 
 
 // --- 执行一个工具。handlers 必须由调用方明确传入，不存在默认工具表 ---
-const execute = ({ name, input, handlers, signal, onOutput, limit = 32000, concurrency }) => {
+const execute = ({ name, input, handlers, signal, onOutput, limit = Infinity, concurrency }) => {
     const handler = handlers?.[name] // 用工具名从地址表里找到它在哪个文件。
     if (!handler?.url) throw new Error(`Tool ${name} was not found in handlers`) // 认 url 而不是认对象，'__proto__' 这种名字才不会蒙混过关。
     const call = { id: String(++sequence), name, signal, batch: batchOf(signal, concurrency), onOutput, output: buffer(limit), done: false }

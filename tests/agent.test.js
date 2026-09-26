@@ -96,7 +96,7 @@ describe('Agent 入口', () => {
 
         expect(agent.config.maxToolOutput).toBe(2000)   // 这次改的。
         expect(agent.config.provider.temperature).toBe(0.1) // 没提的继续留着。
-        expect(agent.config.maxTokens).toBeGreaterThan(0)   // 默认值也没被清掉。
+        expect(agent.config.maxTokens).toBeUndefined() // 默认不设置上下文限制。
     })
 
     test('历史是外部传进来的那份数组，Agent 往里追加而不是替换', async () => {

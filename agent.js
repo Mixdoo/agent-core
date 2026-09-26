@@ -11,7 +11,8 @@ provider: { temperature, topP, topK, maxOutputTokens, stopSequences, seed, toolC
 // 3. system：人给这台 Agent 的身份。它不属于模型参数，是这个包要往上下文里放的东西。
 
 // 4. Agent 的策略：这个包自己的旋钮，和模型无关。
-maxTokens, compactThreshold, maxSteps?, maxToolOutput, maxToolConcurrency, retryMaxDelay, retryMaxElapsed, noToolPrompt, stream, cache
+maxTokens?, compactThreshold, maxSteps?, maxToolOutput?, maxToolConcurrency?, retryMaxDelay?, retryMaxElapsed?, noToolPrompt?, stream, cache
+// 带 ? 的策略默认不限制；只有调用方主动填写才会启用对应保护。
 maxTokens 和 provider.maxOutputTokens 名字像但是两回事：前者是这个包的上下文预算（超了就压缩），
 后者是"这次最多生成多少 token"。改其中一个不会影响另一个。
 
@@ -119,14 +120,14 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
             protocol: 'chat',       // 大多数兼容 OpenAI Chat 的服务使用这个协议。
             provider: {},           // AI SDK 的生成参数整包转发，默认一个都不设——替调用者的模型默认 temperature 是在猜他的模型。
             cache: false,           // prompt_cache_key 是 OpenAI 私有字段，中转站大多不认，默认不发。
-            maxToolOutput: 32000,   // 单次工具输出上限（字符）。不设限时一个 cat 大日志的工具就能把会话撑死：实测 1MB 输出 = 31 万 token。
-            maxToolConcurrency: 8,  // 同时最多跑几个工具，超出的排队。阻塞型工具会长期占着名额，会话多时要调大。
-            maxTokens: 120000,      // 上下文 Token 上限，超过就压缩。默认值按主流模型的最小窗口（约 128k）取，用别的模型请按实际窗口改。
-            compactThreshold: 0.8,  // 接近上限时提前压缩，默认在 80% 处开始。
+            maxToolOutput: undefined, // 不截断工具输出；需要保护内存时由调用方主动设置字符上限。
+            maxToolConcurrency: undefined, // 不限制同一轮工具并发；需要排队时由调用方主动设置。
+            maxTokens: undefined,      // 不估算或压缩上下文；需要窗口保护时由调用方主动设置。
+            compactThreshold: 0.8,     // 设置 maxTokens 后使用的压缩比例。
             maxSteps: undefined,    // 不设上限；调用方主动传入正整数时才限制一次 send 的模型轮数。
-            retryMaxDelay: 60,      // 重试退避时间上限（秒），防止单次等待过长。
-            retryMaxElapsed: 300,   // 一直失败最多再试多久（秒）。不设头的话服务挂一整天 send() 也不返回，上层连出事了都不知道。
-            noToolPrompt: '[错误] 你刚才的响应中没有使用工具！请继续使用工具（这是一条系统提醒消息，请勿以对话形式回复）', // 模型连续 2 轮不调工具时的临时提示。
+            retryMaxDelay: undefined, // 不限制退避上限；调用方需要限制等待时主动设置秒数。
+            retryMaxElapsed: undefined, // 不限制重试总时长；服务恢复前持续重试，调用方可主动设置秒数。
+            noToolPrompt: undefined, // 不主动催促模型；调用方需要无工具提醒时主动设置。
             stream: true,           // 主循环和压缩请求都使用流式输出。
             system: '',             // 没有系统提示词时仍允许 Agent 运行。
             ...config,              // 传入配置覆盖默认配置，且配置结构只包含 Agent 需要的字段。

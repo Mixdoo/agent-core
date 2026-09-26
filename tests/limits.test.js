@@ -38,7 +38,7 @@ describe('常驻加固', () => {
     test('并发再多也不会超过池子上限', async () => {
         const tools = await Tool.scan(LIMITS)
         const ids = await Promise.all(Array.from({ length: 30 }, () =>
-            Tool.execute({ name: 'wid', input: {}, handlers: tools.handlers }).then(result => result.output.value)))
+            Tool.execute({ name: 'wid', input: {}, handlers: tools.handlers, concurrency: 8 }).then(result => result.output.value)))
 
         expect(ids.filter(Boolean).length).toBe(30)        // 排队的一个都不能丢。
         expect(new Set(ids).size).toBeLessThanOrEqual(8)   // 不设上限时这里会瞬间起 30 个工具进程，实测 20 个就占 466MB。
@@ -135,8 +135,8 @@ describe('常驻加固', () => {
         expect(result.output.value.length).toBeLessThan(40000)
     })
 
-    test('maxTokens 有默认值，常驻 Agent 不会永不压缩', () => {
-        expect(Agent.create().config.maxTokens).toBeGreaterThan(0) // 默认 undefined 时历史会一直涨到供应商拒收。
-        expect(Agent.create().config.maxToolOutput).toBeGreaterThan(0)
+    test('默认不加上下文和工具输出上限，调用方可以主动设置', () => {
+        expect(Agent.create().config.maxTokens).toBeUndefined()
+        expect(Agent.create().config.maxToolOutput).toBeUndefined()
     })
 })

@@ -33,8 +33,8 @@ const result = await LLM.chat({
     onRetry: info => {},
 
     // --- 重试（秒）---
-    retryMaxDelay: 60,              // 单次退避上限
-    retryMaxElapsed: 300,           // 一直失败最多再试多久
+    retryMaxDelay: undefined,       // 不限制单次退避上限；调用方可主动设置秒数
+    retryMaxElapsed: undefined,     // 不限制重试总时长；调用方可主动设置秒数
 
     // --- 控制信号 ---
     signal: abortSignal,

@@ -394,14 +394,14 @@ import Agent from '@kernel4632/agent-core'
 | `stream` | `true` | 是否流式输出 |
 | `cache` | `false` | 是否发送 OpenAI 的 `prompt_cache_key`。中转站大多不认这个私有字段，默认不发 |
 | `provider` | `{}` | AI SDK 的生成参数，整份交给 AI SDK；不设时用模型自己的默认值 |
-| `maxToolOutput` | `32000` | 单次工具输出的字符上限，超出从中间截断并告知模型 |
-| `maxTokens` | `120000` | Token 上限，超过触发自动压缩。**按你的模型窗口调整** |
+| `maxToolOutput` | `undefined` | 默认不截断工具输出；主动设置后超出部分从中间截断并告知模型 |
+| `maxTokens` | `undefined` | 默认不估算或压缩上下文；主动设置后超过预算触发自动压缩 |
 | `compactThreshold` | `0.8` | 压缩触发比例，0.8 表示到达 80% 时压缩 |
 | `maxSteps` | `undefined` | 默认不限制模型轮数；主动设置正整数后，到上限先保存这一轮的工具结果，再返回 `step-limit` |
-| `maxToolConcurrency` | `8` | 此次 Agent 运行同时最多执行几个工具，超出的排队；不同 Agent 各自生效 |
-| `retryMaxDelay` | `60` | 重试退避上限（秒） |
-| `retryMaxElapsed` | `300` | 一直失败最多再试多久（秒）。到点把错误交给上层 |
-| `noToolPrompt` | 见源码 | 模型连续 2 轮不调工具时插入的临时提示 |
+| `maxToolConcurrency` | `undefined` | 默认不限制同一轮工具并发；主动设置后超出的调用排队 |
+| `retryMaxDelay` | `undefined` | 默认不限制单次退避时间；主动设置后限制秒数 |
+| `retryMaxElapsed` | `undefined` | 默认不限制重试总时长；主动设置后到点把错误交给上层 |
+| `noToolPrompt` | `undefined` | 默认不插入催促消息；主动设置后模型连续两轮不调工具时使用 |
 
 `provider` 直接放 AI SDK 的生成参数，例如：
 
