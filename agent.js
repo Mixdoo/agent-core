@@ -76,6 +76,7 @@ const result = await Agent.llm.chat({ baseURL, apiKey, model, messages })
 // onToolCall: call => {}，模型请求调用工具时调用，call 包含 toolCallId、toolName、input。
 // onToolOutput: output => {}，工具产生实时输出时调用，output 包含工具调用信息和输出数据。
 // onToolResult: result => {}，工具执行结束时调用，result 包含工具调用信息和最终结果。
+// onStep: step => {}，一轮模型和工具完成后调用，step 包含 step、result、toolCalls、toolResults。
 // onCompact: event => {}，接收 compact-start、所有 AI SDK 原生事件和 compact-finish。
 */
 

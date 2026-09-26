@@ -44,6 +44,7 @@ const result = await Loop.run({
     onToolCall: (call) => { },              // 工具调用开始
     onToolOutput: (output) => { },          // 工具实时输出
     onToolResult: (result) => { },         // 工具执行完
+    onStep: (step) => { },                 // 一轮模型和工具都完成后
     onCompact: (event) => { },             // 压缩过程通知
  })
  // result = { reason: 'no-tool' | 'tool-stop' | 'step-limit', text: '最后一轮模型生成的文字' }
@@ -54,7 +55,7 @@ import LLM from '../utils/llm.js'
 
 const run = async ({
     history, system, tools, llm, buildContext, compact, executeTool, sessionId, signal,                                 // 数据、LLM 参数、功能模块和取消信号
-    onStart, onLLMStart, onLLMFinish, onPermission, onLLMEvent, onRetry, onToolCall, onToolOutput, onToolResult, onCompact, // 全部回调，没传的自动跳过
+    onStart, onLLMStart, onLLMFinish, onPermission, onLLMEvent, onRetry, onToolCall, onToolOutput, onToolResult, onStep, onCompact, // 全部回调，没传的自动跳过
 }) => {
     if (llm.maxSteps !== undefined && (!Number.isInteger(llm.maxSteps) || llm.maxSteps < 1)) throw new RangeError('maxSteps must be a positive integer') // 调用入口拦住无法兑现的轮数，避免设成 0 却仍然发出一次请求。
     await onStart?.()          // 外部需要时知道循环已经开始；没有回调就跳过。等它完成，回调抛错才能顺着 send() 冒出去，而不是变成没人接的拒绝。
@@ -97,6 +98,7 @@ const run = async ({
 
         if (!toolCalls.length) {
             history.push(...assistantMessages)                                  // 保存模型完整 assistant 消息。
+            await onStep?.({ step: steps, result, toolCalls, toolResults: [] })    // 让调用方在回答已经写入 history 后观察这一轮。
             if (!Object.keys(tools).length) return { reason: 'no-tool', text: result.text } // 没有注册工具就无法使用工具，一次回答即可结束。
             if (steps >= llm.maxSteps) return { reason: 'step-limit', text: result.text } // 有工具但模型没用，到上限就不再问一次。
             noToolCount += 1                                                    // 累计没有工具调用的轮次。
@@ -139,6 +141,7 @@ const run = async ({
         // --- 把本轮消息和工具结果写回历史 ---
         history.push(...assistantMessages) // AI SDK 的 tool 消息不用，工具结果由项目自己的执行器生成。
         for (const { call, output } of toolResults) history.push(History.tool({ toolCallId: call.toolCallId, toolName: call.toolName, content: output }))
+        await onStep?.({ step: steps, result, toolCalls, toolResults })             // 工具结果已写入 history，调用方可安全持久化这一轮。
 
         // --- 判断是否停止循环 ---
         if (toolResults.some(result => result.stop)) {                                          // 任何一个工具要求停止，整个循环就结束。

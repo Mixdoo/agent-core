@@ -453,6 +453,7 @@ console.log(answer.text)
 | `onToolCall` | 工具即将执行 | `{ toolCallId, toolName, input }` |
 | `onToolOutput` | 工具有流式输出 | `{ tool, stream, data, toolCallId, toolName }` |
 | `onToolResult` | 工具执行完成 | `{ toolName, output, ... }` |
+| `onStep` | 一轮模型和工具都完成后 | `{ step, result, toolCalls, toolResults }` |
 | `onRetry` | 请求失败重试 | `{ attempt, error, delay }`（主请求和压缩请求共用） |
 | `onCompact` | 上下文压缩 | `compact-start` / AI SDK 事件 / `compact-finish` |
 

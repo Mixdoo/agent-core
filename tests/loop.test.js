@@ -7,6 +7,7 @@
 */
 
 import { expect, test, describe, afterAll } from 'bun:test'
+import { jsonSchema } from 'ai'
 import Agent from '../index.js'
 import History from '../utils/history.js'
 import Context from '../features/context.js'
@@ -208,6 +209,29 @@ describe('压缩这条路径', () => {
 
 
 describe('Loop', () => {
+    test('每轮完成后通知 onStep，工具结果已在 history 中', async () => {
+        const steps = []
+        const history = [History.user({ content: '开始' })]
+        let round = 0
+
+        await Loop.run({
+            history,
+            system: '',
+            tools: { echo: { description: 'echo', inputSchema: jsonSchema({ type: 'object', properties: {} }) } },
+            llm: { baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'k', model: 'm', stream: false, maxSteps: 2 },
+            buildContext: Context.build,
+            compact: async () => '总结',
+            executeTool: async request => ({ output: { type: 'text', value: request.name } }),
+            onLLMFinish: result => {
+                round += 1
+                if (round === 1) result.toolCalls = [{ toolCallId: 'step-1', toolName: 'echo', input: {} }]
+            },
+            onStep: step => steps.push({ step: step.step, history: history.length, results: step.toolResults.length }),
+        })
+
+        expect(steps).toEqual([{ step: 1, history: 3, results: 1 }, { step: 2, history: 4, results: 0 }])
+    })
+
     test('不合法的轮数上限在请求模型前就报错', async () => {
         const agent = Agent.create({ config: { ...config, maxSteps: 0 } })
         await expect(agent.send('你好')).rejects.toThrow('maxSteps must be a positive integer')
