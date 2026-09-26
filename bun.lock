@@ -3,8 +3,8 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "@kernel/agent-core",
-      "dependencies": {
+      "name": "@kernel4632/agent-core",
+      "devDependencies": {
         "@ai-sdk/anthropic": "^4.0.41",
         "@ai-sdk/google": "^4.0.50",
         "@ai-sdk/openai": "^4.0.46",
