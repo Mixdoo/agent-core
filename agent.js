@@ -5,13 +5,13 @@ baseURL, apiKey, model, protocol
 
 // 2. provider：AI SDK 的生成参数，整包原样透传。
 //    这个包不认识里面任何一个字段，上游加新参数时这里一行都不用改。
-provider: { temperature, topP, topK, maxOutputTokens, stopSequences, seed, providerOptions, headers, body }
+provider: { temperature, topP, topK, maxOutputTokens, stopSequences, seed, toolChoice, providerOptions, headers, body }
 // 只有 headers 和 body 是连接层的东西（额外请求头、并进请求体的字段），其余全交给 AI SDK。
 
 // 3. system：人给这台 Agent 的身份。它不属于模型参数，是这个包要往上下文里放的东西。
 
 // 4. Agent 的策略：这个包自己的旋钮，和模型无关。
-maxTokens, compactThreshold, maxToolOutput, maxToolConcurrency, retryMaxDelay, retryMaxElapsed, noToolPrompt, stream, toolChoice, cache
+maxTokens, compactThreshold, maxToolOutput, maxToolConcurrency, retryMaxDelay, retryMaxElapsed, noToolPrompt, stream, cache
 maxTokens 和 provider.maxOutputTokens 名字像但是两回事：前者是这个包的上下文预算（超了就压缩），
 后者是"这次最多生成多少 token"。改其中一个不会影响另一个。
 
@@ -36,6 +36,7 @@ const agent = Agent.create({
 })
 
 // 发送消息。没有再次传入的参数继续使用 Agent 当前状态。
+await agent.send('继续处理') // 只有一句话时直接传字符串；图片也可直接传内容块数组。
 await agent.send({
     input: "帮我写个爬虫",
     callbacks: {
@@ -82,20 +83,17 @@ import History from './utils/history.js'      // 负责创建标准格式的历�
 import { version } from './package.json'      // 版本号只在 package.json 里写一次，打包时会被内联进产物
 
 
-// --- 内部工具：把 Agent 配置对象转换成 LLM.chat 需要的格式 ---
-// send 和 compact 都需要构建 llm 参数，提到这里避免两处重复写字段列表。
+// --- 内部工具：构建模型和循环共用的参数 ---
+// system 已由 Context 折进消息（包括压缩总结），不能再单独传给 LLM 覆盖它。
 const buildLLM = config => ({
     baseURL: config.baseURL,                    // 模型服务地址
     apiKey: config.apiKey,                      // 鉴权密钥
     model: config.model,                        // 模型名称
     protocol: config.protocol,                  // 调用协议
-    toolChoice: config.toolChoice,              // 由模型自己决定是否调工具，还是每轮强制调
     cache: config.cache,                        // 是否发送 OpenAI 提示词缓存字段
     provider: config.provider,                  // 生成参数整包转发给 AI SDK，这个包不逐个列字段
     retryMaxDelay: config.retryMaxDelay,        // 重试退避上限（秒）。重试是 LLM.chat 自带的，压缩那次请求也走同一套
     retryMaxElapsed: config.retryMaxElapsed,    // 一直失败最多再试多久（秒），到点把错误交给上层
-    maxToolOutput: config.maxToolOutput,        // 单次工具输出的字符上限，超出从中间截断
-    maxToolConcurrency: config.maxToolConcurrency, // 同时最多跑几个工具，超出的排队
     maxTokens: config.maxTokens,                // 上下文 Token 上限，压缩阈值判断和裁剪预算都用它
     compactThreshold: config.compactThreshold,  // 触发自动压缩的比例
     noToolPrompt: config.noToolPrompt,          // 临时提示文本
@@ -114,7 +112,6 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
             model: '',              // 模型名称没有默认值，避免静默选择错误模型。
             protocol: 'chat',       // 大多数兼容 OpenAI Chat 的服务使用这个协议。
             provider: {},           // AI SDK 的生成参数整包转发，默认一个都不设——替调用者的模型默认 temperature 是在猜他的模型。
-            toolChoice: 'auto',     // 让模型自己决定要不要调工具。写死 required 会让它永远无法正常收尾，部分模型还直接 400。
             cache: false,           // prompt_cache_key 是 OpenAI 私有字段，中转站大多不认，默认不发。
             maxToolOutput: 32000,   // 单次工具输出上限（字符）。不设限时一个 cat 大日志的工具就能把会话撑死：实测 1MB 输出 = 31 万 token。
             maxToolConcurrency: 8,  // 同时最多跑几个工具，超出的排队。阻塞型工具会长期占着名额，会话多时要调大。
@@ -123,7 +120,7 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
             retryMaxDelay: 60,      // 重试退避时间上限（秒），防止单次等待过长。
             retryMaxElapsed: 300,   // 一直失败最多再试多久（秒）。不设头的话服务挂一整天 send() 也不返回，上层连出事了都不知道。
             noToolPrompt: '[错误] 你刚才的响应中没有使用工具！请继续使用工具（这是一条系统提醒消息，请勿以对话形式回复）', // 模型连续 2 轮不调工具时的临时提示。
-            stream: true,           // 压缩总结默认使用流式请求。
+            stream: true,           // 主循环和压缩请求都使用流式输出。
             system: '',             // 没有系统提示词时仍允许 Agent 运行。
             ...config,              // 传入配置覆盖默认配置，且配置结构只包含 Agent 需要的字段。
             provider: { ...config.provider }, // 单独浅拷一层：两个 Agent 共用一个 provider 对象时，改其中一个不该动到另一个。
@@ -143,7 +140,7 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
         const empty = typeof input === 'string' ? !input.trim() : !Array.isArray(input) || !input.length
         if (empty) throw new TypeError('input must be a non-empty string or a non-empty content array') // 没有本次输入就没有可执行指令。
         if ('history' in options) agent.history = options.history                                           // 传入空数组也代表明确覆盖历史。
-        if ('config' in options) agent.config = { ...agent.config, ...options.config }                     // 配置按字段覆盖，未传字段继续保留。
+        if ('config' in options) agent.config = { ...agent.config, ...options.config, provider: 'provider' in options.config ? { ...options.config.provider } : agent.config.provider } // provider 整包替换，复制一层避免外部改动串到 Agent。
         if ('tools' in options) agent.tools = options.tools                                                 // 工具是整体替换，不在 Agent 内部猜测如何合并。
         if ('callbacks' in options) agent.callbacks = { ...agent.callbacks, ...options.callbacks }         // 回调逐项合并，避免替换一个回调时清掉其他回调。
 

@@ -10,6 +10,8 @@ const content = await Compact.run({
     },
     stream: true,                  // 是否流式生成总结
     onCompact: event => {},        // compact-start / AI SDK 原生事件 / compact-finish
+    onRetry: info => {},           // 总结请求重试时通知
+    signal: abortSignal,           // 可中断手动和自动压缩
 })
 // content = "压缩后的总结文本"
 // onCompact compact-start: { type, messages }，压缩开始

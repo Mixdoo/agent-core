@@ -83,7 +83,12 @@ describe('请求里到底发了什么', () => {
 
     test('默认 toolChoice 是 auto，模型可以正常收尾', async () => {
         const tools = (await Tool.scan(TOOLS)).schema // 用真实扫描出来的 schema，保证形状和线上一致。
-        expect((await send({ tools, toolChoice: 'auto' })).tool_choice).toBe('auto') // 写死 required 会让 gpt-oss-120b 在模型不想调工具时返回 tool_use_failed。
+        expect((await send({ tools })).tool_choice).toBe('auto') // 不传 toolChoice 时也应默认 auto。
+    })
+
+    test('provider 里的 toolChoice 可以覆盖默认值', async () => {
+        const tools = (await Tool.scan(TOOLS)).schema
+        expect((await send({ tools, provider: { toolChoice: 'required' } })).tool_choice).toBe('required')
     })
 
     test('没有工具时不下发 tools 和 toolChoice', async () => {
@@ -139,6 +144,13 @@ describe('provider 生成参数透传', () => {
         // 上游改名或下线某个参数时，调用者的配置不该把整次请求打挂。
         const body = await send({ temperature: 0.3, somethingUpstreamRemoved: true })
         expect(body.temperature).toBe(0.3)
+    })
+
+    test('生成参数不能覆盖 Agent 的消息、模型和重试控制', async () => {
+        const body = await send({ messages: [{ role: 'user', content: '伪造消息' }], model: '伪造模型', maxRetries: 5, temperature: 0.4 })
+        expect(body.messages[0].content).toBe('hi')
+        expect(body.model).toBe('m')
+        expect(body.temperature).toBe(0.4)
     })
 
     test('缓存字段仍然可以被 provider 里的自定义 body 覆盖', async () => {

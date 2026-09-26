@@ -11,7 +11,7 @@ const result = await LLM.chat({
 
     // --- 工具（可选）---
     tools: [...],
-    toolChoice: "auto",             // 没传 tools 时不会出现在请求里
+    toolChoice: "auto",             // 也可写在 provider 里；没传 tools 时不会出现在请求里
 
     // --- 生成参数，全部可选（原样交给 AI SDK，这个文件不认识它们）---
     provider: {
@@ -59,7 +59,7 @@ import { createGoogle } from '@ai-sdk/google'
 import Retry from './retry.js'
 
 const chat = async ({
-    baseURL, apiKey, model, protocol = 'chat', system, messages, tools, toolChoice, stream = true, cache = false, onLLMEvent, onLLMStart, onRetry, retryMaxDelay, retryMaxElapsed, signal, provider = {},
+    baseURL, apiKey, model, protocol = 'chat', system, messages, tools, toolChoice = 'auto', stream = true, cache = false, onLLMEvent, onLLMStart, onRetry, retryMaxDelay, retryMaxElapsed, signal, provider = {},
 }) => {
     // --- 检查输入 ---
     if (!baseURL || !model || !Array.isArray(messages)) throw new TypeError('baseURL, model and messages are required') // 没有地址、模型或消息就无法请求。
@@ -105,9 +105,11 @@ const chat = async ({
     // maxRetries: 0 —— 重试在这个项目里只有 Retry 一个实现。交给 AI SDK 自己重试会导致
     // 一次 onLLMStart 对应服务端三次请求，而且原始错误会被包成 AI_RetryError，Retry 认不出来。
     // call 是 provider 去掉 headers 和 body 之后的整份生成参数，原样展开，这里不逐个列字段。
-    const input = { model: providerModel, system, messages: modelMessages, abortSignal: signal, maxRetries: 0, ...call }
-    if (tools) input.tools = tools                   // 没有工具时连这个字段都不发。
-    if (tools && toolChoice) input.toolChoice = toolChoice // toolChoice 只在有工具时才有意义，单独发会被部分服务拒收。
+    const input = { ...call, model: providerModel, system, messages: modelMessages, abortSignal: signal, maxRetries: 0 } // 生成参数可扩展，但不能覆盖 Agent 的上下文和重试控制。
+    if (tools) {
+        input.tools = tools
+        input.toolChoice = call.toolChoice ?? toolChoice // provider 是 AI SDK 参数的归属地；独立调用 LLM.chat 的旧写法仍可用。
+    } else delete input.toolChoice // 没工具时单独发 toolChoice 会被部分服务拒收。
 
     // --- 发一次请求：流式和非流式在这里分叉，但对外表现完全一致 ---
     const once = async () => {

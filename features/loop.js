@@ -12,12 +12,16 @@ const result = await Loop.run({
         baseURL: "https://中转站/v1",
         apiKey: "sk-xxx",
         model: "model-name",
-        protocol: "chat",          // chat / responses / anthropic
-        // 参数覆盖
-        options: {
+        protocol: "chat",          // chat / responses / anthropic / gemini
+        provider: {                // AI SDK 的生成参数，交给 LLM.chat 原样转发
+            temperature: 0.3,
             headers: {},
             body: {},
         },
+        maxTokens: 120000,         // Agent 上下文预算，不是 provider.maxOutputTokens
+        compactThreshold: 0.8,     // 接近窗口上限时压缩
+        stream: true,              // 主请求和压缩都流式输出
+        noToolPrompt: "继续使用工具", // 模型连续两轮不调工具时的临时提示
         retryMaxDelay: 60,         // 重试退避上限（秒）。重试是 LLM.chat 自带的，压缩那次请求也走同一套。
     },
     // --- 功能模块（必填，平齐的功能模块作为参数传）---
@@ -36,6 +40,8 @@ const result = await Loop.run({
     onLLMEvent: event => {},               // 原样接收 AI SDK 的所有流事件
     onRetry: (info) => { },                // 请求失败重试中
     onPermission: async (permission) => { }, // 工具权限询问，返回 true 或 false
+    onToolCall: (call) => { },              // 工具调用开始
+    onToolOutput: (output) => { },          // 工具实时输出
     onToolResult: (result) => { },         // 工具执行完
     onCompact: (event) => { },             // 压缩过程通知
  })

@@ -45,6 +45,14 @@ describe('Agent 入口', () => {
         expect(second.config.provider).toEqual({ temperature: 0.2 })
     })
 
+    test('send 替换 provider 后不会持有调用方的对象', async () => {
+        const agent = Agent.create({ config: config() })
+        const provider = { temperature: 0.2 }
+        await agent.send({ input: '你好', config: { provider } })
+        provider.temperature = 0.9
+        expect(agent.config.provider.temperature).toBe(0.2)
+    })
+
     test('send 直接收一句话，不用包成对象', async () => {
         // 最常用的调用形态。逼调用者写 send({ input: '你好' }) 是把内部结构漏出来。
         recorded.length = 0

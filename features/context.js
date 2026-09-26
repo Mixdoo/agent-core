@@ -1,7 +1,7 @@
 /*
 目标被调用形式（绝对不可修改）：
 const { messages, token } = Context.build({
-    history: History.get(),       // 完整历史
+    history: agent.history,        // 完整历史；Context.build 只读，不修改
     system: "你是编程助手。",     // 会进入 messages 并参与 Token 估算
     tools: {},                    // 工具定义参与 Token 估算，不进入 messages
     budget: 120000,               // 可选。上下文的 Token 预算，用来决定保留多少旧内容
