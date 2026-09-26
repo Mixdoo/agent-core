@@ -493,7 +493,7 @@ await agent.stop()   // 等待完全停止后返回 { ok: true }
 
 #### `agent.compact(options?)`
 
-手动压缩当前历史（会先停止正在进行的任务）。
+手动压缩当前历史（会先停止正在进行的任务）。默认使用 `Agent.create` 中配置的 `onCompact`、`onRetry`；在本次调用中传入同名回调可以覆盖默认值。
 
 ```js
 const summary = await agent.compact({

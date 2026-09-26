@@ -111,6 +111,36 @@ describe('Agent 的状态机', () => {
 
 
 describe('压缩这条路径', () => {
+    test('手动压缩沿用默认回调，单次传入的回调优先', async () => {
+        let calls = 0
+        const mock = Bun.serve({
+            port: 0,
+            fetch() {
+                calls += 1
+                if (calls === 1) return Response.json({ error: { message: '稍后重试' } }, { status: 503 })
+                return Response.json({ choices: [{ index: 0, message: { role: 'assistant', content: '总结' }, finish_reason: 'stop' }], usage: {} })
+            },
+        })
+        try {
+            const events = []
+            const retries = []
+            const agent = Agent.create({
+                history: [History.user({ content: '之前的工作' })],
+                config: { ...config, baseURL: `http://127.0.0.1:${mock.port}/v1`, retryMaxElapsed: 3 },
+                callbacks: { onCompact: event => events.push(event.type), onRetry: info => retries.push(info.attempt) },
+            })
+
+            expect(await agent.compact()).toBe('总结')
+            expect(events).toEqual(['compact-start', 'compact-finish'])
+            expect(retries).toEqual([1])
+
+            const override = []
+            await agent.compact({ onCompact: event => override.push(event.type) })
+            expect(override).toEqual(['compact-start', 'compact-finish'])
+            expect(events).toHaveLength(2) // 单次回调替换默认回调，而不是额外重复通知。
+        } finally { mock.stop(true) }
+    })
+
     test('压缩只往 history 里加总结，一条历史都不许删', async () => {
         // history 是这个项目唯一的权威数据来源，该保留多少由持有它的上层决定。
         // 核心包替它丢数据是越权——压缩控制的是"这一轮发给模型的内容有多大"，不是"历史能留多少"。

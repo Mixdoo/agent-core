@@ -58,6 +58,10 @@ await agent.send({
 // 停止当前运行。
 await agent.stop()
 
+// 手动压缩历史；默认沿用 callbacks.onCompact / callbacks.onRetry。
+const summary = await agent.compact()
+await agent.compact({ onCompact: event => console.log(event) }) // 本次覆盖默认回调。
+
 // 直接使用底层 LLM，无需再单独引入。
 const result = await Agent.llm.chat({ baseURL, apiKey, model, messages })
 
@@ -194,7 +198,7 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
     // 手动压缩：先停掉当前任务，再立即压缩当前上下文。
     // 登记运行状态的方式和 send 完全一致（同步顶替、停旧任务放进 task 内部），
     // 所以 compact 和 send 抢跑时，后来的那个必定看得见先来的并把它停掉，不会互相把运行状态覆盖掉。
-    agent.compact = ({ onCompact, ...options } = {}) => {
+    agent.compact = ({ onCompact = agent.callbacks.onCompact, onRetry = agent.callbacks.onRetry, ...options } = {}) => {
         const previous = agent.running            // 同步取走上一次运行。
         const controller = new AbortController()  // stop() 也可以中断手动压缩。
 
@@ -209,7 +213,8 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
                 messages: context.messages,       // 把裁剪后的上下文交给 Compact。
                 llm: buildLLM(agent.config),      // 与 send 共用同一个构建函数，保证一致性。
                 stream: agent.config.stream,      // 压缩使用与 Agent 相同的流式配置。
-                onCompact,
+                onCompact,                         // 单次回调优先，否则沿用 Agent 的默认回调。
+                onRetry,                           // 手动压缩和自动压缩走同一套重试通知。
                 signal: controller.signal,
             })
             agent.history.push(History.compact({ content }))  // 总结文本写回公开历史。
