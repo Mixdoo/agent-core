@@ -7,6 +7,7 @@
 */
 
 import { expect, test, describe, afterAll } from 'bun:test'
+import Agent from '../index.js'
 import Tool from '../features/tool.js'
 import LLM from '../utils/llm.js'
 import Compact from '../features/compact.js'
@@ -82,7 +83,14 @@ describe('请求里到底发了什么', () => {
 
     test('默认 toolChoice 是 auto，模型可以正常收尾', async () => {
         const tools = (await Tool.scan(TOOLS)).schema // 用真实扫描出来的 schema，保证形状和线上一致。
-        expect((await send({ tools })).tool_choice).toBe('auto') // 写死 required 会让 gpt-oss-120b 在模型不想调工具时返回 tool_use_failed。
+        expect((await send({ tools, toolChoice: 'auto' })).tool_choice).toBe('auto') // 写死 required 会让 gpt-oss-120b 在模型不想调工具时返回 tool_use_failed。
+    })
+
+    test('没有工具时不下发 tools 和 toolChoice', async () => {
+        // 单独发一个 tool_choice 而不带 tools，部分服务会直接 400。
+        const body = await send({ toolChoice: 'auto' })
+        expect(body).not.toHaveProperty('tools')
+        expect(body).not.toHaveProperty('tool_choice')
     })
 })
 
@@ -138,5 +146,50 @@ describe('provider 生成参数透传', () => {
         // 但调用者显式写在 provider 里的值必须赢——它是更具体的那一层。
         const body = await send({ body: { prompt_cache_key: 'mine' } })
         expect(body.prompt_cache_key).toBe('mine')
+    })
+})
+
+
+/*
+Agent 这一层的配置有没有落到请求上。上面测的是 LLM.chat 本身，
+这里测的是"从 Agent.create 到出网"整条路上参数会不会丢。
+*/
+describe('Agent 配置落到请求上', () => {
+    const config = extra => ({ baseURL: `http://127.0.0.1:${echo.port}/v1`, apiKey: 'k', model: 'm', stream: false, ...extra })
+
+    test('Agent 的 provider 参数会一路走到请求体', async () => {
+        recorded.length = 0
+        const agent = Agent.create({ config: config({ provider: { temperature: 0.2, topP: 0.8 } }) })
+        await agent.send({ input: '你好' })
+
+        expect(recorded.at(-1).temperature).toBe(0.2) // Agent 是最外层入口，最容易在这里漏字段。
+        expect(recorded.at(-1).top_p).toBe(0.8)
+    })
+
+    test('send 时按次覆盖 provider，写进去的就是这次要用的全部', async () => {
+        recorded.length = 0
+        const agent = Agent.create({ config: config({ provider: { temperature: 0.2, topP: 0.8 } }) })
+        await agent.send({ input: '第一条' })
+        await agent.send({ input: '第二条', config: { provider: { temperature: 0.9 } } })
+
+        expect(recorded.at(-1).temperature).toBe(0.9)    // 这次覆盖的。
+        expect(recorded.at(-1).top_p).toBeUndefined()    // provider 整包替换，不做逐字段合并——半套参数比整包更难推理。
+    })
+
+    test('两个 Agent 各改各的 provider，互不影响', async () => {
+        recorded.length = 0
+        const shared = { temperature: 0.2 }
+        const first = Agent.create({ config: config({ provider: shared }) })
+        const second = Agent.create({ config: config({ provider: shared }) })
+        first.config.provider.temperature = 0.9
+
+        await first.send({ input: 'A' })
+        const afterFirst = recorded.length // 一次 send 会打多轮请求（模型不调工具时要走完 no-tool 出口），按次数切分而不是取最后一条。
+        await second.send({ input: 'B' })
+
+        expect(afterFirst).toBeGreaterThan(0)
+        expect(recorded.slice(0, afterFirst).every(body => body.temperature === 0.9)).toBe(true)  // 第一台全程用自己的值。
+        expect(recorded.slice(afterFirst).every(body => body.temperature === 0.2)).toBe(true)     // 第二台不受影响。
+        expect(shared.temperature).toBe(0.2)                                                       // 传入的那个对象也不该被改动。
     })
 })

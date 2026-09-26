@@ -1,4 +1,20 @@
-/*
+/* 参数分四组，规则只有一条：谁的东西就归谁，这个包不替上游保管参数。
+
+// 1. 连接：怎么找到模型。必填，没有默认值。
+baseURL, apiKey, model, protocol
+
+// 2. provider：AI SDK 的生成参数，整包原样透传。
+//    这个包不认识里面任何一个字段，上游加新参数时这里一行都不用改。
+provider: { temperature, topP, topK, maxOutputTokens, stopSequences, seed, providerOptions, headers, body }
+// 只有 headers 和 body 是连接层的东西（额外请求头、并进请求体的字段），其余全交给 AI SDK。
+
+// 3. system：人给这台 Agent 的身份。它不属于模型参数，是这个包要往上下文里放的东西。
+
+// 4. Agent 的策略：这个包自己的旋钮，和模型无关。
+maxTokens, compactThreshold, maxToolOutput, maxToolConcurrency, retryMaxDelay, retryMaxElapsed, noToolPrompt, stream, toolChoice, cache
+maxTokens 和 provider.maxOutputTokens 名字像但是两回事：前者是这个包的上下文预算（超了就压缩），
+后者是"这次最多生成多少 token"。改其中一个不会影响另一个。
+
 // 先扫描工具目录，得到一份独立的工具集合。
 const tools = await Agent.tool.scan("./tools")
 // tools.schema   → 给 LLM 的工具描述
@@ -12,8 +28,8 @@ const agent = Agent.create({
         apiKey: "sk-xxx",
         model: "model-name",
         protocol: "chat",
-        stream: true,
         system: "你是一个编程助手。",
+        provider: { temperature: 0.3 },   // 要改模型参数就写在这里，不写就用模型自己的默认值
     },
     tools,        // Agent.tool.scan() 的返回值，直接整份传进来
     callbacks: {},
@@ -73,9 +89,9 @@ const buildLLM = config => ({
     apiKey: config.apiKey,                      // 鉴权密钥
     model: config.model,                        // 模型名称
     protocol: config.protocol,                  // 调用协议
-    temperature: config.temperature,            // 生成温度
     toolChoice: config.toolChoice,              // 由模型自己决定是否调工具，还是每轮强制调
     cache: config.cache,                        // 是否发送 OpenAI 提示词缓存字段
+    provider: config.provider,                  // 生成参数整包转发给 AI SDK，这个包不逐个列字段
     retryMaxDelay: config.retryMaxDelay,        // 重试退避上限（秒）。重试是 LLM.chat 自带的，压缩那次请求也走同一套
     retryMaxElapsed: config.retryMaxElapsed,    // 一直失败最多再试多久（秒），到点把错误交给上层
     maxToolOutput: config.maxToolOutput,        // 单次工具输出的字符上限，超出从中间截断
@@ -84,10 +100,6 @@ const buildLLM = config => ({
     compactThreshold: config.compactThreshold,  // 触发自动压缩的比例
     noToolPrompt: config.noToolPrompt,          // 临时提示文本
     stream: config.stream,                      // 是否流式输出
-    options: {
-        headers: config.headers,                // 额外请求头
-        body: config.body,                      // 额外请求体
-    },
 })
 
 
@@ -101,9 +113,7 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
             apiKey: '',             // 密钥只在模型请求时使用，不参与 Agent 流程判断。
             model: '',              // 模型名称没有默认值，避免静默选择错误模型。
             protocol: 'chat',       // 大多数兼容 OpenAI Chat 的服务使用这个协议。
-            headers: {},            // 额外请求头没有传入时直接交给 LLM 使用空对象。
-            body: {},               // 额外请求体没有传入时不覆盖模型请求参数。
-            temperature: undefined, // 生成温度，不设时使用模型默认值。
+            provider: {},           // AI SDK 的生成参数整包转发，默认一个都不设——替调用者的模型默认 temperature 是在猜他的模型。
             toolChoice: 'auto',     // 让模型自己决定要不要调工具。写死 required 会让它永远无法正常收尾，部分模型还直接 400。
             cache: false,           // prompt_cache_key 是 OpenAI 私有字段，中转站大多不认，默认不发。
             maxToolOutput: 32000,   // 单次工具输出上限（字符）。不设限时一个 cat 大日志的工具就能把会话撑死：实测 1MB 输出 = 31 万 token。
@@ -116,6 +126,7 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
             stream: true,           // 压缩总结默认使用流式请求。
             system: '',             // 没有系统提示词时仍允许 Agent 运行。
             ...config,              // 传入配置覆盖默认配置，且配置结构只包含 Agent 需要的字段。
+            provider: { ...config.provider }, // 单独浅拷一层：两个 Agent 共用一个 provider 对象时，改其中一个不该动到另一个。
         },
         tools,                       // Agent.tool.scan() 的返回值：{ schema, handlers }，后续 send 可以整份替换。
         callbacks: { ...callbacks }, // 回调逐项保存，后续 send 只覆盖传入的回调。
@@ -124,8 +135,11 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
 
 
     // 发送指令：更新本次传入的持久参数，登记运行状态，然后启动新任务。
-    agent.send = ({ input, ...options }) => {
-        // 输入可以是一句话，也可以是 AI SDK 风格的内容块数组——发图片、发文件走数组这条路。
+    // 输入既可以是一句话，也可以是 AI SDK 风格的内容块数组（发图片、发文件走数组这条路）。
+    // send('你好') 和 send({ input: '你好' }) 是同一件事——只有一句话时不该逼调用者写一个对象。
+    agent.send = (input, options = {}) => {
+        if (typeof input === 'object' && input !== null && !Array.isArray(input)) ({ input, ...options } = input) // 传对象就是完整形式，传字符串或数组就是纯输入。
+
         const empty = typeof input === 'string' ? !input.trim() : !Array.isArray(input) || !input.length
         if (empty) throw new TypeError('input must be a non-empty string or a non-empty content array') // 没有本次输入就没有可执行指令。
         if ('history' in options) agent.history = options.history                                           // 传入空数组也代表明确覆盖历史。

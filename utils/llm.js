@@ -1,35 +1,55 @@
 /*
 目标被调用形式（绝对不可修改）：
 const result = await LLM.chat({
-    // --- 连接（每次传，或初始化配置后省略）---
+    // --- 连接（必填）---
     baseURL: "https://中转站/v1",
     apiKey: "sk-xxx",
     model: "model-name",
-    protocol: "chat",//模型协议，responses、anthropic……，默认chat
+    protocol: "chat",               // chat / responses / anthropic / gemini，默认 chat
+    system,                         // 系统提示词；也可以放进 messages 里的 system 消息
     messages: [...],                // 必填
-    system,
 
     // --- 工具（可选）---
     tools: [...],
-    toolChoice: "auto",             // auto 让模型自己决定要不要调工具，required 强制每轮都调
+    toolChoice: "auto",             // 没传 tools 时不会出现在请求里
+
+    // --- 生成参数，全部可选（原样交给 AI SDK，这个文件不认识它们）---
+    provider: {
+        temperature: 0.5,
+        topP: 0.9,
+        maxOutputTokens: 4096,
+        stopSequences: ["END"],
+        seed: 7,
+        providerOptions: { anthropic: { thinking: { type: 'enabled', budgetTokens: 4096 } } },
+        headers: {},                // 额外请求头
+        body: {},                   // 额外请求体，字段直接并进最终 JSON
+    },
+
     // --- 流式与回调 ---
     stream: true,
     onLLMEvent: event => {},        // 流式时原样接收 AI SDK 的每个事件
+    onLLMStart: request => {},      // 每次真实请求前调用，重试也算一次
+    onRetry: info => {},
+
+    // --- 重试（秒）---
+    retryMaxDelay: 60,              // 单次退避上限
+    retryMaxElapsed: 300,           // 一直失败最多再试多久
+
     // --- 控制信号 ---
-    signal: abortSignal,            // 取消信号，外部随时能打断
-    // --- 提示词缓存（可选，默认关闭）---
+    signal: abortSignal,
+
+    // --- 提示词缓存（默认关闭）---
     cache: false,                   // 只有 OpenAI 官方接口认这组字段，中转站大多会因此 400
-    // --- 自定义请求头或请求体 ---
-    options: {
-    headers: {},                    // 额外请求头
-    body: {},                        // 额外请求体
-    }
 });
+
+provider 里的东西一律不在这个文件里做判断：整包展开进 AI SDK 的请求参数，
+AI SDK 认识的就用上、不认识的就忽略。于是上游加新参数时这个包一行都不用改，
+调用者在新旧 AI SDK 之间也不会被这个包卡住。
 
 这个文件是整个项目与模型供应商之间唯一的边界：
 要么返回一份完整结果，要么把供应商给的原始错误原样抛出去。
 "这次回答是不是其实失败了"不会流到上层，所以 Loop 和 Retry 都不需要再判断一遍。
- */
+*/
 
 import { generateText, streamText } from 'ai'
 import { createOpenAI } from '@ai-sdk/openai'
@@ -39,7 +59,7 @@ import { createGoogle } from '@ai-sdk/google'
 import Retry from './retry.js'
 
 const chat = async ({
-    baseURL, apiKey, model, protocol = 'chat', system, messages, tools, toolChoice = 'auto', temperature, stream = true, cache = false, onLLMEvent, onLLMStart, onRetry, retryMaxDelay, retryMaxElapsed, signal, options = {},
+    baseURL, apiKey, model, protocol = 'chat', system, messages, tools, toolChoice, stream = true, cache = false, onLLMEvent, onLLMStart, onRetry, retryMaxDelay, retryMaxElapsed, signal, provider = {},
 }) => {
     // --- 检查输入 ---
     if (!baseURL || !model || !Array.isArray(messages)) throw new TypeError('baseURL, model and messages are required') // 没有地址、模型或消息就无法请求。
@@ -50,21 +70,22 @@ const chat = async ({
     system ||= systemMessage?.content // 调用方单独传入的 system 优先级更高。
 
     // --- 根据协议创建 AI SDK 模型 ---
-    const settings = { apiKey, baseURL, headers: options.headers } // 所有 Provider 都需要的连接配置。
+    const { headers, body: bodyOverrides = {}, ...call } = provider // headers 和 body 是连接层的东西，不进生成参数；其余整包透传。
+    const settings = { apiKey, baseURL, headers } // 所有 Provider 都需要的连接配置。
 
     // 提示词缓存默认关闭：prompt_cache_key 是 OpenAI 私有字段，中转站和自建网关大多直接 400
     // （实测 gpt-oss-120b 返回 property 'prompt_cache_key' is unsupported，一个请求都发不出去）。
     const stableKey = `agent:${baseURL}:${model}:${Bun.hash(JSON.stringify(system || ''))}` // 相同模型和 system 使用相同缓存键。
     const cacheBody = cache && ['chat', 'responses'].includes(protocol) ? { prompt_cache_key: stableKey, prompt_cache_retention: '24h' } : {} // 只有 OpenAI 风格协议支持这组缓存字段。
-    const bodyOverrides = { ...cacheBody, ...options.body } // 用户自定义 body 可以覆盖默认缓存字段。
+    const finalBody = { ...cacheBody, ...bodyOverrides } // 用户自定义 body 可以覆盖默认缓存字段。
 
     // 用户需要覆盖请求体时，拦截 AI SDK 的 fetch，把字段合并进最终 JSON。
-    if (Object.keys(bodyOverrides).length) {
+    if (Object.keys(finalBody).length) {
         settings.fetch = async (input, init) => {
             let body = init?.body // AI SDK 通常把请求体作为 JSON 字符串传进来。
             if (typeof body === 'string') {
                 try {
-                    body = { ...JSON.parse(body), ...bodyOverrides } // 保留 AI SDK 字段，再覆盖用户指定字段。
+                    body = { ...JSON.parse(body), ...finalBody } // 保留 AI SDK 字段，再覆盖用户指定字段。
                 } catch (error) {
                     throw new TypeError('AI SDK request body is not valid JSON', { cause: error }) // 无法解析时给出明确错误。
                 }
@@ -83,7 +104,10 @@ const chat = async ({
     // --- 组织一次统一的 AI SDK 请求 ---
     // maxRetries: 0 —— 重试在这个项目里只有 Retry 一个实现。交给 AI SDK 自己重试会导致
     // 一次 onLLMStart 对应服务端三次请求，而且原始错误会被包成 AI_RetryError，Retry 认不出来。
-    const input = { model: providerModel, system, messages: modelMessages, tools, toolChoice, temperature, abortSignal: signal, maxRetries: 0 } // 流式和非流式共用这份参数。
+    // call 是 provider 去掉 headers 和 body 之后的整份生成参数，原样展开，这里不逐个列字段。
+    const input = { model: providerModel, system, messages: modelMessages, abortSignal: signal, maxRetries: 0, ...call }
+    if (tools) input.tools = tools                   // 没有工具时连这个字段都不发。
+    if (tools && toolChoice) input.toolChoice = toolChoice // toolChoice 只在有工具时才有意义，单独发会被部分服务拒收。
 
     // --- 发一次请求：流式和非流式在这里分叉，但对外表现完全一致 ---
     const once = async () => {
