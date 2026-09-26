@@ -20,6 +20,7 @@ const result = await Loop.run({
         },
         maxTokens: 120000,         // Agent 上下文预算，不是 provider.maxOutputTokens
         compactThreshold: 0.8,     // 接近窗口上限时压缩
+        maxSteps: 100,             // 一次运行最多请求模型多少轮；工具结果会先完整写入历史
         stream: true,              // 主请求和压缩都流式输出
         noToolPrompt: "继续使用工具", // 模型连续两轮不调工具时的临时提示
         retryMaxDelay: 60,         // 重试退避上限（秒）。重试是 LLM.chat 自带的，压缩那次请求也走同一套。
@@ -45,7 +46,7 @@ const result = await Loop.run({
     onToolResult: (result) => { },         // 工具执行完
     onCompact: (event) => { },             // 压缩过程通知
  })
- // result = { reason: 'no-tool' | 'tool-stop', text: '最后一轮模型生成的文字' }
+ // result = { reason: 'no-tool' | 'tool-stop' | 'step-limit', text: '最后一轮模型生成的文字' }
  */
 
 import History from '../utils/history.js'
@@ -55,8 +56,10 @@ const run = async ({
     history, system, tools, llm, buildContext, compact, executeTool, sessionId, signal,                                 // 数据、LLM 参数、功能模块和取消信号
     onStart, onLLMStart, onLLMFinish, onPermission, onLLMEvent, onRetry, onToolCall, onToolOutput, onToolResult, onCompact, // 全部回调，没传的自动跳过
 }) => {
+    if (llm.maxSteps !== undefined && (!Number.isInteger(llm.maxSteps) || llm.maxSteps < 1)) throw new RangeError('maxSteps must be a positive integer') // 调用入口拦住无法兑现的轮数，避免设成 0 却仍然发出一次请求。
     await onStart?.()          // 外部需要时知道循环已经开始；没有回调就跳过。等它完成，回调抛错才能顺着 send() 冒出去，而不是变成没人接的拒绝。
     let noToolCount = 0        // 记录连续没有工具调用的模型回合。
+    let steps = 0              // 一次 send 发给模型的轮数；重试属于同一轮，压缩不算任务轮次。
     let temporaryPrompt = null  // 工具提示只临时发送给模型，不写入 history。
 
     while (true) {
@@ -84,6 +87,7 @@ const run = async ({
         if (signal?.aborted) throw new DOMException('Agent loop aborted', 'AbortError')
         const request = { messages: temporaryPrompt ? [...context.messages, History.user({ content: temporaryPrompt })] : context.messages, tools } // 临时提示只挂在本次请求上。
         const result = await LLM.chat({ ...llm, ...request, signal, onLLMEvent, onLLMStart, onRetry })
+        steps += 1            // 模型完整回答后才算这一轮，失败重试由 LLM.chat 自己处理。
         await onLLMFinish?.(result) // 上层拿到完整 result，自行选择 usage 或其他字段。
         temporaryPrompt = null      // 提示已经用过，下一轮默认不再携带。
 
@@ -94,6 +98,7 @@ const run = async ({
         if (!toolCalls.length) {
             history.push(...assistantMessages)                                  // 保存模型完整 assistant 消息。
             if (!Object.keys(tools).length) return { reason: 'no-tool', text: result.text } // 没有注册工具就无法使用工具，一次回答即可结束。
+            if (steps >= llm.maxSteps) return { reason: 'step-limit', text: result.text } // 有工具但模型没用，到上限就不再问一次。
             noToolCount += 1                                                    // 累计没有工具调用的轮次。
             if (noToolCount === 2) temporaryPrompt = llm.noToolPrompt          // 第 2 轮：插入临时提示推一下模型。
             if (noToolCount >= 3) return { reason: 'no-tool', text: result.text } // 第 3 轮：放弃，返回结束原因和最后一次回答。
@@ -140,6 +145,7 @@ const run = async ({
             if (signal?.aborted) throw new DOMException('Agent loop aborted', 'AbortError')      // 取消导致的停止，仍然按异常向上抛。
             return { reason: 'tool-stop', text: result.text }                                   // 工具主动要求停止时，也返回这轮模型生成的文字。
         }
+        if (steps >= llm.maxSteps) return { reason: 'step-limit', text: result.text } // 先保存全部工具结果再退出，下次 send 能从完整历史继续。
     }
 }
 

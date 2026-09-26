@@ -11,7 +11,7 @@ provider: { temperature, topP, topK, maxOutputTokens, stopSequences, seed, toolC
 // 3. system：人给这台 Agent 的身份。它不属于模型参数，是这个包要往上下文里放的东西。
 
 // 4. Agent 的策略：这个包自己的旋钮，和模型无关。
-maxTokens, compactThreshold, maxToolOutput, maxToolConcurrency, retryMaxDelay, retryMaxElapsed, noToolPrompt, stream, cache
+maxTokens, compactThreshold, maxSteps, maxToolOutput, maxToolConcurrency, retryMaxDelay, retryMaxElapsed, noToolPrompt, stream, cache
 maxTokens 和 provider.maxOutputTokens 名字像但是两回事：前者是这个包的上下文预算（超了就压缩），
 后者是"这次最多生成多少 token"。改其中一个不会影响另一个。
 
@@ -101,6 +101,7 @@ const buildLLM = config => ({
     retryMaxElapsed: config.retryMaxElapsed,    // 一直失败最多再试多久（秒），到点把错误交给上层
     maxTokens: config.maxTokens,                // 上下文 Token 上限，压缩阈值判断和裁剪预算都用它
     compactThreshold: config.compactThreshold,  // 触发自动压缩的比例
+    maxSteps: config.maxSteps,                  // 一次 send 最多请求模型多少轮，防止一直调工具不结束
     noToolPrompt: config.noToolPrompt,          // 临时提示文本
     stream: config.stream,                      // 是否流式输出
 })
@@ -122,6 +123,7 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
             maxToolConcurrency: 8,  // 同时最多跑几个工具，超出的排队。阻塞型工具会长期占着名额，会话多时要调大。
             maxTokens: 120000,      // 上下文 Token 上限，超过就压缩。默认值按主流模型的最小窗口（约 128k）取，用别的模型请按实际窗口改。
             compactThreshold: 0.8,  // 接近上限时提前压缩，默认在 80% 处开始。
+            maxSteps: 100,          // 一次 send 最多问模型 100 轮；到点保留最后一轮工具结果后返回。
             retryMaxDelay: 60,      // 重试退避时间上限（秒），防止单次等待过长。
             retryMaxElapsed: 300,   // 一直失败最多再试多久（秒）。不设头的话服务挂一整天 send() 也不返回，上层连出事了都不知道。
             noToolPrompt: '[错误] 你刚才的响应中没有使用工具！请继续使用工具（这是一条系统提醒消息，请勿以对话形式回复）', // 模型连续 2 轮不调工具时的临时提示。
