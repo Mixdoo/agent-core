@@ -397,7 +397,7 @@ import Agent from '@kernel4632/agent-core'
 | `maxToolOutput` | `32000` | 单次工具输出的字符上限，超出从中间截断并告知模型 |
 | `maxTokens` | `120000` | Token 上限，超过触发自动压缩。**按你的模型窗口调整** |
 | `compactThreshold` | `0.8` | 压缩触发比例，0.8 表示到达 80% 时压缩 |
-| `maxSteps` | `100` | 一次 `send()` 最多请求模型 100 轮；到上限先保存这一轮的工具结果，再返回 `step-limit` |
+| `maxSteps` | `undefined` | 默认不限制模型轮数；主动设置正整数后，到上限先保存这一轮的工具结果，再返回 `step-limit` |
 | `maxToolConcurrency` | `8` | 此次 Agent 运行同时最多执行几个工具，超出的排队；不同 Agent 各自生效 |
 | `retryMaxDelay` | `60` | 重试退避上限（秒） |
 | `retryMaxElapsed` | `300` | 一直失败最多再试多久（秒）。到点把错误交给上层 |

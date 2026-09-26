@@ -20,7 +20,7 @@ const result = await Loop.run({
         },
         maxTokens: 120000,         // Agent 上下文预算，不是 provider.maxOutputTokens
         compactThreshold: 0.8,     // 接近窗口上限时压缩
-        maxSteps: 100,             // 一次运行最多请求模型多少轮；工具结果会先完整写入历史
+        maxSteps: undefined,       // 不设上限；调用方主动传入正整数时才限制模型轮数
         stream: true,              // 主请求和压缩都流式输出
         noToolPrompt: "继续使用工具", // 模型连续两轮不调工具时的临时提示
         retryMaxDelay: 60,         // 重试退避上限（秒）。重试是 LLM.chat 自带的，压缩那次请求也走同一套。
