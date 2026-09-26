@@ -11,7 +11,7 @@ import Agent from '../index.js'
 import History from '../utils/history.js'
 import Context from '../features/context.js'
 import Tool from '../features/tool.js'
-import { BROKEN, LIMITS } from './helpers.js'
+import { BROKEN, LIMITS, peakOverlap } from './helpers.js'
 
 describe('常驻加固', () => {
     test('工具输出超限时从中间截断，并明确告诉模型', async () => {
@@ -45,29 +45,36 @@ describe('常驻加固', () => {
     })
 
     test('并发上限按次生效，传进去的值就是这一次的上限', async () => {
-        // wid 工具会报告自己跑在哪个工具进程里，所以不同值的个数就是这次真起了几个进程。
+        // 用总耗时判断：12 个活、sleep 150ms、上限 3，需要 ⌈12/3⌉ = 4 轮，共约 600ms。
+        // 不设上限时池子上限 8，需要 ⌈12/8⌉ = 2 轮，约 300ms。
+        // 多进程的 Date.now() 在各自进程里独立计时，无法用区间重叠算跨进程并发；时间是可靠的代理量。
         const tools = await Tool.scan(LIMITS)
-        const ids = await Promise.all(Array.from({ length: 12 }, () =>
-            Tool.execute({ name: 'wid', input: {}, handlers: tools.handlers, concurrency: 3 }).then(result => result.output.value)))
+        const started = Date.now()
+        const results = await Promise.all(Array.from({ length: 12 }, () =>
+            Tool.execute({ name: 'span', input: { hold: 150 }, handlers: tools.handlers, concurrency: 3 })))
+        const elapsed = Date.now() - started
 
-        expect(ids.filter(Boolean).length).toBe(12)   // 排队的一个都不能丢。
-        expect(new Set(ids).size).toBe(3)             // 这次调用只要 3 个工具进程，池里那个默认值不该插手。
+        expect(results.filter(r => !r.error).length).toBe(12)  // 排队的一个都不能丢。
+        expect(elapsed).toBeGreaterThan(550)                    // 必须跑 4 轮，不到 550ms 说明上限没生效。
     })
 
     test('一台 Agent 调并发上限，不会改到另一台 Agent', async () => {
-        // 池是全进程共用的，而上限是每次调用自己的参数。
-        // 以前这里是 pool.limit = concurrency 直接改全局：先跑起来的那个被后调用的改掉，
-        // 于是"每轮只放 2 个"的调用会突然跑出 8 个。这条就是盯这个。
+        // 窄的（上限 2）先跑 9 个活，宽的（上限 6）后进来 6 个，各自独立计时。
+        // 窄的 9 个活、上限 2 需要 ⌈9/2⌉ = 5 轮；宽的 6 个活、上限 6 只需要 1 轮。
+        // 以前是 pool.limit = concurrency 直接改全局，宽的一进来就把窄的撑到 8，
+        // 窄的实际只需要 2 轮而不是 5 轮——用时变短就说明上限被顶掉了。
         const tools = await Tool.scan(LIMITS)
-        const narrowIds = []
+        const narrowStarted = Date.now()
         const narrow = Promise.all(Array.from({ length: 9 }, () =>
-            Tool.execute({ name: 'wid', input: {}, handlers: tools.handlers, concurrency: 2 }).then(result => narrowIds.push(result.output.value))))
-        await Bun.sleep(60) // 让窄的这一批先占住名额，宽的那一批这时候才进来。
-        const wide = Promise.all(Array.from({ length: 6 }, () =>
-            Tool.execute({ name: 'wid', input: {}, handlers: tools.handlers, concurrency: 6 })))
-        await Promise.all([narrow, wide])
+            Tool.execute({ name: 'span', input: { hold: 150 }, handlers: tools.handlers, concurrency: 2 })))
+        await Bun.sleep(80) // 让窄的这一批先跑起来，宽的这一批这时候才进来。
+        Promise.all(Array.from({ length: 6 }, () =>
+            Tool.execute({ name: 'span', input: { hold: 150 }, handlers: tools.handlers, concurrency: 6 })))
+        await narrow
+        const narrowElapsed = Date.now() - narrowStarted
 
-        expect(new Set(narrowIds).size).toBe(2) // 窄的那批全程只在自己那两个进程里轮转。
+        // 上限 2 跑 9 个活需要 5 轮 × 150ms ≈ 750ms。被顶成 8 的话只需要 2 轮 ≈ 300ms。
+        expect(narrowElapsed).toBeGreaterThan(600) // 至少跑了 4 轮，说明上限没被宽的那批顶掉。
     })
 
     test('工具自己声明的 timeout 会按时把它杀掉', async () => {
