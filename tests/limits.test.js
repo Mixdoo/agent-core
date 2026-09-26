@@ -44,6 +44,32 @@ describe('常驻加固', () => {
         expect(new Set(ids).size).toBeLessThanOrEqual(8)   // 不设上限时这里会瞬间起 30 个工具进程，实测 20 个就占 466MB。
     })
 
+    test('并发上限按次生效，传进去的值就是这一次的上限', async () => {
+        // wid 工具会报告自己跑在哪个工具进程里，所以不同值的个数就是这次真起了几个进程。
+        const tools = await Tool.scan(LIMITS)
+        const ids = await Promise.all(Array.from({ length: 12 }, () =>
+            Tool.execute({ name: 'wid', input: {}, handlers: tools.handlers, concurrency: 3 }).then(result => result.output.value)))
+
+        expect(ids.filter(Boolean).length).toBe(12)   // 排队的一个都不能丢。
+        expect(new Set(ids).size).toBe(3)             // 这次调用只要 3 个工具进程，池里那个默认值不该插手。
+    })
+
+    test('一台 Agent 调并发上限，不会改到另一台 Agent', async () => {
+        // 池是全进程共用的，而上限是每次调用自己的参数。
+        // 以前这里是 pool.limit = concurrency 直接改全局：先跑起来的那个被后调用的改掉，
+        // 于是"每轮只放 2 个"的调用会突然跑出 8 个。这条就是盯这个。
+        const tools = await Tool.scan(LIMITS)
+        const narrowIds = []
+        const narrow = Promise.all(Array.from({ length: 9 }, () =>
+            Tool.execute({ name: 'wid', input: {}, handlers: tools.handlers, concurrency: 2 }).then(result => narrowIds.push(result.output.value))))
+        await Bun.sleep(60) // 让窄的这一批先占住名额，宽的那一批这时候才进来。
+        const wide = Promise.all(Array.from({ length: 6 }, () =>
+            Tool.execute({ name: 'wid', input: {}, handlers: tools.handlers, concurrency: 6 })))
+        await Promise.all([narrow, wide])
+
+        expect(new Set(narrowIds).size).toBe(2) // 窄的那批全程只在自己那两个进程里轮转。
+    })
+
     test('工具自己声明的 timeout 会按时把它杀掉', async () => {
         const tools = await Tool.scan(LIMITS)
         const started = Date.now()
