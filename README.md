@@ -386,10 +386,10 @@ import Agent from '@kernel4632/agent-core'
 
 | 字段 | 默认值 | 说明 |
 |------|--------|------|
-| `baseURL` | `''` | 模型服务地址（必填） |
-| `apiKey` | `''` | API 密钥 |
-| `model` | `''` | 模型名称（必填） |
-| `protocol` | `'chat'` | 协议：`chat` / `responses` / `anthropic` / `gemini` |
+| `baseURL` | `''` | 模型服务地址；`model` 是字符串时必填 |
+| `apiKey` | `''` | 本包创建模型连接时使用的 API 密钥 |
+| `model` | `''` | 模型名称（需要 `baseURL`），或 AI SDK 创建的模型实例（自带连接配置） |
+| `protocol` | `'chat'` | 本包创建模型连接时使用的协议：`chat` / `responses` / `anthropic` / `gemini` |
 | `system` | `''` | 系统提示词 |
 | `stream` | `true` | 是否流式输出 |
 | `cache` | `false` | 是否发送 OpenAI 的 `prompt_cache_key`。中转站大多不认这个私有字段，默认不发 |
@@ -420,6 +420,22 @@ const agent = Agent.create({
 ```
 
 在 `agent.send({ input, config: { provider: { ... } } })` 里传入时，`provider` **整份替换**原值，其他未传的配置字段继续保留。`maxTokens` 是上下文预算，和 `provider.maxOutputTokens`（单次生成量）不是一回事。
+
+需要包内没有预设的 Provider 或模型中间件时，直接传 AI SDK 模型实例；实例由调用方创建，`baseURL`、`apiKey`、`protocol` 就不必重复写。下面的进阶用法需要调用方安装对应的 Provider 包：
+
+```js
+import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
+import Agent from '@kernel4632/agent-core'
+
+const model = createOpenAICompatible({
+    name: 'custom', baseURL: 'https://api.example.com/v1', apiKey: 'sk-xxx',
+}).chatModel('model-name')
+const agent = Agent.create({ config: { model, provider: { temperature: 0.3 } } })
+const answer = await agent.send('你好')
+console.log(answer.text)
+```
+
+模型实例的额外请求头仍可写在 `provider.headers`；`provider.body` 和本包的 `cache` 需要本包创建连接，不能用于已创建的模型实例，设置时会明确报错。
 
 > `provider.toolChoice` 保持 `auto` 时，模型才能在任务做完后正常收尾，`{ reason: 'no-tool' }` 这个结束方式也才有意义。
 > 改成 `required` 会强制模型每轮都调工具，而且部分服务（实测 gpt-oss-120b）在模型不想调工具时会直接返回 `tool_use_failed`。

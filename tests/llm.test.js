@@ -11,6 +11,7 @@ import Agent from '../index.js'
 import Tool from '../features/tool.js'
 import LLM from '../utils/llm.js'
 import Compact from '../features/compact.js'
+import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import { TOOLS, failingServer, echoServer } from './helpers.js'
 
 // 一个只会报错的假中转站：真实服务报错时就是这个形状。
@@ -203,5 +204,64 @@ describe('Agent 配置落到请求上', () => {
         expect(recorded.slice(0, afterFirst).every(body => body.temperature === 0.9)).toBe(true)  // 第一台全程用自己的值。
         expect(recorded.slice(afterFirst).every(body => body.temperature === 0.2)).toBe(true)     // 第二台不受影响。
         expect(shared.temperature).toBe(0.2)                                                       // 传入的那个对象也不该被改动。
+    })
+
+    test('AI SDK 模型实例可直接交给 Agent，无需再提供地址和协议', async () => {
+        recorded.length = 0
+        const model = createOpenAICompatible({ name: 'custom', baseURL: `http://127.0.0.1:${echo.port}/v1`, apiKey: 'k' }).chatModel('m')
+        const agent = Agent.create({ config: { model, stream: false, provider: { temperature: 0.3 } } })
+
+        const answer = await agent.send('你好')
+        expect(answer.text).toBe('好')                      // 外层入口能像字符串模型一样用。
+        expect(recorded).toHaveLength(1)                  // 没有工具时只请求一次。
+        expect(recorded[0].temperature).toBe(0.3)        // 生成参数仍直接传给 AI SDK。
+        expect(recorded[0].model).toBe('m')                // 真正使用调用方给的模型实例。
+    })
+
+    test('预先创建的模型实例仍能按次传入额外请求头', async () => {
+        let header
+        const server = Bun.serve({
+            port: 0,
+            fetch(request) {
+                header = request.headers.get('x-session')
+                return Response.json({ choices: [{ index: 0, message: { role: 'assistant', content: '收到' }, finish_reason: 'stop' }], usage: {} })
+            },
+        })
+        try {
+            const model = createOpenAICompatible({ name: 'custom', baseURL: `http://127.0.0.1:${server.port}/v1` }).chatModel('m')
+            const result = await LLM.chat({ model, messages: [{ role: 'user', content: 'hi' }], stream: false, provider: { headers: { 'x-session': 'abc' } } })
+            expect(result.text).toBe('收到')
+            expect(header).toBe('abc')
+        } finally { server.stop(true) }
+    })
+
+    test('预先创建的模型实例也能流式返回并转发事件', async () => {
+        const server = Bun.serve({
+            port: 0,
+            fetch() {
+                const stream = [
+                    `data: ${JSON.stringify({ choices: [{ delta: { role: 'assistant', content: '流式' } }] })}\n\n`,
+                    `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: {} })}\n\n`,
+                    'data: [DONE]\n\n',
+                ].join('')
+                return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } })
+            },
+        })
+        try {
+            const model = createOpenAICompatible({ name: 'custom', baseURL: `http://127.0.0.1:${server.port}/v1` }).chatModel('m')
+            const events = []
+            const result = await LLM.chat({ model, messages: [{ role: 'user', content: 'hi' }], onLLMEvent: event => events.push(event) })
+
+            expect(result.text).toBe('流式')
+            expect(events.some(event => event.type === 'text-delta')).toBe(true)
+        } finally { server.stop(true) }
+    })
+
+    test('模型实例不能接管的原始请求体参数会明确报错', async () => {
+        const model = createOpenAICompatible({ name: 'custom', baseURL: `http://127.0.0.1:${echo.port}/v1` }).chatModel('m')
+        const messages = [{ role: 'user', content: 'hi' }]
+
+        expect(LLM.chat({ model, messages, cache: true })).rejects.toThrow('require a string model')
+        expect(LLM.chat({ model, messages, provider: { body: { extra: true } } })).rejects.toThrow('require a string model')
     })
 })

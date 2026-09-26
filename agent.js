@@ -26,7 +26,7 @@ const agent = Agent.create({
     config: {
         baseURL: "https://api.example.com/v1",
         apiKey: "sk-xxx",
-        model: "model-name",
+        model: "model-name",        // 也可直接传 AI SDK 模型实例；实例已自带地址和协议
         protocol: "chat",
         system: "你是一个编程助手。",
         provider: { temperature: 0.3 },   // 要改模型参数就写在这里，不写就用模型自己的默认值
