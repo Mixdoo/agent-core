@@ -10,7 +10,7 @@ const result = await LLM.chat({
     messages: [...],                // 必填
 
     // --- 工具（可选）---
-    tools: [...],
+    tools: tools.schema,           // Agent.tool.scan() 返回的工具名 → 描述对象
     toolChoice: "auto",             // 也可写在 provider 里；没传 tools 时不会出现在请求里
 
     // --- 生成参数，全部可选（原样交给 AI SDK，这个文件不认识它们）---
@@ -20,6 +20,7 @@ const result = await LLM.chat({
         maxOutputTokens: 4096,
         stopSequences: ["END"],
         seed: 7,
+        toolChoice: 'auto',         // 不设置也默认 auto
         providerOptions: { anthropic: { thinking: { type: 'enabled', budgetTokens: 4096 } } },
         headers: {},                // 额外请求头
         body: {},                   // 额外请求体，字段直接并进最终 JSON
@@ -42,8 +43,8 @@ const result = await LLM.chat({
     cache: false,                   // 只有 OpenAI 官方接口认这组字段，中转站大多会因此 400
 });
 
-provider 里的东西一律不在这个文件里做判断：整包展开进 AI SDK 的请求参数，
-AI SDK 认识的就用上、不认识的就忽略。于是上游加新参数时这个包一行都不用改，
+provider 里的生成参数交给 AI SDK；连接信息、消息和重试控制由这个包持有，不接受 provider 覆盖。
+AI SDK 认识的生成参数就用上、不认识的就忽略。于是上游加新参数时这个包一行都不用改，
 调用者在新旧 AI SDK 之间也不会被这个包卡住。
 
 这个文件是整个项目与模型供应商之间唯一的边界：

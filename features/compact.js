@@ -7,6 +7,7 @@ const content = await Compact.run({
         apiKey: "sk-xxx",
         model: "model-name",
         protocol: "chat",
+        provider: { temperature: 0.3 }, // 可选，和主请求共用 AI SDK 参数
     },
     stream: true,                  // 是否流式生成总结
     onCompact: event => {},        // compact-start / AI SDK 原生事件 / compact-finish
