@@ -69,22 +69,3 @@ export const echoServer = (port = 39932) => {
     return { server, recorded }
 }
 
-
-// --- 一段工具执行里同时最多有几个在跑 ---
-// spans 是每次调用交回来的 { start, end }。工具跑在独立进程里，没法共享内存计数器，
-// 所以由调用方回报区间、这里在主线程合并。并发上限约束的是"同时几个"而不是"总共用过几个进程"，
-// 只有重叠数能反映它——数进程数会被"一批活轮着用很多个进程"骗过去。
-export const peakOverlap = spans => {
-    const events = spans.flatMap(({ start, end }) => [{ at: start, delta: 1 }, { at: end, delta: -1 }])
-        .sort((a, b) => b.delta - a.delta || a.at - b.at) // 同一毫秒先算开始：宁可算多，不漏算。
-
-    let now = 0
-    let peak = 0
-    for (const event of events) {
-        now += event.delta
-        peak = Math.max(peak, now)
-    }
-    return peak
-}
-
-

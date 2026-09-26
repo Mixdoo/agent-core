@@ -60,7 +60,7 @@ describe('Tool 执行', () => {
         const result = await Tool.execute({ name: 'rich', input: {}, handlers: tools.handlers })
 
         expect(result.output.value.when).toBe('2020-01-02T03:04:05.000Z') // Date 变字符串。
-        expect(result.output.value.map).toEqual({ a: 1 })                       // Map 转成普通对象，键值保留。
+        expect(result.output.value.map).toEqual({})                       // Map 没有 JSON 表示。
         expect(result.output.value.bad).toBeNull()                        // NaN 变 null，AI SDK 才收。
     })
 
