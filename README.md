@@ -510,6 +510,32 @@ await agent.send({
 await agent.stop()   // 等待完全停止后返回 { ok: true }
 ```
 
+#### `agent.stream(input, options?)`
+
+```js
+const run = agent.stream('帮我查一下')
+for await (const event of run.events) {
+    if (event.type === 'llm') console.log(event.data) // 包内 AI SDK 原生事件
+    if (event.type === 'tool-output') console.log(event.data.data)
+}
+const result = await run.result // 与 send 返回同样的 reason / text / output
+```
+
+Web 服务可直接返回标准 SSE Response：
+
+```js
+// 可直接放入 Bun.serve 的 fetch 或接受标准 Response 的框架路由。
+return agent.stream({ input: '你好', signal: request.signal }).response({
+    headers: { 'X-Session': agent.id },
+})
+```
+
+每个 SSE 帧是 `data: {"type":"...","data":...}`。事件类型包括 `start`、`llm`、`model-finish`、`tool-call`、`tool-output`、`tool-result`、`step`、`compact`、`retry`、`finish`、`error`。这是本包事件协议，不是 AI SDK UIMessage 协议。失败时 `result` 拒绝；可传输的错误描述进入 `error` 事件。
+
+`events` 与 `response()` 共用一条流，只选一个消费者。必须持续读取才会持续推进模型回调；普通工具日志仍按原来的非等待式 IPC 排队，不默认丢弃。若只要最终结果，直接用 `send()`。普通回调照常执行，流式观察不会改变 Agent 的持久回调配置。
+
+关闭读取默认取消本次运行；`{ cancelOnDisconnect: false }` 只断开输出并让任务继续。`run.stop()` 和传入的 `signal` 始终能取消本次运行，不会影响后来发起的新任务。普通 `send({ input, signal })` 也支持外部取消。
+
 #### `agent.compact(options?)`
 
 手动压缩当前历史（会先停止正在进行的任务）。默认使用 `Agent.create` 中配置的 `onCompact`、`onRetry`；在本次调用中传入同名回调可以覆盖默认值。

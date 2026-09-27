@@ -31,13 +31,15 @@ try {
     // 在没有 node_modules 的临时目录导入，跑一遍模型请求和工具子进程。
     const server = Bun.serve({
         port: 0,
-        fetch: () => Response.json({ choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }], usage: {} }),
+        async fetch(request) {
+            const body = await request.json()
+            const content = body.response_format ? '{"total":42}' : 'ok' // 同时自检普通回答和结构化回答。
+            return Response.json({ choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }], usage: {} })
+        },
     })
     try {
-        const external = import.meta.resolve('@ai-sdk/openai-compatible') // 模拟下游项目自己安装的 Provider，不用产物里打包的那份。
         const script = `
             import Agent from ${JSON.stringify(pathToFileURL(filename).href)}
-            import { createOpenAICompatible } from ${JSON.stringify(external)}
             if (Agent.version !== ${JSON.stringify(version)}) throw new Error('版本不匹配')
             const tools = await Agent.tool.scan(${JSON.stringify(join(root, 'tests', 'fixtures', 'tools'))})
             const output = await Agent.tool.execute({ name: 'echo', input: { value: 'build' }, handlers: tools.handlers })
@@ -47,9 +49,12 @@ try {
             if (reply.output.value[0].text !== 'mcp-build') throw new Error('打包后的 MCP 子进程失败')
             const result = await Agent.llm.chat({ baseURL: ${JSON.stringify(`http://127.0.0.1:${server.port}/v1`)}, model: 'test', messages: [{ role: 'user', content: 'hi' }], stream: false })
             if (result.text !== 'ok') throw new Error('模型请求失败')
-            const model = createOpenAICompatible({ name: 'external', baseURL: ${JSON.stringify(`http://127.0.0.1:${server.port}/v1`)} }).chatModel('test')
-            const custom = await Agent.create({ config: { model, stream: false } }).send('hi')
-            if (custom.text !== 'ok') throw new Error('外部 Provider 模型实例失败')
+            const agent = Agent.create({ config: { baseURL: ${JSON.stringify(`http://127.0.0.1:${server.port}/v1`)}, model: 'test', stream: false,
+                provider: { output: Agent.output.object({ schema: Agent.schema.object({ total: Agent.schema.number() }) }) } } })
+            const run = agent.stream('total')
+            const response = run.response()
+            const events = await response.text()
+            if ((await run.result).output.total !== 42 || !events.includes('finish')) throw new Error('结构化结果和网页流式出口失败')
         `
         const child = Bun.spawn([process.execPath, '-e', script], { cwd: temp, stdout: 'pipe', stderr: 'pipe' })
         const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()])

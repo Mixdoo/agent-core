@@ -59,6 +59,13 @@ await agent.send({
 // 停止当前运行。
 await agent.stop()
 
+// 流式观察同一条 send 路径。自己读取事件和交给网页响应，两者选一个。
+// const run = agent.stream('你好')
+// for await (const event of run.events) console.log(event.type, event.data)
+// const result = await run.result
+// return agent.stream({ input: '你好', signal: request.signal }).response()
+// run.stop() 只取消这次运行；默认关闭读取也会取消，cancelOnDisconnect:false 可后台继续。
+
 // 手动压缩历史；默认沿用 callbacks.onCompact / callbacks.onRetry。
 const summary = await agent.compact()
 await agent.compact({ onCompact: event => console.log(event) }) // 本次覆盖默认回调。
@@ -90,6 +97,7 @@ import { z } from 'zod'                       // 调用方从 Agent.schema 获�
 import Context from './features/context.js'   // 负责把历史消息裁剪成模型上下文
 import Compact from './features/compact.js'   // 负责把上下文压缩成总结文本
 import Loop from './features/loop.js'         // 负责驱动"请求模型 → 执行工具"的主循环
+import Stream, { observe, callbacks as streamCallbacks } from './features/stream.js' // 一次运行的事件出口，与 send 共用执行路径。
 import Tool from './features/tool.js'         // 负责扫描和执行工具文件
 import LLM from './utils/llm.js'              // 底层模型请求封装，也暴露给调用方直接使用
 import History from './utils/history.js'      // 负责创建标准格式的历史消息块
@@ -161,6 +169,9 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
 
         const previous = agent.running                              // 同步取走上一次运行，本函数末尾就把它顶替掉。
         const controller = new AbortController()                    // stop() 通过它中断当前模型请求或工具。
+        const signal = options.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal // 调用方请求取消和 agent.stop 都能终止同一次运行。
+        const callbacks = streamCallbacks({ ...agent.callbacks }, options[observe]) // 拍下本次回调，流式观察不会持久化到下一次 send。
+        options[observe]?.bind(signal) // 让新任务取消旧任务时也能释放旧事件流的等待。
 
         // 停旧任务挪进 task 内部，所以 send 从头到尾一个 await 都没有：
         // 同一个 tick 里连发两次 send，第二次必定看得见第一次登记的运行状态并把它停掉，
@@ -180,8 +191,8 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
                 compact: Compact.run,             // 压缩交给 Compact 模块。
                 executeTool: request => Tool.execute({ ...request, handlers: agent.tools.handlers, limit: agent.config.maxToolOutput, concurrency: agent.config.maxToolConcurrency }), // 执行器需要的处理表、输出上限和并发上限由 Agent 补上，Loop 不用知道它们。
                 sessionId: agent.id,             // 会话 ID 用于权限询问时区分实例。
-                signal: controller.signal,        // 取消信号，stop() 触发时 Loop 立即响应。
-                ...agent.callbacks,               // 所有回调一次展开，新增回调类型时这里不用改。
+                ...callbacks,                     // 本次回调快照，后来的 send 不会改变正在运行的通知出口。
+                signal,                           // stop 和外部取消信号共同控制本次运行。
             })
         })()
 
@@ -193,6 +204,10 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
         return task
     }
 
+
+    // --- 将同一条 send 路径接到可读取的流 ---
+    // const run = agent.stream('你好'); for await (const event of run.events) console.log(event)
+    agent.stream = (input, options) => Stream.run(agent.send, input, options)
 
     // 停止指令：只操作当前 Agent 自己的控制器。
     agent.stop = async () => {
