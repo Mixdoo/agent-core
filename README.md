@@ -393,6 +393,8 @@ import Agent from '@kernel4632/agent-core'
 | `system` | `''` | 系统提示词 |
 | `stream` | `true` | 是否流式输出 |
 | `cache` | `false` | 是否发送 OpenAI 的 `prompt_cache_key`。中转站大多不认这个私有字段，默认不发 |
+| `capabilities` | 见下方 | 按模型能力逐项开关图片、音频、视频、文件、工具调用、结构化输出、toolChoice 和思考内容 |
+| `mediaFallback` | `'error'` | 媒体能力关闭时的处理方式；改成 `'strip'` 后保留文字并丢掉不支持的媒体 |
 | `provider` | `{}` | AI SDK 的生成参数，整份交给 AI SDK；不设时用模型自己的默认值 |
 | `maxToolOutput` | `undefined` | 默认不截断工具输出；主动设置后超出部分从中间截断并告知模型 |
 | `maxTokens` | `undefined` | 默认不估算或压缩上下文；主动设置后超过预算触发自动压缩 |
@@ -402,6 +404,24 @@ import Agent from '@kernel4632/agent-core'
 | `retryMaxDelay` | `undefined` | 默认不限制单次退避时间；主动设置后限制秒数 |
 | `retryMaxElapsed` | `undefined` | 默认不限制重试总时长；主动设置后到点把错误交给上层 |
 | `noToolPrompt` | `undefined` | 默认不插入催促消息；主动设置后模型连续两轮不调工具时使用 |
+
+陌生中转站建议先使用默认能力。遇到只支持文字、但接口声称兼容 OpenAI 的模型，可以按能力关闭：
+
+```js
+const agent = Agent.create({
+    config: {
+        baseURL: 'https://api.example.com/v1', model: 'model-name',
+        capabilities: {
+            image: false, audio: false, video: false, file: false,
+            tools: false, structuredOutput: false, toolChoice: false,
+            reasoning: false,
+        },
+        mediaFallback: 'strip',
+    },
+})
+```
+
+`image`、`audio`、`video` 和 `file` 控制内容块；`tools` 控制是否发送工具描述；`structuredOutput` 控制是否发送 `response_format`；`toolChoice:false` 让请求完全省略 `tool_choice`；`reasoning:true` 才会把历史里的思考块发给模型。旧式 `image`、`audio`、`video` 内容块会在真正请求模型时转换成 AI SDK 当前使用的 `file`，历史数组仍保留原始形状。
 
 `provider` 直接放 AI SDK 的生成参数，例如：
 
@@ -421,6 +441,18 @@ const agent = Agent.create({
 ```
 
 在 `agent.send({ input, config: { provider: { ... } } })` 里传入时，`provider` **整份替换**原值，其他未传的配置字段继续保留。`maxTokens` 是上下文预算，和 `provider.maxOutputTokens`（单次生成量）不是一回事。
+
+`cache` 默认关闭。打开后会发送 OpenAI 风格的 `prompt_cache_key` 和 `prompt_cache_retention`；也可以传对象自定义缓存键、保留时间和额外字段：
+
+```js
+cache: {
+    key: 'project:conversation-1',
+    retention: '1h',
+    body: { cache_namespace: 'agent' },
+}
+```
+
+缓存字段不是所有中转站都认识。遇到 400 时保持 `cache:false`，或把供应商自己的字段放入 `provider.body`。
 
 需要包内没有预设的 Provider 或模型中间件时，直接传 AI SDK 模型实例；实例由调用方创建，`baseURL`、`apiKey`、`protocol` 就不必重复写。下面的进阶用法需要调用方安装对应的 Provider 包：
 

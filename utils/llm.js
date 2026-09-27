@@ -40,7 +40,9 @@ const result = await LLM.chat({
     signal: abortSignal,
 
     // --- 提示词缓存（默认关闭）---
-    cache: false,                   // 只有 OpenAI 官方接口认这组字段，中转站大多会因此 400
+    cache: false,                   // true 使用默认键；也可传 { key, retention, body } 自定义原始字段
+    capabilities: { image, audio, video, file, tools, structuredOutput, toolChoice, reasoning }, // 针对脆弱渠道逐项关闭能力
+    mediaFallback: 'error',         // 关闭媒体后报错；'strip' 只保留文字继续请求
 });
 
 provider 里的生成参数交给 AI SDK；连接信息、消息和重试控制由这个包持有，不接受 provider 覆盖。
@@ -71,32 +73,40 @@ import { createOpenAICompatible } from '@ai-sdk/openai-compatible'    // 默认�
 import { createAnthropic } from '@ai-sdk/anthropic'                   // 模型名写法中的 Anthropic 连接。
 import { createGoogle } from '@ai-sdk/google'                         // 模型名写法中的 Gemini 连接。
 import Retry from './retry.js'                                       // 主请求和压缩请求共用的退避重试。
+import History from './history.js'                                   // 直接调用 LLM.chat 时也使用同一套媒体兼容规则。
 
 // --- 发出一次模型请求 ---
 // 模型的来源在入口决定；来源确定后，同一份 input 供流式和非流式请求使用。
 // 本函数是公开接口，也是外部模型响应进入 Agent 的边界，因此只在这里判定请求是否失败。
 const chat = async ({
-    baseURL, apiKey, model, protocol = 'chat', system, messages, tools, toolChoice = 'auto', stream = true, cache = false, onLLMEvent, onLLMStart, onRetry, retryMaxDelay, retryMaxElapsed, signal, provider = {},
+    baseURL, apiKey, model, protocol = 'chat', system, messages, tools, toolChoice = 'auto', stream = true, cache = false, capabilities = {}, mediaFallback = 'error', onLLMEvent, onLLMStart, onRetry, retryMaxDelay, retryMaxElapsed, signal, provider = {},
 }) => {
     // --- 检查输入 ---
     if (!model || !Array.isArray(messages) || (typeof model === 'string' && !baseURL)) throw new TypeError('model and messages are required; string models also need baseURL') // 模型实例自带连接，模型名才需要地址。
 
     // --- 从 messages 中取出系统提示词 ---
     const systemMessage = messages.find(message => message.role === 'system') // Context 可能已经把 system 放进 messages。
-    const modelMessages = messages.filter(message => message.role !== 'system') // AI SDK 的 system 单独传入，不重复放进消息列表。
+    const prepare = message => History.model(message, { capabilities, reasoning: capabilities.reasoning ?? false, mediaFallback, normalizeMedia: true })
+    const modelMessages = messages.filter(message => message.role !== 'system').map(prepare) // AI SDK 的 system 单独传入，不重复放进消息列表。
     system ||= systemMessage?.content // 调用方单独传入的 system 优先级更高。
 
     // --- 模型实例直接使用；模型名才需要选择协议并创建连接 ---
     const { headers, body: bodyOverrides = {}, ...call } = provider // headers / body 是连接参数，其余生成参数直接交给 AI SDK。
     if (typeof model !== 'string' && (cache || Object.keys(bodyOverrides).length)) throw new TypeError('cache and provider.body require a string model; configure custom models when creating them') // 已创建的模型无法再更换内部 fetch。
 
+    const sendTools = capabilities.tools !== false
+    const sendOutput = capabilities.structuredOutput !== false
+    const sendToolChoice = capabilities.toolChoice !== false
+    const generation = sendOutput ? call : Object.fromEntries(Object.entries(call).filter(([name]) => name !== 'output')) // 不支持结构化输出的渠道不收到 response_format。
+
     let providerModel = model // 调用方传入的 AI SDK 模型实例，原样使用。
     if (typeof model === 'string') {
         const settings = { apiKey, baseURL, headers } // 字符串模型由这个包负责创建连接。
 
         // prompt_cache_key 是 OpenAI 私有字段，中转站大多不认；只有明确打开时才发送。
+        const cacheOptions = cache === true ? {} : cache || {}
         const cacheBody = cache && ['chat', 'responses'].includes(protocol)
-            ? { prompt_cache_key: `agent:${baseURL}:${model}:${Bun.hash(JSON.stringify(system || ''))}`, prompt_cache_retention: '24h' }
+            ? { prompt_cache_key: cacheOptions.key ?? `agent:${baseURL}:${model}:${Bun.hash(JSON.stringify(system || ''))}`, prompt_cache_retention: cacheOptions.retention ?? '24h', ...cacheOptions.body }
             : {}
         const finalBody = { ...cacheBody, ...bodyOverrides } // 自定义 body 可以覆盖默认缓存字段。
 
@@ -112,7 +122,7 @@ const chat = async ({
             }
         }
 
-        if (protocol === 'chat') providerModel = createOpenAICompatible({ ...settings, name: 'agent', supportsStructuredOutputs: Boolean(call.output) }).chatModel(model) // 显式选择结构化输出时把 schema 一起发给服务端。
+        if (protocol === 'chat') providerModel = createOpenAICompatible({ ...settings, name: 'agent', supportsStructuredOutputs: Boolean(generation.output) }).chatModel(model) // 显式选择结构化输出时把 schema 一起发给服务端。
         if (protocol === 'responses') providerModel = createOpenAI(settings).responses(model)                     // 官方 OpenAI Responses 接口。
         if (protocol === 'anthropic') providerModel = createAnthropic(settings).languageModel(model)             // Anthropic 原生接口。
         if (protocol === 'gemini') providerModel = createGoogle(settings).languageModel(model)                   // Google 原生接口。
@@ -123,11 +133,11 @@ const chat = async ({
     // maxRetries: 0 —— 重试在这个项目里只有 Retry 一个实现。交给 AI SDK 自己重试会导致
     // 一次 onLLMStart 对应服务端三次请求，而且原始错误会被包成 AI_RetryError，Retry 认不出来。
     // call 是 provider 去掉 headers 和 body 之后的整份生成参数，原样展开，这里不逐个列字段。
-    const input = { ...call, model: providerModel, system, messages: modelMessages, abortSignal: signal, maxRetries: 0 } // 生成参数可扩展，但不能覆盖 Agent 的上下文和重试控制。
+    const input = { ...generation, model: providerModel, system, messages: modelMessages, abortSignal: signal, maxRetries: 0 } // 生成参数可扩展，但不能覆盖 Agent 的上下文和重试控制。
     if (typeof model !== 'string' && headers) input.headers = headers // 已创建的模型按 AI SDK 请求级参数发送额外请求头。
-    if (tools) {
+    if (tools && sendTools) {
         input.tools = tools
-        input.toolChoice = call.toolChoice ?? toolChoice // provider 是 AI SDK 参数的归属地；独立调用 LLM.chat 的旧写法仍可用。
+        if (sendToolChoice) input.toolChoice = call.toolChoice ?? toolChoice // provider 是 AI SDK 参数的归属地；兼容开关可完全省略这个字段。
     } else delete input.toolChoice // 没工具时单独发 toolChoice 会被部分服务拒收。
 
     // --- 发一次请求：流式和非流式在这里分叉，但对外表现完全一致 ---

@@ -143,7 +143,7 @@ const BLOCK = new Set(['text', 'json', 'content', 'error-text', 'error-json', 'e
 // content 块里允许出现的部件类型。不在这张表里的部件会被 AI SDK 在本地拒绝，
 // 而且是在 standardizePrompt 里抛、请求根本发不出去、Retry 认不出来——一旦写进 history 就是永久的。
 // 所以在这里挡住：非法块变成一条普通的工具失败，让模型知道并换个方式，而不是把会话毒死。
-const PART = new Set(['text', 'file', 'file-data', 'file-url'])
+const PART = new Set(['text', 'image', 'audio', 'video', 'file', 'file-data', 'file-url'])
 
 
 // --- 截断一段文本：头尾都留，开头说明这是什么，结尾通常是结论或报错 ---
@@ -180,7 +180,7 @@ const shape = (tool, result, limit) => {
     // 边界校验：形状不对就在这里变成工具失败，绝不让它穿过去写进 history。
     if (!BLOCK.has(output?.type)) throw new TypeError(`工具输出块的 type 不合法：${JSON.stringify(output?.type)}，只能是 ${[...BLOCK].join(' / ')}`)
     const bad = output.type === 'content' && output.value.find(part => !PART.has(part?.type))
-    if (bad) throw new TypeError(`content 块里的 ${JSON.stringify(bad.type)} 部件不合法，只能是 ${[...PART].join(' / ')}。图片用 { type: 'file', mediaType, data: { type: 'data', data } }`)
+    if (bad) throw new TypeError(`content 块里的 ${JSON.stringify(bad.type)} 部件不合法，只能是 ${[...PART].join(' / ')}。媒体可以用旧 image/audio/video，也可以用 AI SDK 当前的 file`)
 
     // 跨进程只传纯 JSON，自带格式化的那条路也一样要过这一关：
     // Date 变字符串、NaN 变 null、循环引用在这里变成一条正常的工具错误，不会写进 history 把 Agent 毒死。

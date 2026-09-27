@@ -11,6 +11,8 @@ import Agent from '../index.js'
 import Tool from '../features/tool.js'
 import LLM from '../utils/llm.js'
 import Compact from '../features/compact.js'
+import Context from '../features/context.js'
+import History from '../utils/history.js'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import { TOOLS, failingServer, echoServer } from './helpers.js'
 
@@ -82,6 +84,13 @@ describe('请求里到底发了什么', () => {
         expect(await send({ cache: true })).toHaveProperty('prompt_cache_key')
     })
 
+    test('cache 可以自定义键、保留时间和额外字段', async () => {
+        const body = await send({ cache: { key: 'session-1', retention: '1h', body: { cache_namespace: 'agent' } } })
+        expect(body.prompt_cache_key).toBe('session-1')
+        expect(body.prompt_cache_retention).toBe('1h')
+        expect(body.cache_namespace).toBe('agent')
+    })
+
     test('默认 toolChoice 是 auto，模型可以正常收尾', async () => {
         const tools = (await Tool.scan(TOOLS)).schema // 用真实扫描出来的 schema，保证形状和线上一致。
         expect((await send({ tools })).tool_choice).toBe('auto') // 不传 toolChoice 时也应默认 auto。
@@ -97,6 +106,18 @@ describe('请求里到底发了什么', () => {
         const body = await send({ toolChoice: 'auto' })
         expect(body).not.toHaveProperty('tools')
         expect(body).not.toHaveProperty('tool_choice')
+    })
+
+    test('能力开关可以关闭工具和 toolChoice', async () => {
+        const tools = (await Tool.scan(TOOLS)).schema
+        const body = await send({ tools, capabilities: { tools: false, toolChoice: false } })
+        expect(body).not.toHaveProperty('tools')
+        expect(body).not.toHaveProperty('tool_choice')
+    })
+
+    test('能力开关可以关闭结构化输出', async () => {
+        const body = await send({ capabilities: { structuredOutput: false }, provider: { output: Agent.output.json() } })
+        expect(body).not.toHaveProperty('response_format')
     })
 })
 
@@ -263,5 +284,33 @@ describe('Agent 配置落到请求上', () => {
 
         expect(LLM.chat({ model, messages, cache: true })).rejects.toThrow('require a string model')
         expect(LLM.chat({ model, messages, provider: { body: { extra: true } } })).rejects.toThrow('require a string model')
+    })
+})
+
+
+describe('模型能力兼容', () => {
+    test('旧 image/audio/video 块在请求边界统一为 file', () => {
+        const messages = Context.build({ history: [History.user({ content: [
+            { type: 'text', text: '媒体' },
+            { type: 'image', image: 'data:image/png;base64,AA==' },
+            { type: 'audio', audio: 'data:audio/wav;base64,AA==', mediaType: 'audio/wav' },
+            { type: 'video', video: 'https://example.com/a.mp4' },
+        ] })] }).messages
+        const prepared = History.model(messages[0], { normalizeMedia: true })
+        expect(prepared.content.map(part => part.type)).toEqual(['text', 'file', 'file', 'file'])
+        expect(prepared.content[1].mediaType).toBe('image/png')
+        expect(prepared.content[2].mediaType).toBe('audio/wav')
+        expect(prepared.content[3].mediaType).toBe('video/mp4')
+    })
+
+    test('关闭媒体能力并使用 strip 时保留文字', () => {
+        const messages = Context.build({
+            history: [History.user({ content: [{ type: 'text', text: '看图' }, { type: 'image', image: 'data:image/png;base64,AA==' }] })],
+            capabilities: { image: false },
+            mediaFallback: 'strip',
+        }).messages
+        expect(messages[0].content).toEqual([{ type: 'text', text: '看图' }])
+        const prepared = History.model(messages[0], { capabilities: { image: false }, mediaFallback: 'strip' })
+        expect(prepared.content).toEqual([{ type: 'text', text: '看图' }])
     })
 })

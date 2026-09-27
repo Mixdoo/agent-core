@@ -74,21 +74,9 @@ const brief = (system, summary) => summary
     ? `${system}\n\n【你此前工作的压缩记录】\n下面是你自己之前已经完成的工作，其中的数据都已经由工具确认过。不要重新核对，直接在此基础上继续。\n\n${summary}`.trim()
     : system
 
-// History 只比 AI SDK 多了 id、compact 这些顶层内部字段，去掉它们后直接交给模型。
-// 这里同时摘掉两种不该出现在请求里的内容块：
-// 思考内容留在 history 里供上层 UI 渲染，但不回传——它是某一次响应的厂商产物，不是持久对话状态，
-//   回传会被不少服务直接拒绝（实测 gpt-oss-120b 返回 property 'reasoning_content' is unsupported），
-//   而且这个包允许中途换模型，A 家的思考对 B 家本来也没有意义。
-// 没人应答的工具调用也摘掉——history 是公开可写的，可能带着上次进程中断时留下的半截调用，
-//   AI SDK 遇到它会在本地直接抛 MissingToolResultsError，请求根本发不出去，压缩也救不回来。
-const forModel = (message, answered) => ({
-    role: message.role,
-    content: Array.isArray(message.content)
-        ? message.content.filter(part => part.type !== 'reasoning' && (part.type !== 'tool-call' || answered.has(part.toolCallId)))
-        : message.content,
-})
-
-const build = ({ history, system = '', tools = {}, budget }) => {
+// History 只比 AI SDK 多了 id、compact 这些顶层内部字段，兼容规则交给 History.model 集中处理。
+// 默认去掉思考和未完成的工具调用；切换到支持它们的模型时只改 capabilities，不改裁剪流程。
+const build = ({ history, system = '', tools = {}, budget, capabilities = {}, mediaFallback = 'error' }) => {
     // --- 还原回合：从这里开始，历史只以回合为单位被处理 ---
     const turns = History.turns(history)
 
@@ -125,7 +113,7 @@ const build = ({ history, system = '', tools = {}, budget }) => {
 
     const messages = [
         ...(instructions ? [{ role: 'system', content: instructions }] : []),                                   // system 进入 messages，并一起参与 Token 估算。
-        ...flat.map(message => forModel(message, answered)).filter(message => message.content.length),           // 被摘空的消息（只剩思考、或只剩没人应答的调用）整条丢掉。
+        ...flat.map(message => History.model(message, { answered, capabilities, reasoning: capabilities.reasoning ?? false, mediaFallback, normalizeMedia: false })).filter(message => message.content.length), // 被摘空的消息（只剩思考、媒体或没人应答的调用）整条丢掉。
     ]
 
     // Token 只在真的有人读的时候才算：没设 maxTokens 时 Loop 压根不看它，

@@ -11,7 +11,9 @@ provider: { temperature, topP, topK, maxOutputTokens, stopSequences, seed, toolC
 // 3. system：人给这台 Agent 的身份。它不属于模型参数，是这个包要往上下文里放的东西。
 
 // 4. Agent 的策略：这个包自己的旋钮，和模型无关。
-maxTokens?, compactThreshold, maxSteps?, maxToolOutput?, maxToolConcurrency?, retryMaxDelay?, retryMaxElapsed?, noToolPrompt?, stream, cache
+maxTokens?, compactThreshold, maxSteps?, maxToolOutput?, maxToolConcurrency?, retryMaxDelay?, retryMaxElapsed?, noToolPrompt?, stream, cache, capabilities, mediaFallback
+// capabilities: { image, audio, video, file, tools, structuredOutput, toolChoice, reasoning }
+// mediaFallback: 'error'（默认）或 'strip'；关闭某种媒体后，strip 会保留文字并丢掉媒体块。
 // 带 ? 的策略默认不限制；只有调用方主动填写才会启用对应保护。
 maxTokens 和 provider.maxOutputTokens 名字像但是两回事：前者是这个包的上下文预算（超了就压缩），
 后者是"这次最多生成多少 token"。改其中一个不会影响另一个。
@@ -112,6 +114,8 @@ const buildLLM = config => ({
     model: config.model,                        // 模型名称
     protocol: config.protocol,                  // 调用协议
     cache: config.cache,                        // 是否发送 OpenAI 提示词缓存字段
+    capabilities: config.capabilities,          // 当前模型能接收哪些能力；兼容开关集中放这里
+    mediaFallback: config.mediaFallback,        // 不支持媒体时是报错，还是只保留文字继续跑
     provider: config.provider,                  // 生成参数整包转发给 AI SDK，这个包不逐个列字段
     retryMaxDelay: config.retryMaxDelay,        // 重试退避上限（秒）。重试是 LLM.chat 自带的，压缩那次请求也走同一套
     retryMaxElapsed: config.retryMaxElapsed,    // 一直失败最多再试多久（秒），到点把错误交给上层
@@ -135,6 +139,8 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
             protocol: 'chat',       // 大多数兼容 OpenAI Chat 的服务使用这个协议。
             provider: {},           // AI SDK 的生成参数整包转发，默认一个都不设——替调用者的模型默认 temperature 是在猜他的模型。
             cache: false,           // prompt_cache_key 是 OpenAI 私有字段，中转站大多不认，默认不发。
+            capabilities: { image: true, audio: true, video: true, file: true, tools: true, structuredOutput: true, toolChoice: true, reasoning: false }, // 陌生渠道默认只发通用能力；高级能力由调用方逐项打开。
+            mediaFallback: 'error', // 媒体能力关闭时默认明确报错；需要尽量跑完时改成 'strip'。
             maxToolOutput: undefined, // 不截断工具输出；需要保护内存时由调用方主动设置字符上限。
             maxToolConcurrency: undefined, // 不限制同一轮工具并发；需要排队时由调用方主动设置。
             maxTokens: undefined,      // 不估算或压缩上下文；需要窗口保护时由调用方主动设置。
@@ -147,6 +153,7 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
             system: '',             // 没有系统提示词时仍允许 Agent 运行。
             ...config,              // 传入配置覆盖默认配置，且配置结构只包含 Agent 需要的字段。
             provider: { ...config.provider }, // 单独浅拷一层：两个 Agent 共用一个 provider 对象时，改其中一个不该动到另一个。
+            capabilities: { image: true, audio: true, video: true, file: true, tools: true, structuredOutput: true, toolChoice: true, reasoning: false, ...config.capabilities }, // 部分开关也能单独覆盖，其余保持兼容默认值。
         },
         tools,                       // Agent.tool.scan() 的返回值：{ schema, handlers }，后续 send 可以整份替换。
         callbacks: { ...callbacks }, // 回调逐项保存，后续 send 只覆盖传入的回调。
@@ -163,7 +170,7 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
         const empty = typeof input === 'string' ? !input.trim() : !Array.isArray(input) || !input.length
         if (empty) throw new TypeError('input must be a non-empty string or a non-empty content array') // 没有本次输入就没有可执行指令。
         if ('history' in options) agent.history = options.history                                           // 传入空数组也代表明确覆盖历史。
-        if ('config' in options) agent.config = { ...agent.config, ...options.config, provider: 'provider' in options.config ? { ...options.config.provider } : agent.config.provider } // provider 整包替换，复制一层避免外部改动串到 Agent。
+        if ('config' in options) agent.config = { ...agent.config, ...options.config, provider: 'provider' in options.config ? { ...options.config.provider } : agent.config.provider, capabilities: 'capabilities' in options.config ? { ...agent.config.capabilities, ...options.config.capabilities } : agent.config.capabilities } // provider 整包替换；能力开关按字段合并，调用方只改一个开关就够。
         if ('tools' in options) agent.tools = options.tools                                                 // 工具是整体替换，不在 Agent 内部猜测如何合并。
         if ('callbacks' in options) agent.callbacks = { ...agent.callbacks, ...options.callbacks }         // 回调逐项合并，避免替换一个回调时清掉其他回调。
 
@@ -185,9 +192,9 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
             return Loop.run({
                 history: agent.history,           // Loop 直接使用这份公开数组，执行结果也会继续写入这里。
                 system: agent.config.system,      // 系统提示词本轮不变，直接取当前配置。
-                tools: agent.tools.schema,        // Loop 只需要给模型看的工具描述。
+                tools: agent.config.capabilities.tools === false ? {} : agent.tools.schema, // 兼容开关关闭工具时，模型请求和 Loop 都看不到工具。
                 llm: buildLLM(agent.config),      // 统一从配置构建，两处使用完全一致。
-                buildContext: Context.build,      // 上下文构建交给 Context 模块。
+                buildContext: options => Context.build({ ...options, capabilities: agent.config.capabilities, mediaFallback: agent.config.mediaFallback }), // 上下文构建交给 Context 模块，并带上本次模型的能力开关。
                 compact: Compact.run,             // 压缩交给 Compact 模块。
                 executeTool: request => Tool.execute({ ...request, handlers: agent.tools.handlers, limit: agent.config.maxToolOutput, concurrency: agent.config.maxToolConcurrency }), // 执行器需要的处理表、输出上限和并发上限由 Agent 补上，Loop 不用知道它们。
                 sessionId: agent.id,             // 会话 ID 用于权限询问时区分实例。
@@ -232,7 +239,7 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
                 previous.controller.abort()
                 await previous.task.catch(() => {})
             }
-            const context = Context.build({ history: agent.history, system: agent.config.system, tools: agent.tools.schema })
+            const context = Context.build({ history: agent.history, system: agent.config.system, tools: agent.tools.schema, capabilities: agent.config.capabilities, mediaFallback: agent.config.mediaFallback })
             const content = await Compact.run({
                 ...options,
                 messages: context.messages,       // 把裁剪后的上下文交给 Compact。

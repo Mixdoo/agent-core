@@ -96,6 +96,62 @@ const compact = ({ id, content }) => ({ id: messageId(id), role: 'user', content
 const parts = message => (Array.isArray(message.content) ? message.content : [])
 
 
+// --- 统一旧媒体块：AI SDK 当前用 file，旧渠道常用 image / audio / video ---
+// 历史原样保存，只有发给模型的副本做转换；这样换模型不会破坏数据库里的原始消息。
+const media = (part, value, fallback) => ({
+    type: 'file',
+    mediaType: part.mediaType ?? fallback,
+    data: value,
+    ...(part.filename ? { filename: part.filename } : {}),
+})
+
+const mediaKind = part => {
+    if (part.type === 'image' || part.type === 'audio' || part.type === 'video') return part.type
+    if (part.type !== 'file' && part.type !== 'file-data' && part.type !== 'file-url') return null
+    if (part.mediaType?.startsWith('image/')) return 'image'
+    if (part.mediaType?.startsWith('audio/')) return 'audio'
+    if (part.mediaType?.startsWith('video/')) return 'video'
+    return 'file'
+}
+
+const preparePart = (part, options) => {
+    if (part.type === 'reasoning' && options.reasoning === false) return null // 思考是上一家模型的内部产物，默认不喂给下一家。
+    if (part.type === 'tool-call' && !options.answered.has(part.toolCallId)) return null // 没有结果的调用会让很多接口拒绝整段历史。
+
+    const kind = mediaKind(part)
+    if (!kind) return part
+    if (options.capabilities[kind] === false) {
+        if (options.mediaFallback === 'strip') return null // 不支持媒体时只丢掉媒体，文字和任务仍可继续。
+        throw new TypeError(`当前模型未启用 ${kind} 内容；设置 capabilities.${kind}=true，或使用 mediaFallback:'strip'`)
+    }
+    if (!options.normalizeMedia) return part // Context 对外只读历史，不在这里改变内容块的公开形状。
+
+    if (part.type === 'image') return media(part, part.image, 'image/png')
+    if (part.type === 'audio') return media(part, part.audio, 'audio/mpeg')
+    if (part.type === 'video') return media(part, part.video, 'video/mp4')
+    if (part.type === 'file-data') return media(part, part.data, part.mediaType ?? 'application/octet-stream')
+    if (part.type === 'file-url') return media(part, part.url ?? part.data, part.mediaType ?? 'application/octet-stream')
+    return part
+}
+
+const prepareOutput = (output, options) => output?.type !== 'content'
+    ? output
+    : { ...output, value: output.value.flatMap(part => { const prepared = preparePart(part, options); return prepared ? [prepared] : [] }) }
+
+// Context 只调用这一处，保证用户消息、工具返回的媒体和历史消息使用完全相同的兼容规则。
+const model = (message, { answered = new Set(), capabilities = {}, reasoning = false, mediaFallback = 'error', normalizeMedia = true } = {}) => {
+    const options = { answered, capabilities: { image: true, audio: true, video: true, file: true, ...capabilities }, reasoning, mediaFallback, normalizeMedia }
+    const content = Array.isArray(message.content)
+        ? message.content.flatMap(part => {
+            const prepared = preparePart(part, options)
+            if (!prepared) return []
+            return prepared.type === 'tool-result' ? [{ ...prepared, output: prepareOutput(prepared.output, options) }] : [prepared]
+        })
+        : message.content
+    return { role: message.role, content }
+}
+
+
 // --- 把平铺历史折成回合 ---
 // 一个回合 = 用户的一次发言，或模型的一次响应连同它发起的全部工具调用与结果。
 // 工具结果认的是发起它的 toolCallId，不是它在数组里排在谁后面，所以先把回合拼出来、
@@ -146,6 +202,8 @@ const readPart = {
     'tool-result': part => `[${part.toolName} 返回] ${readOutput(part.output)}`,
     image: () => '[图片]',
     file: () => '[文件]',
+    audio: () => '[音频]',
+    video: () => '[视频]',
 }
 
 
@@ -161,4 +219,4 @@ const render = history => history
     .join('\n')
 
 
-export default { user, assistant, tool, compact, turns, render }
+export default { user, assistant, tool, compact, turns, render, model }
