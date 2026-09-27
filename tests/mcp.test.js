@@ -48,6 +48,37 @@ test('发现的 MCP 工具能和本地工具合并，前缀不改变远端名字
     } finally { server.stop(true) }
 })
 
+test('MCP、结构化结果和网页流可以在同一台 Agent 中组合', async () => {
+    const remote = service()
+    let round = 0
+    const model = Bun.serve({
+        port: 0,
+        fetch() {
+            round += 1
+            const message = round === 1
+                ? { role: 'assistant', content: null, tool_calls: [{ id: 'remote-call', type: 'function', function: { name: 'web_echo', arguments: '{"value":"data"}' } }] }
+                : { role: 'assistant', content: '{"total":42}' }
+            return Response.json({ choices: [{ index: 0, message, finish_reason: round === 1 ? 'tool_calls' : 'stop' }], usage: {} })
+        },
+    })
+    try {
+        const permissions = []
+        const agent = Agent.create({
+            tools: await Agent.tool.mcp({ transport: remote.transport, prefix: 'web_' }),
+            config: { baseURL: `http://127.0.0.1:${model.port}/v1`, model: 'test', stream: false, provider: { output: Agent.output.object({ schema: Agent.schema.object({ total: Agent.schema.number() }) }) } },
+            callbacks: { onPermission: call => { permissions.push(call.toolName); return true } },
+        })
+        const run = agent.stream('调用工具后给出总数')
+        const frames = (await run.response().text()).trim().split('\n\n').map(frame => JSON.parse(frame.slice(6)))
+        expect(frames.some(event => event.type === 'tool-result')).toBe(true)
+        expect(frames.at(-1).data.output).toEqual({ total: 42 })
+        expect((await run.result).output).toEqual({ total: 42 })
+        expect(permissions).toEqual(['web_echo'])
+        expect(remote.calls).toHaveLength(1)
+        expect(round).toBe(2)
+    } finally { model.stop(true); remote.server.stop(true) }
+})
+
 test('取消长期等待的 MCP 调用后能够重新执行', async () => {
     const { server, calls, transport } = service()
     const controller = new AbortController()
