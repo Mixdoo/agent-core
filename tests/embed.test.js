@@ -15,7 +15,7 @@ import { BROKEN, TOOLS, pairing } from './helpers.js'
 
 describe('可嵌入性', () => {
     test('入口带齐了嵌入方需要的全部模块', () => {
-        expect(Object.keys(Agent).sort()).toEqual(['compact', 'context', 'create', 'history', 'llm', 'tool', 'version'])
+        expect(Object.keys(Agent).sort()).toEqual(['compact', 'context', 'create', 'history', 'llm', 'output', 'schema', 'tool', 'version'])
         expect(Agent.version).toMatch(/^\d+\.\d+\.\d+/) // 排查问题时上层要能报出版本。
     })
 

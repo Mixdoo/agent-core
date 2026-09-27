@@ -588,6 +588,27 @@ const result = await Agent.tool.execute({
 
 ### `Agent.llm`
 
+#### 结构化结果
+
+```js
+const agent = Agent.create({
+    config: {
+        baseURL, apiKey, model,
+        provider: {
+            output: Agent.output.object({
+                schema: Agent.schema.object({ total: Agent.schema.number() }),
+            }),
+        },
+    },
+})
+const { output } = await agent.send('计算订单总数')
+console.log(output.total)
+```
+
+`Agent.output` 是包内 AI SDK 的 Output，`Agent.schema` 是包内 Zod，无需另装一套。数组可用 `Agent.output.array({ element: Agent.schema.string() })`，普通 JSON 可用 `Agent.output.json()`。所选模型服务须支持对应输出格式。
+
+有工具时先完成工具调用，再读取最终对象。工具轮、`tool-stop` 或轮数用尽不会凭空产生 `output`。最终对象校验成功立即结束；格式错误直接抛出，不当成网络故障无限重试。手动及自动压缩只生成文本总结，不继承任务的对象格式。流式和非流式都在最终结果上提供 `output`；流中仍会有生成时的文字片段。
+
 直接使用底层 LLM，绕过 Agent 循环。
 
 #### `Agent.llm.chat(options)`

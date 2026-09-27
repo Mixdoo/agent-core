@@ -66,6 +66,10 @@ await agent.compact({ onCompact: event => console.log(event) }) // 本次覆盖�
 // 直接使用底层 LLM，无需再单独引入。
 const result = await Agent.llm.chat({ baseURL, apiKey, model, messages })
 
+// 要一个有固定格式的对象时，格式定义也从本包拿；返回值里直接读取 output。
+// config.provider.output = Agent.output.object({ schema: Agent.schema.object({ total: Agent.schema.number() }) })
+// const { output } = await agent.send('计算总数')
+
 // callbacks 中可使用下面这些回调：
 // onStart: () => {}，循环开始时调用，无返回值。
 // onLLMStart: ({ messages, tools }) => {}，每次实际请求模型前调用。
@@ -81,6 +85,8 @@ const result = await Agent.llm.chat({ baseURL, apiKey, model, messages })
 */
 
 import { nanoid } from 'nanoid'
+import { Output } from 'ai'                   // 输出格式直接复用本包的 AI SDK，不维护另一套 schema 协议。
+import { z } from 'zod'                       // 调用方从 Agent.schema 获取格式定义，无需另装验证库。
 import Context from './features/context.js'   // 负责把历史消息裁剪成模型上下文
 import Compact from './features/compact.js'   // 负责把上下文压缩成总结文本
 import Loop from './features/loop.js'         // 负责驱动"请求模型 → 执行工具"的主循环
@@ -246,6 +252,8 @@ const Agent = {
     context: Context, // 上下文构建：Agent.context.build()
     compact: Compact, // 生成压缩总结：Agent.compact.run()
     llm: LLM,         // 底层模型请求：Agent.llm.chat()
+    output: Output,   // Agent.output.object / array / json：上游结构化输出格式。
+    schema: z,        // Agent.schema.object / string 等：包内同一份 Zod。
 }
 
 export default Agent

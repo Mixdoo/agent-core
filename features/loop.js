@@ -90,6 +90,7 @@ const run = async ({
         const result = await LLM.chat({ ...llm, ...request, signal, onLLMEvent, onLLMStart, onRetry })
         steps += 1            // 模型完整回答后才算这一轮，失败重试由 LLM.chat 自己处理。
         await onLLMFinish?.(result) // 上层拿到完整 result，自行选择 usage 或其他字段。
+        const answer = { text: result.text, ...('output' in result ? { output: result.output } : {}) } // 最终对象和文字来自同一轮，不能从旧历史猜结果。
         temporaryPrompt = null      // 提示已经用过，下一轮默认不再携带。
 
         // --- 处理无工具调用的情况 ---
@@ -99,11 +100,11 @@ const run = async ({
         if (!toolCalls.length) {
             history.push(...assistantMessages)                                  // 保存模型完整 assistant 消息。
             await onStep?.({ step: steps, result, toolCalls, toolResults: [] })    // 让调用方在回答已经写入 history 后观察这一轮。
-            if (!Object.keys(tools).length) return { reason: 'no-tool', text: result.text } // 没有注册工具就无法使用工具，一次回答即可结束。
-            if (steps >= llm.maxSteps) return { reason: 'step-limit', text: result.text } // 有工具但模型没用，到上限就不再问一次。
+            if ('output' in result || !Object.keys(tools).length) return { reason: 'no-tool', ...answer } // 校验成功的最终对象直接返回，不再额外请求模型。
+            if (steps >= llm.maxSteps) return { reason: 'step-limit', ...answer } // 上限返回本轮文字，工具轮不捏造对象。
             noToolCount += 1                                                    // 累计没有工具调用的轮次。
             if (noToolCount === 2) temporaryPrompt = llm.noToolPrompt          // 第 2 轮：插入临时提示推一下模型。
-            if (noToolCount >= 3) return { reason: 'no-tool', text: result.text } // 第 3 轮：放弃，返回结束原因和最后一次回答。
+            if (noToolCount >= 3) return { reason: 'no-tool', ...answer } // 第 3 轮：返回最后一次回答。
             continue
         }
         noToolCount = 0 // 有工具调用，计数清零。
@@ -146,9 +147,9 @@ const run = async ({
         // --- 判断是否停止循环 ---
         if (toolResults.some(result => result.stop)) {                                          // 任何一个工具要求停止，整个循环就结束。
             if (signal?.aborted) throw new DOMException('Agent loop aborted', 'AbortError')      // 取消导致的停止，仍然按异常向上抛。
-            return { reason: 'tool-stop', text: result.text }                                   // 工具主动要求停止时，也返回这轮模型生成的文字。
+            return { reason: 'tool-stop', ...answer } // 工具主动停止时不另外生成未请求的最终对象。
         }
-        if (steps >= llm.maxSteps) return { reason: 'step-limit', text: result.text } // 先保存全部工具结果再退出，下次 send 能从完整历史继续。
+        if (steps >= llm.maxSteps) return { reason: 'step-limit', ...answer } // 完整工具历史写完后退出。
     }
 }
 

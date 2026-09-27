@@ -34,6 +34,7 @@ const run = async ({ messages, llm, stream = true, onCompact, onRetry, signal })
 
     const result = await LLM.chat({
         ...llm,
+        provider: { ...llm.provider, output: undefined, toolChoice: undefined }, // 总结是自由文本，不继承任务最终对象的格式或强制工具选择。
         system: '你在压缩一段你自己参与过的工作记录。只输出总结内容本身。',
 
         // 要压缩的消息原样当成 messages 发过去，不要 JSON.stringify 塞进一条 user 消息里：

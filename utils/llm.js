@@ -112,7 +112,7 @@ const chat = async ({
             }
         }
 
-        if (protocol === 'chat') providerModel = createOpenAICompatible({ ...settings, name: 'agent' }).chatModel(model) // 中转站默认走 OpenAI Chat 兼容接口。
+        if (protocol === 'chat') providerModel = createOpenAICompatible({ ...settings, name: 'agent', supportsStructuredOutputs: Boolean(call.output) }).chatModel(model) // 显式选择结构化输出时把 schema 一起发给服务端。
         if (protocol === 'responses') providerModel = createOpenAI(settings).responses(model)                     // 官方 OpenAI Responses 接口。
         if (protocol === 'anthropic') providerModel = createAnthropic(settings).languageModel(model)             // Anthropic 原生接口。
         if (protocol === 'gemini') providerModel = createGoogle(settings).languageModel(model)                   // Google 原生接口。
@@ -142,6 +142,7 @@ const chat = async ({
                 usage: await result.usage, // 本次请求消耗的 Token。
                 warnings: await result.warnings, // Provider 对请求参数的提示。
                 responseMessages: await result.responseMessages, // 保存完整 assistant/tool 消息。
+                ...(input.output && !result.toolCalls.length ? { output: result.output } : {}), // 工具轮没有最终对象，只有最终回答才读取 SDK 的校验结果。
             }
         }
 
@@ -161,20 +162,23 @@ const chat = async ({
             const finishReason = await result.finishReason
             if (finishReason === 'error') throw new Error('模型请求失败：供应商返回了错误但没有给出原因') // 只有 finishReason 报错、没有 error 事件时的兜底，不让失败伪装成成功。
 
-            return {
-                text: text.join('') || await result.text, // 优先使用事件收集的文字，没有则使用 AI SDK 最终文字。
-                toolCalls: await result.toolCalls,
-                finishReason,
-                usage: await result.usage,
-                warnings: await result.warnings,
-                responseMessages: await result.responseMessages,
-            }
         } catch (error) {
             // 流被截断、SSE 格式坏掉、缺 finish_reason 这类错误，AI SDK 不给 isRetryable 标记，
             // 但它们全是传输层的瞬时故障——中转站和代理最常见的就是这种，重试一次通常就好了。
             // 在边界上补标记而不是让 Retry 去认 AI SDK 的内部错误类型：判断"能不能重试"仍然只有一处来源。
             if (error?.isRetryable === undefined && error?.name !== 'AbortError') error.isRetryable = true
             throw error
+        }
+        // 格式错误属于最终回答错误，放在传输重试之外，避免反复重试一段不符合 schema 的 JSON。
+        const toolCalls = await result.toolCalls
+        return {
+            text: text.join('') || await result.text,
+            toolCalls,
+            finishReason: await result.finishReason,
+            usage: await result.usage,
+            warnings: await result.warnings,
+            responseMessages: await result.responseMessages,
+            ...(input.output && !toolCalls.length ? { output: await result.output } : {}), // 使用 SDK 自己的 JSON 解析和 Zod 校验。
         }
     }
 
