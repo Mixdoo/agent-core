@@ -80,6 +80,16 @@ test('客户端函数不能作为 MCP 连接配置跨进程传递', async () => 
     await expect(Agent.tool.mcp({ transport: { type: 'http', url: 'http://localhost/mcp', authProvider: () => 'secret' } })).rejects.toThrow()
 })
 
+test('成功返回后也清理拒绝正常退出的 stdio 服务', async () => {
+    const tools = await Agent.tool.mcp({ transport: { type: 'stdio', command: process.execPath, args: [fileURLToPath(new URL('./fixtures/mcp-server.js', import.meta.url))] } })
+    const result = await Agent.tool.execute({ name: 'sticky', input: {}, handlers: tools.handlers })
+    const pid = Number(result.output.value[0].text)
+    try {
+        await Bun.sleep(50)
+        expect(() => process.kill(pid, 0)).toThrow()
+    } finally { try { process.kill(pid, 'SIGKILL') } catch {} }
+})
+
 test('取消 stdio MCP 时真正杀掉不响应取消的本地服务', async () => {
     const folder = await mkdtemp(join(tmpdir(), 'mcp-kill-'))
     const file = join(folder, 'pid')

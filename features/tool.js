@@ -191,13 +191,18 @@ const release = child => {
 }
 
 
-// --- 一个工具进程废了（自己死掉、或被我们杀掉）：它不能再被借出去，腾出的位置给排队的人 ---
-const retire = child => {
-    // 本地 MCP 服务的 PID 由执行进程登记；直接终止，不等待服务配合退出。
-    for (const pid of pool.busy.get(child)?.children ?? []) {
+// --- 收回本次调用启动的 MCP 服务进程 ---
+// SDK 的 close 发出正常退出信号，拒绝配合的服务仍需强制终止。完成和取消共用这一个出口。
+const stopChildren = call => {
+    for (const pid of call?.children ?? []) {
         try { process.kill(pid, 'SIGKILL') }
         catch (error) { if (error.code !== 'ESRCH') throw error } // 服务可能已经自行退出。
     }
+}
+
+// --- 一个工具进程废了（自己死掉、或被我们杀掉）：它不能再被借出去，腾出的位置给排队的人 ---
+const retire = child => {
+    stopChildren(pool.busy.get(child)) // 主进程登记了服务 PID，执行进程崩溃时也能清理。
     if (!pool.live.delete(child)) return // 已经退役过了。主动杀掉时这里会走一遍，child.exited 之后还会再走一遍。
     pool.busy.delete(child)
     pool.idle = pool.idle.filter(one => one !== child)
@@ -233,6 +238,7 @@ const open = () => {
                 return
             }
 
+            stopChildren(call) // 每次调用独立连接，服务进程在成功或失败返回时都应结束。
             pool.busy.delete(child)                                                             // 这次干完了，
             release(child)                                                                      // 让给下一个人，或者还池。
             if (message.type === 'error') call.finish({ output: { type: 'error-text', value: `工具执行失败：${message.message}` }, error: message.message }) // 工具失败也是一条结果，模型需要知道。
