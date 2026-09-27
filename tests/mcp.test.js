@@ -76,6 +76,10 @@ test('stdio 服务可发现和调用，描述和执行地址一起合并', async
     expect(merged.handlers.echo.url).toBe('replacement')
 })
 
+test('客户端函数不能作为 MCP 连接配置跨进程传递', async () => {
+    await expect(Agent.tool.mcp({ transport: { type: 'http', url: 'http://localhost/mcp', authProvider: () => 'secret' } })).rejects.toThrow()
+})
+
 test('取消 stdio MCP 时真正杀掉不响应取消的本地服务', async () => {
     const folder = await mkdtemp(join(tmpdir(), 'mcp-kill-'))
     const file = join(folder, 'pid')

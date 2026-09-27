@@ -1,6 +1,11 @@
 /*
 工具这个主体的全部操作都在这里：从目录里找出工具、把工具交给工具进程执行。
 
+MCP 服务也返回同样的工具集合，可以直接混用：
+    const remote = await Tool.mcp({ transport: { type: 'http', url: 'http://localhost:3000/mcp' }, prefix: 'web_' })
+    const all = Tool.merge(await Tool.scan('./tools'), remote)
+发现和执行都在子进程里；每次 MCP 调用独立连接、结束即关闭。
+
     // 积木 1：扫描工具目录，得到一份独立的工具集合
     const tools = await Tool.scan('./tools')
     // tools.schema   → 给 LLM 的 AI SDK 标准工具描述，直接放进 LLM.chat 的 tools
@@ -321,6 +326,7 @@ const execute = ({ name, input, handlers, signal, onOutput, limit = Infinity, co
 // const remote = await Agent.tool.mcp({ transport: { type: 'http', url: 'http://localhost:3000/mcp' }, prefix: 'web_' })
 // signal 可取消发现过程；timeout 是调用方主动选择的工具超时，未设置就不加上限。
 const mcp = async ({ transport, prefix = '', signal, timeout }) => {
+    transport = structuredClone(transport) // 入口只接受连接数据；函数或客户端对象在派发前直接报错，避免 IPC 无法序列化后挂起。
     const source = { url: import.meta.url, mcp: { transport }, timeout } // 打包后 import.meta.url 自动指向完整产物。
     const listed = await execute({ name: 'discover', input: {}, handlers: { discover: source }, signal }) // 发现也在可强杀进程中完成。
     if (listed.interrupted) throw new DOMException('MCP discovery aborted', 'AbortError')
@@ -338,8 +344,8 @@ const mcp = async ({ transport, prefix = '', signal, timeout }) => {
 // --- 合并本地和远端工具集合 ---
 // 同名时后面的整项覆盖前面，描述和执行地址一起更新，不会各来自不同集合。
 const merge = (...sets) => ({
-    schema: Object.assign({}, ...sets.map(set => set.schema)),
-    handlers: Object.assign({}, ...sets.map(set => set.handlers)),
+    schema: Object.assign(Object.create(null), ...sets.map(set => set.schema)),
+    handlers: Object.assign(Object.create(null), ...sets.map(set => set.handlers)),
 })
 
 export default { scan, execute, mcp, merge }
