@@ -40,6 +40,7 @@ import { pathToFileURL, fileURLToPath } from 'node:url'
 import { basename } from 'node:path'
 import { jsonSchema } from 'ai'
 import toolProcessSource from './tool-process.js' with { type: 'text' } // 工具进程源码以文本引入，打包成单文件时会被原样内联成字符串。
+export { MCP } from './mcp.js' // 供子进程按当前模块地址导入，源码和单文件产物使用同一入口。
 
 // 工具进程要用一个"能跑脚本的 bun"来启动。宿主自己通常就是，用它比在 PATH 上碰运气可靠：
 // 不依赖环境变量，也不会和宿主用的 bun 版本不一致。
@@ -187,6 +188,11 @@ const release = child => {
 
 // --- 一个工具进程废了（自己死掉、或被我们杀掉）：它不能再被借出去，腾出的位置给排队的人 ---
 const retire = child => {
+    // 本地 MCP 服务的 PID 由执行进程登记；直接终止，不等待服务配合退出。
+    for (const pid of pool.busy.get(child)?.children ?? []) {
+        try { process.kill(pid, 'SIGKILL') }
+        catch (error) { if (error.code !== 'ESRCH') throw error } // 服务可能已经自行退出。
+    }
     if (!pool.live.delete(child)) return // 已经退役过了。主动杀掉时这里会走一遍，child.exited 之后还会再走一遍。
     pool.busy.delete(child)
     pool.idle = pool.idle.filter(one => one !== child)
@@ -210,6 +216,11 @@ const open = () => {
 
             const call = pool.busy.get(child)
             if (call?.id !== message.callId) return  // 上一次调用的迟到消息；这个工具进程已经换人了，丢掉。
+
+            if (message.type === 'child') {
+                (call.children ??= new Set()).add(message.pid) // 本地 MCP 服务随这一调用一起取消。
+                return
+            }
 
             if (message.type === 'output') {
                 call.output.push(String(message.data))                                          // 攒着，中断时把已产出的内容一起还给模型。
@@ -295,7 +306,7 @@ const execute = ({ name, input, handlers, signal, onOutput, limit = Infinity, co
                 call.finish({ output: { type: 'error-text', value: `${call.output.text()}\n工具执行超时（${handler.timeout}ms）` }, error: 'timeout' })
             }, handler.timeout)
 
-            child.send({ callId: call.id, url: handler.url, name, input, limit }) // 告诉工具进程：去哪个文件、找哪个名字的工具、用什么参数、输出最多留多长。
+            child.send({ callId: call.id, url: handler.url, mcp: handler.mcp, name, input, limit }) // MCP 连接只传数据，不能把执行函数移进主进程。
         }
 
         signal?.addEventListener('abort', stop, { once: true })
@@ -306,4 +317,29 @@ const execute = ({ name, input, handlers, signal, onOutput, limit = Infinity, co
 }
 
 
-export default { scan, execute }
+// --- 从 MCP 服务发现工具 ---
+// const remote = await Agent.tool.mcp({ transport: { type: 'http', url: 'http://localhost:3000/mcp' }, prefix: 'web_' })
+// signal 可取消发现过程；timeout 是调用方主动选择的工具超时，未设置就不加上限。
+const mcp = async ({ transport, prefix = '', signal, timeout }) => {
+    const source = { url: import.meta.url, mcp: { transport }, timeout } // 打包后 import.meta.url 自动指向完整产物。
+    const listed = await execute({ name: 'discover', input: {}, handlers: { discover: source }, signal }) // 发现也在可强杀进程中完成。
+    if (listed.interrupted) throw new DOMException('MCP discovery aborted', 'AbortError')
+    if (listed.error) throw new Error(listed.output.value) // 发现失败必须通知调用方，不返回空集合伪装成功。
+    const schema = Object.create(null) // 外部工具名不影响对象原型。
+    const handlers = Object.create(null)
+    for (const tool of listed.output.value) {
+        const name = prefix + tool.name // 多个服务用不同前缀就不会撞名。
+        schema[name] = { description: tool.description, inputSchema: jsonSchema(tool.inputSchema) }
+        handlers[name] = { ...source, mcp: { transport, name: tool.name } } // 原始名字留给服务端。
+    }
+    return { schema, handlers } // 与 scan 完全相同的形状，Agent 无需区分工具来源。
+}
+
+// --- 合并本地和远端工具集合 ---
+// 同名时后面的整项覆盖前面，描述和执行地址一起更新，不会各来自不同集合。
+const merge = (...sets) => ({
+    schema: Object.assign({}, ...sets.map(set => set.schema)),
+    handlers: Object.assign({}, ...sets.map(set => set.handlers)),
+})
+
+export default { scan, execute, mcp, merge }

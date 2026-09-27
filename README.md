@@ -533,6 +533,21 @@ Agent 当前的完整历史消息数组，可直接读写。
 
 ### `Agent.tool`
 
+#### MCP 工具与本地工具混用
+
+```js
+const remote = await Agent.tool.mcp({
+    transport: { type: 'http', url: 'http://localhost:3000/mcp', headers: {} },
+    prefix: 'web_', // 可选前缀，避免不同服务出现同名工具
+})
+const local = await Agent.tool.scan('./tools')
+const agent = Agent.create({ config, tools: Agent.tool.merge(local, remote) })
+```
+
+本地服务使用 `{ type: 'stdio', command: 'bun', args: ['/absolute/path/server.js'], env: {} }`；远端也支持 SDK 的 SSE 连接配置。连接参数只收可序列化的数据，不收函数或客户端对象。`signal` 可取消工具发现，`timeout` 可主动设置发现和执行的超时。
+
+发现和执行都在工具子进程中进行。每次独立连接，结束时关闭；取消不会切断另一次调用的连接。本地 stdio 服务的直接进程会随执行进程终止，远端已完成的副作用不能撤回。本实现不共享跨调用的 MCP session；需要保持状态的服务应使用业务 ID。`merge` 同名时以后面的集合为准，工具描述和执行配置一起替换。
+
 #### `Agent.tool.scan(directory)`
 
 扫描目录（含子目录）里所有 `.js` 文件，把其中形状对得上的注册成工具，其余文件跳过。

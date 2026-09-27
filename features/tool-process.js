@@ -113,6 +113,7 @@ Bun.spawn = (command, options = {}) => {
         },
     })
 }
+const relaySpawn = Bun.spawn // 本地工具需要自动转发输出，MCP 的协议管道则由客户端独占。
 
 
 // --- 劫持 console：工具里的 console.log 直接变成流式输出 ---
@@ -191,13 +192,17 @@ const shape = (tool, result, limit) => {
 process.on('message', async data => {
     current = data.callId                                                       // 本次调用的身份，console 输出也归到它名下。
     try {
+        if (data.mcp) Bun.spawn = spawn                                        // MCP 客户端内部可能使用 Bun 的 spawn，不能把协议字节当普通日志读走。
         const module = await import(data.url)                                   // 工具进程是独立进程，工具文件在这里重新加载。
-        const tool = [module.default].flat().find(one => one.name === data.name) // 按名字认工具，和主线程建表时用的是同一条规则，不会错位。
+        const tool = data.mcp
+            ? { execute: input => module.MCP.run(data.mcp, input, pid => process.send({ callId: data.callId, type: 'child', pid })) } // 主进程持有本地服务 PID，取消时一起终止。
+            : [module.default].flat().find(one => one.name === data.name) // 本地文件仍按工具名定位。
         const result = await collect(await tool.execute(data.input))
         process.send({ callId: data.callId, type: 'done', output: shape(tool, result, data.limit), stop: result?.stop === true }) // stop 是工具主动要求结束整个循环。
     } catch (error) {
         process.send({ callId: data.callId, type: 'error', message: error?.message || String(error) }) // 工具抛错、toModelOutput 抛错、输出块非法、JSON 化失败，对模型来说都是"这个工具没成功"。
     } finally {
+        Bun.spawn = relaySpawn                                                 // 进程归还池前恢复普通文件工具的输出转发。
         current = null                                                          // 交还身份：这之后再有输出就不属于任何一次调用了。
     }
 })
