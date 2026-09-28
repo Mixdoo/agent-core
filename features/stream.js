@@ -77,7 +77,7 @@ const run = (send, input, options = {}) => {
             if (connected) await writer.close()
             return value
         } catch (error) {
-            await publish('error', { name: error.name, message: error.message }) // 网络出口只发错误描述，不泄漏 SDK 请求头和密钥。
+            await publish('error', { name: error.name, message: error.message, kind: error.kind }) // 网络出口只发错误描述和分类，不泄漏 SDK 请求头和密钥。
             finished = true
             if (connected) await writer.close()
             throw error // 调用方 await result 时仍拿到原始异常。

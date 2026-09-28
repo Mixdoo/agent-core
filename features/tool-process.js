@@ -1,13 +1,18 @@
 /*
-工具真正跑起来的地方。它不是普通模块，不能 import 进来调用：
+工具进程这一半：主线程把工具文件地址和执行参数发进来，这里加载工具、跑它、把结果成形成模型能读的输出块。
+本文件不是普通模块，调用方不要 import 它——它没有任何导出，靠被 features/tool.js 当文本内联进一个新的 bun 进程才生效：
 
-    import Sandbox from './tool-process.js'   // 错误：本文件没有任何导出
-
-正确用法是被 features/tool.js 当成文本内联，再喂给一个新的 bun 进程：
-
-    import source from './tool-process.js' with { type: 'text' }
+    import source from './tool-process.js' with { type: 'text' }   // tool.js 的写法
     const child = Bun.spawn(['bun', '-'], { stdin: 'pipe', ipc: handle })
     child.stdin.write(source); child.stdin.end()
+
+隔着进程的约定是几条消息，工具作者和调用方都不需要手写它们：
+    主线程 → 工具进程   { callId, url, name, input, limit }      执行哪个文件里的哪个工具，输出最多留多长
+    工具进程 → 主线程   { type: 'ready' }                        我起来了，可以派活
+    工具进程 → 主线程   { callId, type: 'child', pid }           这次调用起了本地服务，取消时一起杀
+    工具进程 → 主线程   { callId, type: 'output', stream, data } 工具产生了一段实时输出
+    工具进程 → 主线程   { callId, type: 'done', output, stop }   跑完了，output 已经是模型能直接读的形态
+    工具进程 → 主线程   { callId, type: 'error', message }       工具抛错了
 
 它隔离的是生命周期，不是环境。工具在这里拥有和 Agent 完全相同的权限：
 读写任意文件、执行任意命令、联网、读到父进程的全部环境变量（包括 apiKey）。
@@ -21,12 +26,6 @@
 操作系统、孙进程一起带走——实测 200 次「起→用→杀」主进程只涨 2MB，而 Worker 版是 4.4GB。
 
 一个工具进程长期存活、一次只服务一次调用，所以每条消息都带 callId，主线程靠它认领结果。
-
-    主线程 → 工具进程   { callId, url, name, input, limit }      执行哪个文件里的哪个工具，输出最多留多长
-    工具进程 → 主线程   { ready: true }                          我起来了，可以派活
-    工具进程 → 主线程   { callId, type: 'output', stream, data } 工具产生了一段实时输出
-    工具进程 → 主线程   { callId, type: 'done', output, stop }   跑完了，output 已经是模型能直接读的形态
-    工具进程 → 主线程   { callId, type: 'error', message }       工具抛错了
 
 工具文件默认导出一个工具或一组工具：
 
@@ -195,7 +194,7 @@ process.on('message', async data => {
         if (data.mcp) Bun.spawn = spawn                                        // MCP 客户端内部可能使用 Bun 的 spawn，不能把协议字节当普通日志读走。
         const module = await import(data.url)                                   // 工具进程是独立进程，工具文件在这里重新加载。
         const tool = data.mcp
-            ? { execute: input => module.MCP.run(data.mcp, input, pid => process.send({ callId: data.callId, type: 'child', pid })) } // 主进程持有本地服务 PID，取消时一起终止。
+            ? { execute: input => module.MCP.run(data.mcp, input ?? {}, pid => process.send({ callId: data.callId, type: 'child', pid })) } // 主进程持有本地服务 PID，取消时一起终止。
             : [module.default].flat().find(one => one.name === data.name) // 本地文件仍按工具名定位。
         const result = await collect(await tool.execute(data.input))
         process.send({ callId: data.callId, type: 'done', output: shape(tool, result, data.limit), stop: result?.stop === true }) // stop 是工具主动要求结束整个循环。

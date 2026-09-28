@@ -403,7 +403,9 @@ import Agent from '@kernel4632/agent-core'
 | `maxToolConcurrency` | `undefined` | 默认不限制同一轮工具并发；主动设置后超出的调用排队 |
 | `retryMaxDelay` | `undefined` | 默认不限制单次退避时间；主动设置后限制秒数 |
 | `retryMaxElapsed` | `undefined` | 默认不限制重试总时长；主动设置后到点把错误交给上层 |
+| `requestTimeout` | `undefined` | 默认不限制单笔请求时长；主动设置毫秒数后，卡住的一笔会被中断 |
 | `noToolPrompt` | `undefined` | 默认不插入催促消息；主动设置后模型连续两轮不调工具时使用 |
+| `noToolRounds` | `3` | 连续多少轮不调工具就结束一次 `send`；设成 `Infinity` 就永不因不调工具结束 |
 
 陌生中转站建议先使用默认能力。遇到只支持文字、但接口声称兼容 OpenAI 的模型，可以按能力关闭：
 
@@ -506,7 +508,7 @@ const result = await agent.send({
 
 // result.text → 最后一轮模型生成的文字
 // result.reason:
-//   'no-tool'    → 没注册工具时一次回答结束；有工具时连续 3 轮没调用工具才结束
+//   'no-tool'    → 没注册工具时一次回答结束；有工具时连续 noToolRounds 轮（默认 3）没调用工具才结束
 //   'tool-stop'  → 某个工具返回了 stop: true
 //   'step-limit' → 达到 maxSteps，当前工具结果已保存，下一次 send 可继续
 ```
@@ -562,7 +564,9 @@ return agent.stream({ input: '你好', signal: request.signal }).response({
 })
 ```
 
-每个 SSE 帧是 `data: {"type":"...","data":...}`。事件类型包括 `start`、`llm`、`model-finish`、`tool-call`、`tool-output`、`tool-result`、`step`、`compact`、`retry`、`finish`、`error`。这是本包事件协议，不是 AI SDK UIMessage 协议。失败时 `result` 拒绝；可传输的错误描述进入 `error` 事件。
+每个 SSE 帧是 `data: {"type":"...","data":...}`。事件类型包括 `start`、`llm`、`model-finish`、`tool-call`、`tool-output`、`tool-result`、`step`、`compact`、`retry`、`finish`、`error`。这是本包事件协议，不是 AI SDK UIMessage 协议。失败时 `result` 拒绝；可传输的错误描述和 `kind` 进入 `error` 事件。
+
+模型请求失败时抛出的错误带一个稳定的 `kind`：`aborted`（用户取消）、`auth`（密钥或权限，401/403）、`limit`（限流，429）、`timeout`（单笔超时或 408）、`server`（5xx）、`network`（没连上）、`request`（其余 4xx）、`unknown`。上层靠它决定该换模型、该等一下还是该直接报错，不用去认 AI SDK 的内部错误形状。`kind` 只补充信息，能不能重试仍然只由错误自己的 `isRetryable` 决定。
 
 `events` 与 `response()` 共用一条流，只选一个消费者。必须持续读取才会持续推进模型回调；普通工具日志仍按原来的非等待式 IPC 排队，不默认丢弃。若只要最终结果，直接用 `send()`。普通回调照常执行，流式观察不会改变 Agent 的持久回调配置。
 
@@ -603,6 +607,16 @@ const agent = Agent.create({ config, tools: Agent.tool.merge(local, remote) })
 ```
 
 本地服务使用 `{ type: 'stdio', command: 'bun', args: ['/absolute/path/server.js'], env: {} }`；远端也支持 SDK 的 SSE 连接配置。连接参数只收可序列化的数据，不收函数或客户端对象。`signal` 可取消工具发现，`timeout` 可主动设置发现和执行的超时。
+
+服务端公开的三种原语都会变成同一张工具表里的条目，模型不需要区分来源：
+
+| 服务端公开 | 变成什么 |
+|------------|----------|
+| tools | 每个远端工具一个本地工具，调用即执行 |
+| prompts | 每个提示词模板一个工具，模型传参调用就取回这段提示 |
+| resources | 合并成一个 `read_resource` 工具，参数是要读的 `uri`；可用地址写在工具描述里 |
+
+服务端没有声明 `prompts` 或 `resources` 时不会去问，也不会多出用不上的工具。取回的提示词会带上 `user：` / `assistant：` 角色标签，便于模型判断这是谁说的话。
 
 发现和执行都在工具子进程中进行。每次独立连接，结束时关闭；取消不会切断另一次调用的连接。本地 stdio 服务的直接进程会随执行进程终止，远端已完成的副作用不能撤回。本实现不共享跨调用的 MCP session；需要保持状态的服务应使用业务 ID。`merge` 同名时以后面的集合为准，工具描述和执行配置一起替换。
 

@@ -11,9 +11,11 @@ provider: { temperature, topP, topK, maxOutputTokens, stopSequences, seed, toolC
 // 3. system：人给这台 Agent 的身份。它不属于模型参数，是这个包要往上下文里放的东西。
 
 // 4. Agent 的策略：这个包自己的旋钮，和模型无关。
-maxTokens?, compactThreshold, maxSteps?, maxToolOutput?, maxToolConcurrency?, retryMaxDelay?, retryMaxElapsed?, noToolPrompt?, stream, cache, capabilities, mediaFallback
+maxTokens?, compactThreshold, maxSteps?, maxToolOutput?, maxToolConcurrency?, retryMaxDelay?, retryMaxElapsed?, noToolPrompt?, requestTimeout?, noToolRounds?, stream, cache, capabilities, mediaFallback
 // capabilities: { image, audio, video, file, tools, structuredOutput, toolChoice, reasoning }
 // mediaFallback: 'error'（默认）或 'strip'；关闭某种媒体后，strip 会保留文字并丢掉媒体块。
+// requestTimeout: 单笔模型请求最多等多久（毫秒）；不设就不限时，卡住的请求会一直等。
+// noToolRounds: 连续多少轮不调工具就结束（默认 3）；设成 Infinity 就永不因不调工具结束，需要调用方给出别的停止条件。
 // 带 ? 的策略默认不限制；只有调用方主动填写才会启用对应保护。
 maxTokens 和 provider.maxOutputTokens 名字像但是两回事：前者是这个包的上下文预算（超了就压缩），
 后者是"这次最多生成多少 token"。改其中一个不会影响另一个。
@@ -119,13 +121,21 @@ const buildLLM = config => ({
     provider: config.provider,                  // 生成参数整包转发给 AI SDK，这个包不逐个列字段
     retryMaxDelay: config.retryMaxDelay,        // 重试退避上限（秒）。重试是 LLM.chat 自带的，压缩那次请求也走同一套
     retryMaxElapsed: config.retryMaxElapsed,    // 一直失败最多再试多久（秒），到点把错误交给上层
+    requestTimeout: config.requestTimeout,      // 单笔模型请求的限时（毫秒）；不设就不限时
     maxTokens: config.maxTokens,                // 上下文 Token 上限，压缩阈值判断和裁剪预算都用它
     compactThreshold: config.compactThreshold,  // 触发自动压缩的比例
     maxSteps: config.maxSteps,                  // 一次 send 最多请求模型多少轮，防止一直调工具不结束
     noToolPrompt: config.noToolPrompt,          // 临时提示文本
+    noToolRounds: config.noToolRounds,          // 连续多少轮不调工具就结束
     stream: config.stream,                      // 是否流式输出
 })
 
+
+// --- 默认值只有这一处，改一次就够 ---
+// 这些值会随配置一起交给 Loop，所以 Loop 里不再写第二份"没传就用这个"，避免改一处漏一处。
+const DEFAULT_CAPABILITIES = { image: true, audio: true, video: true, file: true, tools: true, structuredOutput: true, toolChoice: true, reasoning: false } // 陌生渠道默认只发通用能力，高级能力由调用方逐项打开。
+const DEFAULT_COMPACT_THRESHOLD = 0.8 // 设置 maxTokens 后，上下文到这个比例就压缩。
+const DEFAULT_NO_TOOL_ROUNDS = 3      // 有工具时连续几轮不调工具就结束一次 send。
 
 // 创建一台独立 Agent：传入的对象会成为这台机器公开、可继续修改的内部状态。
 const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}, handlers: {} }, callbacks = {} } = {}) => {
@@ -139,21 +149,22 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
             protocol: 'chat',       // 大多数兼容 OpenAI Chat 的服务使用这个协议。
             provider: {},           // AI SDK 的生成参数整包转发，默认一个都不设——替调用者的模型默认 temperature 是在猜他的模型。
             cache: false,           // prompt_cache_key 是 OpenAI 私有字段，中转站大多不认，默认不发。
-            capabilities: { image: true, audio: true, video: true, file: true, tools: true, structuredOutput: true, toolChoice: true, reasoning: false }, // 陌生渠道默认只发通用能力；高级能力由调用方逐项打开。
             mediaFallback: 'error', // 媒体能力关闭时默认明确报错；需要尽量跑完时改成 'strip'。
             maxToolOutput: undefined, // 不截断工具输出；需要保护内存时由调用方主动设置字符上限。
             maxToolConcurrency: undefined, // 不限制同一轮工具并发；需要排队时由调用方主动设置。
             maxTokens: undefined,      // 不估算或压缩上下文；需要窗口保护时由调用方主动设置。
-            compactThreshold: 0.8,     // 设置 maxTokens 后使用的压缩比例。
             maxSteps: undefined,    // 不设上限；调用方主动传入正整数时才限制一次 send 的模型轮数。
             retryMaxDelay: undefined, // 不限制退避上限；调用方需要限制等待时主动设置秒数。
             retryMaxElapsed: undefined, // 不限制重试总时长；服务恢复前持续重试，调用方可主动设置秒数。
+            requestTimeout: undefined, // 不限制单笔请求时长；调用方需要防卡死时主动设置毫秒数。
             noToolPrompt: undefined, // 不主动催促模型；调用方需要无工具提醒时主动设置。
             stream: true,           // 主循环和压缩请求都使用流式输出。
             system: '',             // 没有系统提示词时仍允许 Agent 运行。
             ...config,              // 传入配置覆盖默认配置，且配置结构只包含 Agent 需要的字段。
-            provider: { ...config.provider }, // 单独浅拷一层：两个 Agent 共用一个 provider 对象时，改其中一个不该动到另一个。
-            capabilities: { image: true, audio: true, video: true, file: true, tools: true, structuredOutput: true, toolChoice: true, reasoning: false, ...config.capabilities }, // 部分开关也能单独覆盖，其余保持兼容默认值。
+            provider: { ...config.provider },                                                                                   // 单独浅拷一层：两个 Agent 共用一个 provider 对象时，改其中一个不该动到另一个。
+            capabilities: { ...DEFAULT_CAPABILITIES, ...config.capabilities },                                                // 能力开关按字段覆盖，其余保持默认。
+            compactThreshold: config.compactThreshold ?? DEFAULT_COMPACT_THRESHOLD,                                            // 压缩比例只有这一个来源，Loop 直接用它。
+            noToolRounds: config.noToolRounds ?? DEFAULT_NO_TOOL_ROUNDS,                                                       // 无工具结束轮数只有这一个来源，Loop 直接用它。
         },
         tools,                       // Agent.tool.scan() 的返回值：{ schema, handlers }，后续 send 可以整份替换。
         callbacks: { ...callbacks }, // 回调逐项保存，后续 send 只覆盖传入的回调。
@@ -169,6 +180,9 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
 
         const empty = typeof input === 'string' ? !input.trim() : !Array.isArray(input) || !input.length
         if (empty) throw new TypeError('input must be a non-empty string or a non-empty content array') // 没有本次输入就没有可执行指令。
+        const limits = { ...agent.config, ...(options.config ?? {}) }                              // 本次真正生效的配置：即将覆盖的值也要一起检查。
+        if (limits.maxSteps !== undefined && (!Number.isInteger(limits.maxSteps) || limits.maxSteps < 1)) throw new RangeError('maxSteps must be a positive integer') // 设成 0 却仍然发出一次请求，是调用方最容易被骗到的地方，在入口就拦住。
+        if (limits.noToolRounds !== undefined && limits.noToolRounds !== Infinity && (!Number.isInteger(limits.noToolRounds) || limits.noToolRounds < 1)) throw new RangeError('noToolRounds must be a positive integer or Infinity') // 0 会让一次 send 一轮都不走，负数和小数没有含义。
         if ('history' in options) agent.history = options.history                                           // 传入空数组也代表明确覆盖历史。
         if ('config' in options) agent.config = { ...agent.config, ...options.config, provider: 'provider' in options.config ? { ...options.config.provider } : agent.config.provider, capabilities: 'capabilities' in options.config ? { ...agent.config.capabilities, ...options.config.capabilities } : agent.config.capabilities } // provider 整包替换；能力开关按字段合并，调用方只改一个开关就够。
         if ('tools' in options) agent.tools = options.tools                                                 // 工具是整体替换，不在 Agent 内部猜测如何合并。

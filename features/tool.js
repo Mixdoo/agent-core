@@ -4,6 +4,7 @@
 MCP 服务也返回同样的工具集合，可以直接混用：
     const remote = await Tool.mcp({ transport: { type: 'http', url: 'http://localhost:3000/mcp' }, prefix: 'web_' })
     const all = Tool.merge(await Tool.scan('./tools'), remote)
+服务端的 tools、prompts、resources 都会变成这张工具表里的条目，上层不需要区分来源。
 发现和执行都在子进程里；每次 MCP 调用独立连接、结束即关闭。
 
     // 积木 1：扫描工具目录，得到一份独立的工具集合
@@ -328,22 +329,53 @@ const execute = ({ name, input, handlers, signal, onOutput, limit = Infinity, co
 }
 
 
+// --- 提示词模板的参数声明变成一份 JSON Schema ---
+// MCP 的参数描述里只有名字、说明和是否必填，正好是一个对象 Schema 的全部内容。
+const promptSchema = parameters => jsonSchema({
+    type: 'object',
+    properties: Object.fromEntries(parameters.map(one => [one.name, { type: 'string', ...(one.description ? { description: one.description } : {}) }])),
+    required: parameters.filter(one => one.required).map(one => one.name),
+})
+
+// --- 服务端公开的资源写进工具描述，模型才知道有哪些地址可读 ---
+// 资源和工具描述一样是发现时固定的；服务端资源变了要重新扫一次。
+const resourceTool = resources => ({
+    description: `读取 MCP 服务端公开的资源，uri 从下面挑：\n${resources.map(one => `- ${one.uri}${one.template ? '（模板，占位符自行替换）' : ''}${one.description ? `：${one.description}` : ''}`).join('\n')}`,
+    inputSchema: jsonSchema({ type: 'object', properties: { uri: { type: 'string', description: '要读取的资源地址' } }, required: ['uri'] }),
+})
+
 // --- 从 MCP 服务发现工具 ---
 // const remote = await Agent.tool.mcp({ transport: { type: 'http', url: 'http://localhost:3000/mcp' }, prefix: 'web_' })
+// 服务端的 tools、prompts、resources 都会变成同一张工具表：工具直连，提示词按参数取回，资源按 uri 读取。
 // signal 可取消发现过程；timeout 是调用方主动选择的工具超时，未设置就不加上限。
 const mcp = async ({ transport, prefix = '', signal, timeout }) => {
     transport = structuredClone(transport) // 入口只接受连接数据；函数或客户端对象在派发前直接报错，避免 IPC 无法序列化后挂起。
-    const source = { url: import.meta.url, mcp: { transport }, timeout } // 打包后 import.meta.url 自动指向完整产物。
-    const listed = await execute({ name: 'discover', input: {}, handlers: { discover: source }, signal }) // 发现也在可强杀进程中完成。
+    const source = { url: import.meta.url, timeout } // 打包后 import.meta.url 自动指向完整产物。
+    const listed = await execute({ name: 'discover', input: {}, handlers: { discover: { ...source, mcp: { transport, kind: 'discover' } } }, signal }) // 发现也在可强杀进程中完成。
     if (listed.interrupted) throw new DOMException('MCP discovery aborted', 'AbortError')
     if (listed.error) throw new Error(listed.output.value) // 发现失败必须通知调用方，不返回空集合伪装成功。
+    const discovered = listed.output.value
     const schema = Object.create(null) // 外部工具名不影响对象原型。
     const handlers = Object.create(null)
-    for (const tool of listed.output.value) {
+
+    for (const tool of discovered.tools) {
         const name = prefix + tool.name // 多个服务用不同前缀就不会撞名。
         schema[name] = { description: tool.description, inputSchema: jsonSchema(tool.inputSchema) }
-        handlers[name] = { ...source, mcp: { transport, name: tool.name } } // 原始名字留给服务端。
+        handlers[name] = { ...source, mcp: { transport, kind: 'tool', name: tool.name } } // 原始名字留给服务端。
     }
+
+    for (const prompt of discovered.prompts) {
+        const name = prefix + prompt.name // 提示词和工具共用一个命名空间，同名时后发现的覆盖先发现的。
+        schema[name] = { description: prompt.description ?? `MCP 提示词 ${prompt.name}`, inputSchema: promptSchema(prompt.arguments) }
+        handlers[name] = { ...source, mcp: { transport, kind: 'prompt', name: prompt.name } }
+    }
+
+    if (discovered.resources.length) { // 服务端没公开资源时不多一个用不上的工具。
+        const name = prefix + 'read_resource'
+        schema[name] = resourceTool(discovered.resources)
+        handlers[name] = { ...source, mcp: { transport, kind: 'resource' } }
+    }
+
     return { schema, handlers } // 与 scan 完全相同的形状，Agent 无需区分工具来源。
 }
 

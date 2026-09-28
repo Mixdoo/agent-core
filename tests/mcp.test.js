@@ -19,13 +19,19 @@ const service = () => {
             const message = await request.json()
             if (message.id === undefined) return new Response(null, { status: 202 })
             let result
-            if (message.method === 'initialize') result = { protocolVersion: '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'fixture', version: '1' } }
+            if (message.method === 'initialize') result = { protocolVersion: '2025-06-18', capabilities: { tools: {}, prompts: {}, resources: {} }, serverInfo: { name: 'fixture', version: '1' } }
             else if (message.method === 'tools/list') result = { tools: ['echo', 'fail', 'wait'].map(name => ({ name, description: name, inputSchema: { type: 'object', properties: { value: { type: 'string' } } } })) }
             else if (message.method === 'tools/call') {
                 calls.push(message.params)
                 if (message.params.name === 'wait') await new Promise(resolve => request.signal.addEventListener('abort', resolve, { once: true }))
                 result = { content: [{ type: 'text', text: message.params.arguments.value ?? 'result' }], isError: message.params.name === 'fail' }
-            } else return Response.json({ jsonrpc: '2.0', id: message.id, error: { code: -32601, message: 'Method not found' } })
+            }
+            else if (message.method === 'prompts/list') result = { prompts: [{ name: 'greet', description: '打个招呼', arguments: [{ name: 'who', description: '称呼', required: true }] }] }
+            else if (message.method === 'prompts/get') result = { messages: [{ role: 'user', content: { type: 'text', text: `你好 ${message.params.arguments.who}` } }] }
+            else if (message.method === 'resources/list') result = { resources: [{ uri: 'note://demo', name: 'demo', description: '示例资源', mimeType: 'text/plain' }] }
+            else if (message.method === 'resources/templates/list') result = { resourceTemplates: [{ uriTemplate: 'note://{id}', name: 'note', description: '按编号取笔记' }] }
+            else if (message.method === 'resources/read') result = { contents: [{ uri: message.params.uri, mimeType: 'text/plain', text: `资源内容：${message.params.uri}` }] }
+            else return Response.json({ jsonrpc: '2.0', id: message.id, error: { code: -32601, message: 'Method not found' } })
             return Response.json({ jsonrpc: '2.0', id: message.id, result })
         },
     })
@@ -105,6 +111,34 @@ test('stdio 服务可发现和调用，描述和执行地址一起合并', async
     const merged = Agent.tool.merge(tools, { schema: { echo: { description: 'replacement' } }, handlers: { echo: { url: 'replacement' } } })
     expect(merged.schema.echo.description).toBe('replacement')
     expect(merged.handlers.echo.url).toBe('replacement')
+})
+
+test('服务端的提示词和资源都变成同一张工具表里的条目', async () => {
+    const { server, transport } = service()
+    try {
+        const remote = await Agent.tool.mcp({ transport, prefix: 'web_' })
+        expect(Object.keys(remote.schema)).toContain('web_greet')                    // 提示词模板。
+        expect(remote.schema.web_greet.inputSchema.jsonSchema.required).toEqual(['who']) // 必填参数来自服务端声明。
+        expect(remote.schema.web_read_resource.description).toContain('note://demo')  // 模型从描述里知道有哪些地址。
+        expect(remote.schema.web_read_resource.description).toContain('note://{id}')  // 模板地址也列出来。
+
+        const greeting = await Agent.tool.execute({ name: 'web_greet', input: { who: '世界' }, handlers: remote.handlers })
+        const text = greeting.output.value.map(part => part.text).join('')
+        expect(text).toContain('你好 世界')
+        expect(text).toContain('user：')                     // 角色标签让模型知道这是谁说的话。
+
+        const note = await Agent.tool.execute({ name: 'web_read_resource', input: { uri: 'note://demo' }, handlers: remote.handlers })
+        expect(note.output.value[0].text).toContain('资源内容：note://demo')
+    } finally { server.stop(true) }
+})
+
+test('stdio 服务端的提示词和资源同样可用', async () => {
+    const tools = await Agent.tool.mcp({ transport: { type: 'stdio', command: process.execPath, args: [fileURLToPath(new URL('./fixtures/mcp-server.js', import.meta.url))] } })
+    expect(Object.keys(tools.schema)).toEqual(expect.arrayContaining(['echo', 'greet', 'read_resource']))
+    const greeting = await Agent.tool.execute({ name: 'greet', input: { who: 'stdio' }, handlers: tools.handlers })
+    expect(greeting.output.value.map(part => part.text).join('')).toContain('你好 stdio')
+    const note = await Agent.tool.execute({ name: 'read_resource', input: { uri: 'note://demo' }, handlers: tools.handlers })
+    expect(note.output.value[0].text).toContain('资源内容：note://demo')
 })
 
 test('客户端函数不能作为 MCP 连接配置跨进程传递', async () => {
