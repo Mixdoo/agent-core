@@ -234,7 +234,39 @@ describe('Loop', () => {
 
     test('不合法的轮数上限在请求模型前就报错', async () => {
         const agent = Agent.create({ config: { ...config, maxSteps: 0 } })
-        await expect(agent.send('你好')).rejects.toThrow('maxSteps must be a positive integer')
+        expect(() => agent.send('你好')).toThrow('maxSteps must be a positive integer') // 入口同步拦住，请求根本没发出去。
+    })
+
+    test('不合法的无工具结束轮数在请求模型前就报错', async () => {
+        const agent = Agent.create({ config: { ...config, noToolRounds: 0 } })
+        expect(() => agent.send('你好')).toThrow('noToolRounds must be a positive integer or Infinity')
+    })
+
+    test('按次传入的非法轮数上限同样在入口被拦住', async () => {
+        const agent = Agent.create({ config })
+        expect(() => agent.send({ input: '你好', config: { maxSteps: 2.5 } })).toThrow('maxSteps must be a positive integer') // 覆盖值也要一起检查，不能绕过。
+    })
+
+    test('无工具结束轮数可调，调大就多问几轮', async () => {
+        const count = async noToolRounds => {
+            let calls = 0
+            const mock = Bun.serve({
+                port: 0,
+                fetch() {
+                    calls += 1
+                    return Response.json({ choices: [{ index: 0, message: { role: 'assistant', content: '暂时不用工具' }, finish_reason: 'stop' }], usage: {} })
+                },
+            })
+            try {
+                const tools = await Agent.tool.scan(new URL('./fixtures/tools', import.meta.url))
+                const agent = Agent.create({ config: { ...config, baseURL: `http://127.0.0.1:${mock.port}/v1`, noToolRounds }, tools })
+                const result = await agent.send('检查一下')
+                return { calls, reason: result.reason }
+            } finally { mock.stop(true) }
+        }
+
+        expect(await count(1)).toEqual({ calls: 1, reason: 'no-tool' }) // 模型不调工具就结束，不再多问。
+        expect(await count(5)).toEqual({ calls: 5, reason: 'no-tool' }) // 多给几次机会，上限跟着配置走。
     })
 
     test('达到轮数上限时保留完整工具结果，下次 send 可以继续', async () => {

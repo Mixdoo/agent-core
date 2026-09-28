@@ -9,24 +9,24 @@ import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { version } from '../package.json'
 
-const root = fileURLToPath(new URL('../', import.meta.url))
-const dist = join(root, 'dist', 'agent-core.js')
-const revision = Bun.spawnSync(['git', 'rev-parse', '--short', 'HEAD'], { cwd: root }).stdout.toString().trim() || 'unknown'
+const root = fileURLToPath(new URL('../', import.meta.url))   // 项目根目录，按本文件位置算，换目录启动也不跑偏。
+const dist = join(root, 'dist', 'agent-core.js')              // 唯一发布产物。
+const revision = Bun.spawnSync(['git', 'rev-parse', '--short', 'HEAD'], { cwd: root }).stdout.toString().trim() || 'unknown' // 产物里记下构建时的提交号，排查问题时能对上。
 
 const result = await Bun.build({
-    entrypoints: [join(root, 'index.js')],
-    target: 'bun',
-    format: 'esm',
-    packages: 'bundle',
-    minify: true,
-    sourcemap: 'none',
+    entrypoints: [join(root, 'index.js')], // 从包入口打包，导出什么就打出什么。
+    target: 'bun',                         // 只在 Bun 上跑。
+    format: 'esm',                         // 保持 ESM。
+    packages: 'bundle',                    // 依赖一起打进去，产物可脱离 node_modules 使用。
+    minify: true,                          // 压缩体积；压缩不是加密。
+    sourcemap: 'none',                     // 不生成 sourcemap。
 })
-if (!result.success || result.outputs.length !== 1) throw new Error(`打包失败：${result.logs.join('\n')}`)
+if (!result.success || result.outputs.length !== 1) throw new Error(`打包失败：${result.logs.join('\n')}`) // 打包失败就直接报错，不产出半成品。
 
-const temp = await mkdtemp(join(tmpdir(), 'agent-core-'))
+const temp = await mkdtemp(join(tmpdir(), 'agent-core-')) // 在一个没有 node_modules 的临时目录里自检，确认产物真的能独立跑。
 try {
     const filename = join(temp, 'agent-core.js')
-    await Bun.write(filename, `// @kernel4632/agent-core ${version} (${revision})\n${await result.outputs[0].text()}`)
+    await Bun.write(filename, `// @kernel4632/agent-core ${version} (${revision})\n${await result.outputs[0].text()}`) // 首行写上版本和提交号，一眼能看出产物对应哪次构建。
 
     // 在没有 node_modules 的临时目录导入，跑一遍模型请求和工具子进程。
     const server = Bun.serve({

@@ -1,6 +1,7 @@
 /*
 History 只创建“通用历史块”，不保存任何供应商专用字段。
-Context.build() 会过滤 id、compact 等内部字段，只取 role 和 content 给 AI SDK。
+发给模型前的整理由本文件的 model() 完成：去掉 id、compact 等内部字段，只留 role 和 content，
+并按能力开关转换媒体块。Context.build() 和 LLM.chat 都调用它，规则只有这一份。
 
 // 1. 创建用户历史块
 const userMessage = History.user({ content: '帮我写个爬虫' })
@@ -63,28 +64,28 @@ const user = ({ id, content }) => {
 
 // 创建 assistant 历史块；内容块和工具调用最终都放在同一个 content 数组里。
 const assistant = ({ id, content = null, toolCalls = [] }) => ({
-    id: messageId(id),
-    role: 'assistant',
+    id: messageId(id),                                          // 每条消息一个 id，前端靠它定位和更新。
+    role: 'assistant',                                          // 这是模型说的话。
     content: [
-        ...contentParts(content, 'assistant content'),
+        ...contentParts(content, 'assistant content'),          // 正文和思考按原样放进 content。
         ...toolCalls.map(({ id: callId, name, arguments: rawArguments, input }) => ({
-            type: 'tool-call',
-            toolCallId: text(callId, 'toolCalls[].id'),
-            toolName: text(name, 'toolCalls[].name'),
-            input: input ?? (typeof rawArguments === 'string' ? JSON.parse(text(rawArguments, 'toolCalls[].arguments')) : rawArguments),
+            type: 'tool-call',                                  // 一次工具调用就是一个内容块。
+            toolCallId: text(callId, 'toolCalls[].id'),         // 结果靠这个 id 找回它，不能为空。
+            toolName: text(name, 'toolCalls[].name'),           // 调用的工具名。
+            input: input ?? (typeof rawArguments === 'string' ? JSON.parse(text(rawArguments, 'toolCalls[].arguments')) : rawArguments), // 参数可以是对象，也可以是 JSON 字符串。
         })),
     ],
 })
 
 // 创建工具结果历史块；toolCallId 必须和 assistant 的工具调用对应。
 const tool = ({ id, toolCallId, toolName, content }) => ({
-    id: messageId(id),
-    role: 'tool',
+    id: messageId(id),                                     // 每条消息一个 id。
+    role: 'tool',                                          // 这是工具返回的内容。
     content: [{
-        type: 'tool-result',
-        toolCallId: text(toolCallId, 'toolCallId'),
+        type: 'tool-result',                               // 一次工具结果就是一个内容块。
+        toolCallId: text(toolCallId, 'toolCallId'),        // 认回它在回答哪一次调用。
         toolName: text(toolName, 'toolName'),
-        output: typeof content === 'string' ? { type: 'text', value: text(content, 'content') } : content,
+        output: typeof content === 'string' ? { type: 'text', value: text(content, 'content') } : content, // 纯文本包成 text 块，成形的输出块原样保留。
     }],
 })
 
@@ -138,9 +139,13 @@ const prepareOutput = (output, options) => output?.type !== 'content'
     ? output
     : { ...output, value: output.value.flatMap(part => { const prepared = preparePart(part, options); return prepared ? [prepared] : [] }) }
 
-// Context 只调用这一处，保证用户消息、工具返回的媒体和历史消息使用完全相同的兼容规则。
-const model = (message, { answered = new Set(), capabilities = {}, reasoning = false, mediaFallback = 'error', normalizeMedia = true } = {}) => {
-    const options = { answered, capabilities: { image: true, audio: true, video: true, file: true, ...capabilities }, reasoning, mediaFallback, normalizeMedia }
+// --- 兼容规则的默认值，只有这一处 ---
+// 从 Agent 来的调用会带上组装好的完整开关；直接调用 History.model 时用这里的默认值，行为一致。
+const DEFAULTS = { capabilities: { image: true, audio: true, video: true, file: true }, reasoning: false, mediaFallback: 'error' }
+
+// Context 和 LLM.chat 都调用这一处，保证用户消息、工具返回的媒体和历史消息使用完全相同的兼容规则。
+const model = (message, { answered = new Set(), capabilities = DEFAULTS.capabilities, reasoning = DEFAULTS.reasoning, mediaFallback = DEFAULTS.mediaFallback, normalizeMedia = true } = {}) => {
+    const options = { answered, capabilities, reasoning, mediaFallback, normalizeMedia }
     const content = Array.isArray(message.content)
         ? message.content.flatMap(part => {
             const prepared = preparePart(part, options)

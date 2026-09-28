@@ -314,3 +314,61 @@ describe('模型能力兼容', () => {
         expect(prepared.content).toEqual([{ type: 'text', text: '看图' }])
     })
 })
+
+
+/*
+单笔请求限时和错误分类。这两件事都必须由这个边界回答：
+一笔卡住的请求由谁终止，以及上层怎么在不认识 AI SDK 内部错误形状的前提下决定后续动作。
+*/
+describe('单笔请求限时与错误分类', () => {
+    const hanging = Bun.serve({ port: 0, fetch: () => new Promise(() => {}) }) // 接了连接但永不返回。
+    const hang = extra => ({ baseURL: `http://127.0.0.1:${hanging.port}/v1`, apiKey: 'k', model: 'm', messages: [{ role: 'user', content: 'hi' }], ...extra })
+    const timeout = { requestTimeout: 300, ...noRetry }
+
+    afterAll(() => hanging.stop(true))
+
+    test('requestTimeout 到点就中断卡住的一笔请求', async () => {
+        const started = Date.now()
+        const error = await LLM.chat(hang({ stream: false, ...timeout })).catch(caught => caught)
+
+        expect(error.kind).toBe('timeout')
+        expect(error.isRetryable).toBe(true)                 // 超时是瞬时故障，交给 Retry 决定要不要再来一次。
+        expect(Date.now() - started).toBeLessThan(3000)
+    })
+
+    test('流式路径走同一个出口，同样按时中断', async () => {
+        const error = await LLM.chat(hang({ stream: true, ...timeout })).catch(caught => caught)
+        expect(error.kind).toBe('timeout')
+    })
+
+    test('用户取消标成 aborted，不会被误判成超时', async () => {
+        const controller = new AbortController()
+        setTimeout(() => controller.abort(), 100)
+        const error = await LLM.chat(hang({ stream: false, requestTimeout: 5000, ...noRetry, signal: controller.signal })).catch(caught => caught)
+
+        expect(error.kind).toBe('aborted')
+    })
+
+    for (const [status, kind] of [[401, 'auth'], [403, 'auth'], [429, 'limit'], [400, 'request'], [500, 'server']]) {
+        test(`HTTP ${status} 归到 ${kind}`, async () => {
+            const server = Bun.serve({ port: 0, fetch: () => Response.json({ error: { message: 'x' } }, { status }) })
+            try {
+                const error = await LLM.chat({ baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'k', model: 'm', messages: [{ role: 'user', content: 'hi' }], stream: false, ...noRetry }).catch(caught => caught)
+                expect(error.kind).toBe(kind)
+            } finally { server.stop(true) }
+        })
+    }
+
+    test('连不上时归到 network', async () => {
+        const error = await LLM.chat({ baseURL: 'http://127.0.0.1:1/v1', apiKey: 'k', model: 'm', messages: [{ role: 'user', content: 'hi' }], stream: false, ...noRetry }).catch(caught => caught)
+        expect(error.kind).toBe('network')
+    })
+
+    test('分类只加信息，不改"能不能重试"的唯一来源', async () => {
+        const server = Bun.serve({ port: 0, fetch: () => Response.json({ error: { message: 'x' } }, { status: 400 }) })
+        try {
+            const error = await LLM.chat({ baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'k', model: 'm', messages: [{ role: 'user', content: 'hi' }], stream: false, ...noRetry }).catch(caught => caught)
+            expect(error.isRetryable).toBe(false) // 参数错误本来就不该重试，分类之后也不能变成可重试。
+        } finally { server.stop(true) }
+    })
+})

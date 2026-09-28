@@ -75,8 +75,10 @@ describe('Retry', () => {
         expect(attempts).toBe(1)
     })
 
-    test('rejects invalid retry options', async () => {
-        expect(Retry.run({ operation: () => 'ok', maxDelay: -1 })).rejects.toThrow('maxDelay')
+    test('退避上限原样交给重试库，不在这一层另加检查', async () => {
+        // Retry 是包内模块，参数由 LLM.chat 传进来。这一层不再自己写参数校验：
+        // 传进来的值合不合法由下游（p-retry）说了算，报错也由它给出。
+        expect(Retry.run({ operation: async () => 'ok', maxDelay: -1 })).rejects.toThrow('maxTimeout')
     })
 })
 

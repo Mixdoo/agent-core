@@ -29,26 +29,23 @@ const isRetryable = error => {
 }
 
 const run = async ({ operation, signal, onRetry, maxDelay = Infinity, maxElapsed = Infinity }) => {
-    if (typeof operation !== 'function') throw new TypeError('operation must be a function')
-    if (maxDelay !== Infinity && (!Number.isFinite(maxDelay) || maxDelay < 0)) throw new TypeError('maxDelay must be a non-negative number or undefined')
-
     // 上界是时间，不是次数。常驻 agent 遇到瞬时故障应该一直试下去，但"服务挂了一整天"也得有个头——
     // 不设头的话调用方既不 resolve 也不 reject，上层连"出事了"都不知道，没法退避、告警或换模型。
     const deadline = Date.now() + maxElapsed * 1000
 
     const options = {
-        retries: Infinity, // 次数不设限，由上面的时间预算收口。
-        signal, // p-retry 会在请求之间和等待期间响应用户取消。
-        minTimeout: 1000, // 第一次等待一秒，后续自动按指数增长。
+        retries: Infinity,  // 次数不设限，由上面的时间预算收口。
+        signal,             // p-retry 会在请求之间和等待期间响应用户取消。
+        minTimeout: 1000,   // 第一次等待一秒，后续自动按指数增长。
         shouldRetry: async info => {
-            if (!isRetryable(info.error)) return false
-            if (Date.now() >= deadline) return false // 试到超预算，把最后一次的错误原样交给调用方。
-            await onRetry?.({ attempt: info.attemptNumber, error: info.error, delay: info.retryDelay })
+            if (!isRetryable(info.error)) return false // 不能重试的错误立刻收手，把原始错误交给上层。
+            if (Date.now() >= deadline) return false   // 试到超预算，把最后一次的错误原样交给调用方。
+            await onRetry?.({ attempt: info.attemptNumber, error: info.error, delay: info.retryDelay }) // 让上层能显示"正在重试第几次"。
             return true
         },
     }
-    if (Number.isFinite(maxDelay)) options.maxTimeout = maxDelay * 1000
-    return pRetry(operation, options)
+    if (Number.isFinite(maxDelay)) options.maxTimeout = maxDelay * 1000 // 只有调用方明确设了上限才限制单次等待。
+    return pRetry(operation, options) // 交回重试库执行，结果或错误原样向上传。
 }
 
 export default { run }
