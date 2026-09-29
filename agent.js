@@ -11,11 +11,13 @@ provider: { temperature, topP, topK, maxOutputTokens, stopSequences, seed, toolC
 // 3. system：人给这台 Agent 的身份。它不属于模型参数，是这个包要往上下文里放的东西。
 
 // 4. Agent 的策略：这个包自己的旋钮，和模型无关。
-maxTokens?, compactThreshold, maxSteps?, maxToolOutput?, maxToolConcurrency?, retryMaxDelay?, retryMaxElapsed?, noToolPrompt?, requestTimeout?, noToolRounds?, stream, cache, capabilities, mediaFallback, compact?
+maxTokens?, compactThreshold, maxSteps?, maxToolOutput?, maxToolConcurrency?, retryMaxDelay?, retryMaxElapsed?, noToolPrompt?, requestTimeout?, noToolRounds?, stream, cache, capabilities, mediaFallback, compact?, output?
 // capabilities: { image, audio, video, file, tools, structuredOutput, toolChoice, reasoning }
 // mediaFallback: 'error'（默认）或 'strip'；关闭某种媒体后，strip 会保留文字并丢掉媒体块。
 // requestTimeout: 单笔模型请求最多等多久（毫秒）；不设就不限时，卡住的请求会一直等。
 // noToolRounds: 连续多少轮不调工具就结束（默认 3）；设成 Infinity 就永不因不调工具结束，需要调用方给出别的停止条件。
+// output: 结构化输出格式，如 Agent.output.object({ schema: Agent.schema.object({...}) })；返回值里读 output。
+//         写在配置顶层（它回答"要什么形状的结果"），底层会并进 provider 交给 AI SDK。
 // compact: 压缩单独用一套模型时写在这里，比如 { model: '便宜的小模型' }；也能换 baseURL / apiKey。
 //          不写就和主模型共用；自动压缩和手动 compact() 都用它。
 // 带 ? 的策略默认不限制；只有调用方主动填写才会启用对应保护。
@@ -114,8 +116,12 @@ import { version } from './package.json'      // 版本号只在 package.json �
 // 逐字段抄的写法每加一个配置项就要多改一处，改了这里忘了那里就会静默丢参数。
 // overrides 是给压缩留的覆盖层：压缩想换便宜模型时，只覆盖它写了的字段。
 // 唯一要挡掉的是 system：它已经被 Context 折进消息（包括压缩总结），再单独传给模型会盖掉那份消息。
-// 其余字段原样传下去，LLM.chat 只取自己认识的，不认识的（比如 maxToolOutput）自然被忽略。
-const buildLLM = (config, overrides = {}) => ({ ...config, ...overrides, system: undefined })
+// output 是结构化输出格式，属于"要什么形状的结果"，建议写在配置顶层；这里并进 provider 交给 AI SDK。
+// 同时保留 provider.output 这条老写法：两者都写时以顶层的 output 为准。
+const buildLLM = (config, overrides = {}) => {
+    const merged = { ...config, ...overrides }
+    return { ...merged, provider: { ...merged.provider, output: merged.output ?? merged.provider?.output }, output: undefined, system: undefined }
+}
 
 
 // --- 压缩用的模型配置：和主模型同源，config.compact 里写什么就覆盖什么 ---
@@ -164,6 +170,7 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
             requestTimeout: undefined, // 不限制单笔请求时长；调用方需要防卡死时主动设置毫秒数。
             noToolPrompt: undefined, // 不主动催促模型；调用方需要无工具提醒时主动设置。
             compact: undefined,     // 压缩想用另一套模型时写在这里（{ model, baseURL, apiKey, provider… }）；不写就和主模型共用。
+            output: undefined,      // 要固定格式的结果时写在这里，如 Agent.output.object({ schema })；不写就返回普通文字。
             stream: true,           // 主循环和压缩请求都使用流式输出。
             system: '',             // 没有系统提示词时仍允许 Agent 运行。
             ...config,              // 传入配置覆盖默认配置，且配置结构只包含 Agent 需要的字段。

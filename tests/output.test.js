@@ -50,6 +50,17 @@ for (const stream of [false, true]) {
         } finally { server.stop(true) }
     })
 
+    test(`结构化格式写在配置顶层的 output 里也能用（stream=${stream}）`, async () => {
+        // 顶层 output 回答"要什么形状的结果"，比塞进 provider（生成参数）更好找；
+        // provider.output 这条老写法继续保留，两者都写时以顶层为准。
+        const { server, bodies, config } = service('{"total":7}')
+        try {
+            const agent = Agent.create({ config: { ...config, stream, output: Agent.output.object({ schema: Agent.schema.object({ total: Agent.schema.number() }) }) } })
+            expect((await agent.send('计算总数')).output).toEqual({ total: 7 })
+            expect(bodies[0].response_format.type).toBe('json_schema')
+        } finally { server.stop(true) }
+    })
+
     test(`工具轮不要求最终 JSON，工具完成后返回对象（stream=${stream}）`, async () => {
         const { server, bodies, config } = service('{"total":42}', true)
         try {
