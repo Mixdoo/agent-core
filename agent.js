@@ -121,6 +121,17 @@ const DEFAULT_CAPABILITIES = { image: true, audio: true, video: true, file: true
 const DEFAULT_COMPACT_THRESHOLD = 0.8 // 设置 maxTokens 后，上下文到这个比例就压缩。
 const DEFAULT_NO_TOOL_ROUNDS = 3      // 有工具时连续几轮不调工具就结束一次 send。
 
+// --- 登记一次运行，并保证它结束后只清理自己 ---
+// send 和 compact 共用这一份：谁后发起谁顶替前一个，任务结束时只有"当前这一个"会把状态清空。
+const track = (agent, controller, task) => {
+    agent.running = { controller, task }                 // 一次构造完整，stop() 拿到的永远是可用的运行对象。
+    task.finally(() => {
+        if (agent.running?.task === task) agent.running = null // 只清理自己的任务，避免覆盖后续运行状态。
+    }).catch(() => {})
+    return task
+}
+
+
 // 创建一台独立 Agent：传入的对象会成为这台机器公开、可继续修改的内部状态。
 const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}, handlers: {} }, callbacks = {} } = {}) => {
     const agent = {
@@ -202,11 +213,7 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
         })()
 
         // running 一次构造完整，stop() 拿到的永远是可用的运行对象，不存在"task 还没补上"的中间态。
-        agent.running = { controller, task }
-        task.finally(() => {
-            if (agent.running?.task === task) agent.running = null // 只清理自己的任务，避免覆盖后续运行状态。
-        }).catch(() => {})
-        return task
+        return track(agent, controller, task)
     }
 
 
@@ -251,11 +258,7 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
             return content
         })()
 
-        agent.running = { controller, task }      // 手动压缩和 send 共用同一个运行状态。
-        task.finally(() => {
-            if (agent.running?.task === task) agent.running = null // 只清理自己的任务，避免覆盖后续运行状态。
-        }).catch(() => {})
-        return task
+        return track(agent, controller, task) // 与 send 共用同一套运行状态登记。
     }
 
     return agent

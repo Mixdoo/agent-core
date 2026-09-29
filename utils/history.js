@@ -224,4 +224,4 @@ const render = history => history
     .join('\n')
 
 
-export default { user, assistant, tool, compact, turns, render, model }
+export default { user, assistant, tool, compact, turns, render, model, parts }

@@ -47,7 +47,7 @@ const RECENT_SHARE = 0.3
 const PER_TOKEN = 2
 
 // AI SDK 的 content 既可以是内容块数组，也可以是一段纯文本；纯文本里不会有工具调用。
-const parts = message => (Array.isArray(message.content) ? message.content : [])
+// 「怎么判断一条消息的内容块」这件事由 History 定义，这里直接用它的，不再自己写一份。
 
 // 一个回合有多大。用字符数而不是 token：裁剪要对每个候选回合都量一次，
 // 而 countTokens 是重活（实测一段三万字的连续串能跑六秒）。字符数用来分预算足够了。
@@ -108,7 +108,7 @@ const build = ({ history, system = '', tools = {}, budget, capabilities = {}, me
 
     // --- 出口：回合只是 Context 内部的形状，交给模型的仍然是平铺消息 ---
     const flat = selected.flat()                                                                                // 回合内部保持原始顺序，展平后就是一段时间上连续的消息。
-    const answered = new Set(flat.flatMap(message => parts(message).filter(part => part.type === 'tool-result').map(part => part.toolCallId))) // 这批消息里真正拿到结果的调用。
+    const answered = new Set(flat.flatMap(message => History.parts(message).filter(part => part.type === 'tool-result').map(part => part.toolCallId))) // 这批消息里真正拿到结果的调用。
     const instructions = brief(system, summary)                                                                 // 系统提示词 + 最新总结。
 
     const messages = [
