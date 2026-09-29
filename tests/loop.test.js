@@ -338,4 +338,35 @@ describe('Loop', () => {
         expect(executed).toEqual([])  // 以前会把未解析的参数字符串当对象喂给工具。
         expect(history.some(message => Array.isArray(message.content) && message.content.some(part => part.output?.value?.includes('无效')))).toBe(true)
     })
+
+    test('工具轮里发出去的消息，工具调用和结果始终配对', async () => {
+        // 真实中转站会校验：一条 tool 消息的 tool_call_id 必须对应前面某条 assistant 的 tool_calls，
+        // 否则直接 400。消息整理如果做了两遍，第二遍会看不到"这个调用有结果"的名单，
+        // 把调用摘掉、结果留下，于是任何带工具的多轮对话打到真服务都会挂。
+        // 这条测试直接检查发给模型的那份请求体（OpenAI 格式：调用在 tool_calls 字段里）。
+        const sent = []
+        let round = 0
+        const mock = Bun.serve({
+            port: 0,
+            async fetch(request) {
+                sent.push(await request.json())
+                round += 1
+                const message = round === 1
+                    ? { role: 'assistant', content: null, tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'echo', arguments: '{"value":"x"}' } }] }
+                    : { role: 'assistant', content: '完成' }
+                return Response.json({ choices: [{ index: 0, message, finish_reason: round === 1 ? 'tool_calls' : 'stop' }], usage: {} })
+            },
+        })
+        try {
+            const tools = await Agent.tool.scan(new URL('./fixtures/tools', import.meta.url))
+            const agent = Agent.create({ tools, config: { ...config, baseURL: `http://127.0.0.1:${mock.port}/v1`, noToolRounds: 1 } })
+            await agent.send('执行')
+
+            expect(sent).toHaveLength(2) // 第一轮调工具，第二轮带着工具历史收尾。
+            const declared = new Set(sent[1].messages.flatMap(message => (message.tool_calls ?? []).map(call => call.id)))
+            const answered = sent[1].messages.filter(message => message.role === 'tool').map(message => message.tool_call_id)
+            expect(declared).toEqual(new Set(['call-1']))                 // 工具调用必须还在。
+            expect(answered.every(id => declared.has(id))).toBe(true)     // 工具结果必须找得到发起它的调用。
+        } finally { mock.stop(true) }
+    })
 })

@@ -82,7 +82,7 @@ import { createOpenAICompatible } from '@ai-sdk/openai-compatible'    // 默认�
 import { createAnthropic } from '@ai-sdk/anthropic'                   // 模型名写法中的 Anthropic 连接。
 import { createGoogle } from '@ai-sdk/google'                         // 模型名写法中的 Gemini 连接。
 import Retry from './retry.js'                                       // 主请求和压缩请求共用的退避重试。
-import History from './history.js'                                   // 直接调用 LLM.chat 时也使用同一套媒体兼容规则。
+import History from './history.js'                                   // 在发给供应商前把旧媒体块统一成 AI SDK 当前形态。
 
 
 // --- 建一条模型连接：模型名写法专用，协议决定用哪个 Provider ---
@@ -220,9 +220,14 @@ const chat = async ({
     // --- 检查输入 ---
     if (!model || !Array.isArray(messages) || (typeof model === 'string' && !baseURL)) throw new TypeError('model and messages are required; string models also need baseURL') // 模型实例自带连接，模型名才需要地址。
 
-    // --- 从 messages 中取出系统提示词，并按能力开关整理每一条消息 ---
+    // --- 从 messages 中取出系统提示词，并在出门前把消息整理成供应商要的样子 ---
+    // 这一遍只管"长什么样"：去掉内部字段、把旧 image/audio/video 转成 file、按能力开关摘掉思考。
+    // 它不管"该不该发"——挑哪些回合、丢掉没人应答的调用由 Context.build 决定。
+    // 但这里必须自己算出"哪些调用有结果"：History.model 会摘掉没人应答的调用，
+    // 如果传一个空名单进去，它会连有结果的调用一起摘掉、只留下结果，真实中转站要求两者必须配对，会直接 400。
     const systemMessage = messages.find(message => message.role === 'system') // Context 可能已经把 system 放进 messages。
-    const prepare = message => History.model(message, { capabilities, reasoning: capabilities.reasoning ?? false, mediaFallback, normalizeMedia: true })
+    const answered = new Set(messages.flatMap(message => (Array.isArray(message.content) ? message.content : []).filter(part => part.type === 'tool-result').map(part => part.toolCallId)))
+    const prepare = message => History.model(message, { answered, capabilities, reasoning: capabilities.reasoning ?? false, mediaFallback, normalizeMedia: true })
     const modelMessages = messages.filter(message => message.role !== 'system').map(prepare) // AI SDK 的 system 单独传入，不重复放进消息列表。
     system ||= systemMessage?.content // 调用方单独传入的 system 优先级更高。
 
