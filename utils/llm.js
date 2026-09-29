@@ -32,7 +32,7 @@ const result = await LLM.chat({
     onLLMStart: request => {},      // 每次真实请求前调用，重试也算一次
     onRetry: info => {},
 
-    // --- 重试（秒）---
+    // --- 重试（毫秒）---
     retryMaxDelay: undefined,       // 不限制单次退避上限；调用方可主动设置毫秒数
     retryMaxElapsed: undefined,     // 不限制重试总时长；调用方可主动设置毫秒数
 
