@@ -139,9 +139,13 @@ const prepareOutput = (output, options) => output?.type !== 'content'
     ? output
     : { ...output, value: output.value.flatMap(part => { const prepared = preparePart(part, options); return prepared ? [prepared] : [] }) }
 
-// --- 兼容规则的默认值，只有这一处 ---
+// --- 媒体能力开关的默认值，整个项目只有这一处 ---
+// Agent 组装完整能力表时从这里取媒体那几项，History.model 单独被调用时也用它，两处永远一致。
+export const mediaDefaults = { image: true, audio: true, video: true, file: true }
+
+// --- 兼容规则的默认值 ---
 // 从 Agent 来的调用会带上组装好的完整开关；直接调用 History.model 时用这里的默认值，行为一致。
-const DEFAULTS = { capabilities: { image: true, audio: true, video: true, file: true }, reasoning: false, mediaFallback: 'error' }
+const DEFAULTS = { capabilities: mediaDefaults, reasoning: false, mediaFallback: 'error' }
 
 // Context 和 LLM.chat 都调用这一处，保证用户消息、工具返回的媒体和历史消息使用完全相同的兼容规则。
 const model = (message, { answered = new Set(), capabilities = DEFAULTS.capabilities, reasoning = DEFAULTS.reasoning, mediaFallback = DEFAULTS.mediaFallback, normalizeMedia = true } = {}) => {

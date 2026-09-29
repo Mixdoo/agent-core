@@ -126,7 +126,8 @@ const buildCompact = config => buildLLM(config, config.compact)
 
 // --- 默认值只有这一处，改一次就够 ---
 // 这些值会随配置一起交给 Loop，所以 Loop 里不再写第二份"没传就用这个"，避免改一处漏一处。
-const DEFAULT_CAPABILITIES = { image: true, audio: true, video: true, file: true, tools: true, structuredOutput: true, toolChoice: true, reasoning: false } // 陌生渠道默认只发通用能力，高级能力由调用方逐项打开。
+// capabilities 里媒体那几项的默认值由 History 拥有（mediaDefaults），这里只补上工具、结构化输出等 Agent 自己的开关。
+const DEFAULT_CAPABILITIES = { ...History.mediaDefaults, tools: true, structuredOutput: true, toolChoice: true, reasoning: false } // 陌生渠道默认只发通用能力，高级能力由调用方逐项打开。
 const DEFAULT_COMPACT_THRESHOLD = 0.8 // 设置 maxTokens 后，上下文到这个比例就压缩。
 const DEFAULT_NO_TOOL_ROUNDS = 3      // 有工具时连续几轮不调工具就结束一次 send。
 
