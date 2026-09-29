@@ -290,17 +290,17 @@ describe('Loop', () => {
 
     test('不合法的轮数上限在请求模型前就报错', async () => {
         const agent = Agent.create({ config: { ...config, maxSteps: 0 } })
-        expect(() => agent.send('你好')).toThrow('maxSteps must be a positive integer') // 入口同步拦住，请求根本没发出去。
+        await expect(agent.send('你好')).rejects.toThrow('maxSteps must be a positive integer') // 入口拦住，请求根本没发出去。
     })
 
     test('不合法的无工具结束轮数在请求模型前就报错', async () => {
         const agent = Agent.create({ config: { ...config, noToolRounds: 0 } })
-        expect(() => agent.send('你好')).toThrow('noToolRounds must be a positive integer or Infinity')
+        await expect(agent.send('你好')).rejects.toThrow('noToolRounds must be a positive integer or Infinity')
     })
 
     test('按次传入的非法轮数上限同样在入口被拦住', async () => {
         const agent = Agent.create({ config })
-        expect(() => agent.send({ input: '你好', config: { maxSteps: 2.5 } })).toThrow('maxSteps must be a positive integer') // 覆盖值也要一起检查，不能绕过。
+        await expect(agent.send({ input: '你好', config: { maxSteps: 2.5 } })).rejects.toThrow('maxSteps must be a positive integer') // 覆盖值也要一起检查，不能绕过。
     })
 
     test('无工具结束轮数可调，调大就多问几轮', async () => {

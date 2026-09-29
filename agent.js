@@ -181,14 +181,20 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
     // 发送指令：更新本次传入的持久参数，登记运行状态，然后启动新任务。
     // 输入既可以是一句话，也可以是 AI SDK 风格的内容块数组（发图片、发文件走数组这条路）。
     // send('你好') 和 send({ input: '你好' }) 是同一件事——只有一句话时不该逼调用者写一个对象。
+    // 出错方式只有一种：返回的 Promise 会拒绝。入口检查和网络失败都走这里，调用方只写 .catch() 就够。
+    // （取消、模型报错也都从同一条链上抛出来，不需要额外写 try/catch 去接同步异常。）
     agent.send = (input, options = {}) => {
         if (typeof input === 'object' && input !== null && !Array.isArray(input)) ({ input, ...options } = input) // 传对象就是完整形式，传字符串或数组就是纯输入。
 
+        // --- 检查输入：被入口直接调用的指令，只在这里查一次 ---
         const empty = typeof input === 'string' ? !input.trim() : !Array.isArray(input) || !input.length
-        if (empty) throw new TypeError('input must be a non-empty string or a non-empty content array') // 没有本次输入就没有可执行指令。
-        const limits = { ...agent.config, ...(options.config ?? {}) }                              // 本次真正生效的配置：即将覆盖的值也要一起检查。
-        if (limits.maxSteps !== undefined && (!Number.isInteger(limits.maxSteps) || limits.maxSteps < 1)) throw new RangeError('maxSteps must be a positive integer') // 设成 0 却仍然发出一次请求，是调用方最容易被骗到的地方，在入口就拦住。
-        if (limits.noToolRounds !== undefined && limits.noToolRounds !== Infinity && (!Number.isInteger(limits.noToolRounds) || limits.noToolRounds < 1)) throw new RangeError('noToolRounds must be a positive integer or Infinity') // 0 会让一次 send 一轮都不走，负数和小数没有含义。
+        const limits = { ...agent.config, ...(options.config ?? {}) } // 本次真正生效的配置：即将覆盖的值也要一起检查。
+        const invalid =
+            empty ? new TypeError('input must be a non-empty string or a non-empty content array')                            // 没有本次输入就没有可执行指令。
+            : limits.maxSteps !== undefined && (!Number.isInteger(limits.maxSteps) || limits.maxSteps < 1) ? new RangeError('maxSteps must be a positive integer') // 设成 0 却仍然发出一次请求，是调用方最容易被骗到的地方。
+            : limits.noToolRounds !== undefined && limits.noToolRounds !== Infinity && (!Number.isInteger(limits.noToolRounds) || limits.noToolRounds < 1) ? new RangeError('noToolRounds must be a positive integer or Infinity') // 0 会让一次 send 一轮都不走。
+            : null
+        if (invalid) return Promise.reject(invalid)
         if ('history' in options) agent.history = options.history                                           // 传入空数组也代表明确覆盖历史。
         if ('config' in options) agent.config = { ...agent.config, ...options.config, provider: 'provider' in options.config ? { ...options.config.provider } : agent.config.provider, capabilities: 'capabilities' in options.config ? { ...agent.config.capabilities, ...options.config.capabilities } : agent.config.capabilities } // provider 整包替换；能力开关按字段合并，调用方只改一个开关就够。
         if ('tools' in options) agent.tools = options.tools                                                 // 工具是整体替换，不在 Agent 内部猜测如何合并。

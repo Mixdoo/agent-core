@@ -80,14 +80,15 @@ describe('Agent 入口', () => {
         expect(recorded.at(-1).temperature).toBe(0.4)
     })
 
-    test('空输入当场拒绝，而不是发出一轮空请求', () => {
+    test('空输入当场拒绝，而不是发出一轮空请求', async () => {
         const agent = Agent.create({ config: config() })
 
-        expect(() => agent.send('')).toThrow('input must be')
-        expect(() => agent.send('   ')).toThrow('input must be')  // 只有空白也算空。
-        expect(() => agent.send([])).toThrow('input must be')
-        expect(() => agent.send({})).toThrow('input must be')     // 完整形式漏了 input 也一样。
-        expect(agent.history.length).toBe(0)                      // 被拒绝的输入不写进历史。
+        // 出错方式只有一种：返回的 Promise 拒绝。调用方不需要额外写同步的 try/catch。
+        await expect(agent.send('')).rejects.toThrow('input must be')
+        await expect(agent.send('   ')).rejects.toThrow('input must be')  // 只有空白也算空。
+        await expect(agent.send([])).rejects.toThrow('input must be')
+        await expect(agent.send({})).rejects.toThrow('input must be')     // 完整形式漏了 input 也一样。
+        expect(agent.history.length).toBe(0)                              // 被拒绝的输入不写进历史。
     })
 
     test('send 之后 config 按字段合并，没传的字段继续保留', async () => {

@@ -514,6 +514,8 @@ const result = await agent.send({
 //   'step-limit' → 达到 maxSteps，当前工具结果已保存，下一次 send 可继续
 ```
 
+`send` 的出错方式只有一种：返回的 Promise 拒绝。空输入、非法配置、取消、模型报错全都从这里出来，所以只需要写 `.catch()`，不用另外包同步的 `try/catch`。模型报错的 `error.kind` 见下方。
+
 连续发送时，建议保存并处理旧任务的 Promise，避免出现未处理的中止错误：
 
 ```js
