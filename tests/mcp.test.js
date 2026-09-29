@@ -69,16 +69,16 @@ test('MCP、结构化结果和网页流可以在同一台 Agent 中组合', asyn
     })
     try {
         const permissions = []
+        const events = []
         const agent = Agent.create({
             tools: await Agent.tool.mcp({ transport: remote.transport, prefix: 'web_' }),
             config: { baseURL: `http://127.0.0.1:${model.port}/v1`, model: 'test', stream: false, output: Agent.output.object({ schema: Agent.schema.object({ total: Agent.schema.number() }) }) },
-            callbacks: { onPermission: call => { permissions.push(call.toolName); return true } },
+            callbacks: { onPermission: call => { permissions.push(call.toolName); return true }, onStep: step => events.push(step) },
         })
-        const run = agent.stream('调用工具后给出总数')
-        const frames = (await run.response().text()).trim().split('\n\n').map(frame => JSON.parse(frame.slice(6)))
-        expect(frames.some(event => event.type === 'tool-result')).toBe(true)
-        expect(frames.at(-1).data.output).toEqual({ total: 42 })
-        expect((await run.result).output).toEqual({ total: 42 })
+        const result = await agent.send('调用工具后给出总数')
+        expect(events).toHaveLength(2)                       // 第一轮调工具，第二轮收尾，每轮结束后通知一次。
+        expect(events[0].toolResults).toHaveLength(1)         // 第一轮确实执行了 MCP 工具。
+        expect(result.output).toEqual({ total: 42 })
         expect(permissions).toEqual(['web_echo'])
         expect(remote.calls).toHaveLength(1)
         expect(round).toBe(2)

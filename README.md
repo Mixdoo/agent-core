@@ -391,7 +391,7 @@ import Agent from '@kernel4632/agent-core'
 | `model` | `''` | 模型名称（需要 `baseURL`），或 AI SDK 创建的模型实例（自带连接配置） |
 | `protocol` | `'chat'` | 本包创建模型连接时使用的协议：`chat` / `responses` / `anthropic` / `gemini` |
 | `system` | `''` | 系统提示词 |
-| `stream` | `true` | 是否流式输出 |
+| `stream` | `true` | 是否流式请求模型。默认流式，`await send` 仍拿到完整结果；设为 `false` 才走非流式的旧式请求 |
 | `cache` | `false` | 是否发送 OpenAI 的 `prompt_cache_key`。中转站大多不认这个私有字段，默认不发 |
 | `capabilities` | 见下方 | 按模型能力逐项开关图片、音频、视频、文件、工具调用、结构化输出、toolChoice 和思考内容 |
 | `mediaFallback` | `'error'` | 媒体能力关闭时的处理方式；改成 `'strip'` 后保留文字并丢掉不支持的媒体 |
@@ -548,33 +548,53 @@ await agent.send({
 await agent.stop()   // 等待完全停止后返回 { ok: true }
 ```
 
-#### `agent.stream(input, options?)`
+#### 流式与网页实时推送
+
+`send` 内部默认就是流式（`config.stream` 默认 `true`），`await` 拿到的是和流式一样的结果。想实时拿到每一块，用 `onLLMEvent`：模型每吐一段就调用一次，事件是包内 AI SDK 的原生事件。
 
 ```js
-const run = agent.stream('帮我查一下')
-for await (const event of run.events) {
-    if (event.type === 'llm') console.log(event.data) // 包内 AI SDK 原生事件
-    if (event.type === 'tool-output') console.log(event.data.data)
-}
-const result = await run.result // 与 send 返回同样的 reason / text / output
-```
-
-Web 服务可直接返回标准 SSE Response：
-
-```js
-// 可直接放入 Bun.serve 的 fetch 或接受标准 Response 的框架路由。
-return agent.stream({ input: '你好', signal: request.signal }).response({
-    headers: { 'X-Session': agent.id },
+await agent.send({
+    input: '帮我查一下',
+    callbacks: {
+        onLLMEvent: event => {
+            if (event.type === 'text-delta') show(event.textDelta) // 模型新吐的一段文字
+        },
+        onToolOutput: output => show(output.data),                  // 工具产生的实时输出
+    },
 })
 ```
 
-每个 SSE 帧是 `data: {"type":"...","data":...}`。事件类型包括 `start`、`llm`、`model-finish`、`tool-call`、`tool-output`、`tool-result`、`step`、`compact`、`retry`、`finish`、`error`。这是本包事件协议，不是 AI SDK UIMessage 协议。失败时 `result` 拒绝；可传输的错误描述和 `kind` 进入 `error` 事件。
+网页要边生成边推给浏览器时，用同样的回调，把内容写进一个标准 `Response` 流：
+
+```js
+// Bun.serve 的 fetch 里。开始请求，立刻把响应返回给浏览器，内容随后一块块写上。
+app.get('/chat', async request => {
+    const encoder = new TextEncoder()
+    const stream = new ReadableStream({
+        async start(controller) {
+            const send = data => controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`))
+            try {
+                // send 里的 onLLMEvent 在流式过程中被反复调用，每段文字都及时写出去。
+                const result = await agent.send({
+                    input: await request.text(),
+                    callbacks: {
+                        onLLMEvent: event => { if (event.type === 'text-delta') send({ text: event.textDelta }) },
+                        onStep: () => send({ status: 'step-done' }),
+                    },
+                })
+                send({ done: true, reason: result.reason })
+            } catch (error) {
+                send({ error: error.message, kind: error.kind })     // 可传输的错误描述和分类。
+            } finally { controller.close() }
+        },
+    })
+    return new Response(stream, { headers: { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache' } })
+})
+```
+
+要取消某次运行，给 `send` 传 `signal`（如 `request.signal`）或调用 `agent.stop()`，两者都能终止。
 
 模型请求失败时抛出的错误带一个稳定的 `kind`：`aborted`（用户取消）、`auth`（密钥或权限，401/403）、`limit`（限流，429）、`timeout`（单笔超时或 408）、`server`（5xx）、`network`（没连上）、`request`（其余 4xx）、`unknown`。上层靠它决定该换模型、该等一下还是该直接报错，不用去认 AI SDK 的内部错误形状。`kind` 只补充信息，能不能重试仍然只由错误自己的 `isRetryable` 决定。
-
-`events` 与 `response()` 共用一条流，只选一个消费者。必须持续读取才会持续推进模型回调；普通工具日志仍按原来的非等待式 IPC 排队，不默认丢弃。若只要最终结果，直接用 `send()`。普通回调照常执行，流式观察不会改变 Agent 的持久回调配置。
-
-关闭读取默认取消本次运行；`{ cancelOnDisconnect: false }` 只断开输出并让任务继续。`run.stop()` 和传入的 `signal` 始终能取消本次运行，不会影响后来发起的新任务。普通 `send({ input, signal })` 也支持外部取消。
 
 #### `agent.compact(options?)`
 

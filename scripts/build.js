@@ -51,10 +51,8 @@ try {
             if (result.text !== 'ok') throw new Error('模型请求失败')
             const agent = Agent.create({ config: { baseURL: ${JSON.stringify(`http://127.0.0.1:${server.port}/v1`)}, model: 'test', stream: false,
                 output: Agent.output.object({ schema: Agent.schema.object({ total: Agent.schema.number() }) }) } })
-            const run = agent.stream('total')
-            const response = run.response()
-            const events = await response.text()
-            if ((await run.result).output.total !== 42 || !events.includes('finish')) throw new Error('结构化结果和网页流式出口失败')
+            const answer = await agent.send('total')
+            if (answer.output.total !== 42) throw new Error('打包后的结构化输出失败')
         `
         const child = Bun.spawn([process.execPath, '-e', script], { cwd: temp, stdout: 'pipe', stderr: 'pipe' })
         const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()])
