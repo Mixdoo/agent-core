@@ -1,4 +1,4 @@
-/* 参数分四组，规则只有一条：谁的东西就归谁，这个包不替上游保管参数。
+﻿/* 参数分四组，规则只有一条：谁的东西就归谁，这个包不替上游保管参数。
 
 // 1. 连接：怎么找到模型。必填，没有默认值。
 baseURL, apiKey, model, protocol
@@ -159,8 +159,8 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
             maxToolConcurrency: undefined, // 不限制同一轮工具并发；需要排队时由调用方主动设置。
             maxTokens: undefined,      // 不估算或压缩上下文；需要窗口保护时由调用方主动设置。
             maxSteps: undefined,    // 不设上限；调用方主动传入正整数时才限制一次 send 的模型轮数。
-            retryMaxDelay: undefined, // 不限制退避上限；调用方需要限制等待时主动设置秒数。
-            retryMaxElapsed: undefined, // 不限制重试总时长；服务恢复前持续重试，调用方可主动设置秒数。
+            retryMaxDelay: undefined, // 不限制退避上限；调用方需要限制等待时主动设置毫秒数。
+            retryMaxElapsed: undefined, // 不限制重试总时长；服务恢复前持续重试，调用方可主动设置毫秒数。
             requestTimeout: undefined, // 不限制单笔请求时长；调用方需要防卡死时主动设置毫秒数。
             noToolPrompt: undefined, // 不主动催促模型；调用方需要无工具提醒时主动设置。
             compact: undefined,     // 压缩想用另一套模型时写在这里（{ model, baseURL, apiKey, provider… }）；不写就和主模型共用。

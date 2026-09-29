@@ -1,4 +1,4 @@
-/*
+﻿/*
 目标被调用形式（绝对不可修改）：
 const result = await LLM.chat({
     // --- 连接（必填）---
@@ -33,8 +33,8 @@ const result = await LLM.chat({
     onRetry: info => {},
 
     // --- 重试（秒）---
-    retryMaxDelay: undefined,       // 不限制单次退避上限；调用方可主动设置秒数
-    retryMaxElapsed: undefined,     // 不限制重试总时长；调用方可主动设置秒数
+    retryMaxDelay: undefined,       // 不限制单次退避上限；调用方可主动设置毫秒数
+    retryMaxElapsed: undefined,     // 不限制重试总时长；调用方可主动设置毫秒数
 
     // --- 控制信号 ---
     signal: abortSignal,
@@ -212,8 +212,8 @@ const chat = async ({
     onLLMEvent,           // 流式事件回调。
     onLLMStart,           // 每次真实请求前回调，重试也算一次。
     onRetry,              // 重试通知回调。
-    retryMaxDelay,        // 重试退避上限（秒）。
-    retryMaxElapsed,      // 重试总时长上限（秒）。
+    retryMaxDelay,        // 重试退避上限（毫秒）。
+    retryMaxElapsed,      // 重试总时长上限（毫秒）。
     signal,               // 取消信号。
     provider = {},        // AI SDK 生成参数整包，headers / body 单独取出来。
 }) => {

@@ -1,4 +1,4 @@
-/*
+﻿/*
 盯住"驱动一台 Agent"这件事：send / stop / compact 三者抢跑时的状态机，以及主循环的出口。
 
 这个包的运行状态只有一份（agent.running）。send 和 compact 都要同步顶替它、把停旧任务
@@ -183,7 +183,7 @@ describe('压缩这条路径', () => {
             const retries = []
             const agent = Agent.create({
                 history: [History.user({ content: '之前的工作' })],
-                config: { ...config, baseURL: `http://127.0.0.1:${mock.port}/v1`, retryMaxElapsed: 3 },
+                config: { ...config, baseURL: `http://127.0.0.1:${mock.port}/v1`, retryMaxElapsed: 3000 },
                 callbacks: { onCompact: event => events.push(event.type), onRetry: info => retries.push(info.attempt) },
             })
 

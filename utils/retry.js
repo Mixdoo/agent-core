@@ -10,11 +10,11 @@ const result = await Retry.run({
     // 重试通知回调，UI 靠它显示"正在重试"
     onRetry: (info) => {},
 
-    // 重试退避时间上限，默认 60 秒
-    maxDelay: 60,
+    // 重试退避时间上限（毫秒），不设就不限制单次等待
+    maxDelay: 60000,
 
-    // 一直失败最多再试多久，默认 300 秒
-    maxElapsed: 300,
+    // 一直失败最多再试多久（毫秒），不设就不限时
+    maxElapsed: 300000,
 })
  */
 
@@ -36,14 +36,14 @@ const run = async ({ operation, signal, onRetry, maxDelay = Infinity, maxElapsed
         retries: Infinity,                        // 次数不设限，由 maxRetryTime 收口。
         signal,                                   // p-retry 会在请求之间和等待期间响应用户取消。
         minTimeout: 1000,                         // 第一次等待一秒，后续自动按指数增长。
-        maxRetryTime: Number.isFinite(maxElapsed) ? maxElapsed * 1000 : Infinity, // 一直失败最多再试多久。
+        maxRetryTime: maxElapsed,                 // 一直失败最多再试多久（毫秒）。
         shouldRetry: async ({ error, attemptNumber, retryDelay }) => {
             if (!isRetryable(error)) return false  // 不能重试的错误立刻收手，把原始错误交给上层。
             await onRetry?.({ attempt: attemptNumber, error, delay: retryDelay }) // 让上层能显示"正在重试第几次"。
             return true
         },
     }
-    if (Number.isFinite(maxDelay)) options.maxTimeout = maxDelay * 1000 // 只有调用方明确设了上限才限制单次等待。
+    if (Number.isFinite(maxDelay)) options.maxTimeout = maxDelay // 只有调用方明确设了上限才限制单次等待（毫秒）。
     return pRetry(operation, options) // 交回重试库执行，结果或错误原样向上传。
 }
 

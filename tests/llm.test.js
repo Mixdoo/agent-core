@@ -1,4 +1,4 @@
-/*
+﻿/*
 盯住这个项目和模型供应商之间唯一的边界。
 
 这个文件里的测试全都建立在一条契约上：LLM.chat 要么返回一份完整结果，
@@ -23,7 +23,8 @@ const failing = failingServer(39931)
 const { server: echo, recorded } = echoServer(39932)
 
 // retryMaxElapsed: 0 = 一次都不重试。这几条测的是"错误有没有如实抛出来"，
-// 不是重试行为；不关掉的话 LLM.chat 会老老实实对着这个永远 503 的假服务重试满 5 分钟。
+// 不是重试行为；不关掉的话 LLM.chat 会老老实实对着这个永远 503 的假服务一直重试。
+// 时间类配置统一用毫秒，和 requestTimeout 保持一致。
 const noRetry = { retryMaxElapsed: 0 }
 const call = extra => ({ baseURL: `http://127.0.0.1:${failing.port}/v1`, apiKey: 'k', model: 'm', messages: [{ role: 'user', content: 'hi' }], ...extra })
 
@@ -44,7 +45,7 @@ describe('LLM 边界', () => {
         // 重试搬进 LLM.chat 之后，次数不设限；上界改成时间。
         // 没有这条上界的话服务挂一整天 send() 也不 resolve 不 reject，上层连"出事了"都不知道。
         const started = Date.now()
-        const error = await LLM.chat(call({ stream: false, retryMaxElapsed: 2 })).catch(caught => caught)
+        const error = await LLM.chat(call({ stream: false, retryMaxElapsed: 2000 })).catch(caught => caught)
 
         expect(error).toBeInstanceOf(Error)
         expect(Date.now() - started).toBeLessThan(15000) // 到点就把最后一次的错误交出来。
@@ -56,7 +57,7 @@ describe('LLM 边界', () => {
         const tries = []
         const error = await Compact.run({
             messages: [{ role: 'user', content: '要压缩的内容' }],
-            llm: { baseURL: `http://127.0.0.1:${failing.port}/v1`, apiKey: 'k', model: 'm', retryMaxElapsed: 2 },
+            llm: { baseURL: `http://127.0.0.1:${failing.port}/v1`, apiKey: 'k', model: 'm', retryMaxElapsed: 2000 },
             stream: false,
             onRetry: info => tries.push(info.attempt),
         }).catch(caught => caught)

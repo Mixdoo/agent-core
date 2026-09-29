@@ -402,8 +402,8 @@ import Agent from '@kernel4632/agent-core'
 | `compact` | `undefined` | 压缩单独用一套模型时写在这里，例如 `{ model: '便宜的小模型' }`；不写就和主模型共用 |
 | `maxSteps` | `undefined` | 默认不限制模型轮数；主动设置正整数后，到上限先保存这一轮的工具结果，再返回 `step-limit` |
 | `maxToolConcurrency` | `undefined` | 默认不限制同一轮工具并发；主动设置后超出的调用排队 |
-| `retryMaxDelay` | `undefined` | 默认不限制单次退避时间；主动设置后限制秒数 |
-| `retryMaxElapsed` | `undefined` | 默认不限制重试总时长；主动设置后到点把错误交给上层 |
+| `retryMaxDelay` | `undefined` | 默认不限制单次退避时间；主动设置后限制毫秒数 |
+| `retryMaxElapsed` | `undefined` | 默认不限制重试总时长；主动设置后到点把错误交给上层（毫秒） |
 | `requestTimeout` | `undefined` | 默认不限制单笔请求时长；主动设置毫秒数后，卡住的一笔会被中断 |
 | `noToolPrompt` | `undefined` | 默认不插入催促消息；主动设置后模型连续两轮不调工具时使用 |
 | `noToolRounds` | `3` | 连续多少轮不调工具就结束一次 `send`；设成 `Infinity` 就永不因不调工具结束 |
