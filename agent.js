@@ -108,27 +108,11 @@ import History from './utils/history.js'      // 负责创建标准格式的历�
 import { version } from './package.json'      // 版本号只在 package.json 里写一次，打包时会被内联进产物
 
 
-// --- 内部工具：构建模型和循环共用的参数 ---
-// system 已由 Context 折进消息（包括压缩总结），不能再单独传给 LLM 覆盖它。
-const buildLLM = config => ({
-    baseURL: config.baseURL,                    // 模型服务地址
-    apiKey: config.apiKey,                      // 鉴权密钥
-    model: config.model,                        // 模型名称
-    protocol: config.protocol,                  // 调用协议
-    cache: config.cache,                        // 是否发送 OpenAI 提示词缓存字段
-    capabilities: config.capabilities,          // 当前模型能接收哪些能力；兼容开关集中放这里
-    mediaFallback: config.mediaFallback,        // 不支持媒体时是报错，还是只保留文字继续跑
-    provider: config.provider,                  // 生成参数整包转发给 AI SDK，这个包不逐个列字段
-    retryMaxDelay: config.retryMaxDelay,        // 重试退避上限（秒）。重试是 LLM.chat 自带的，压缩那次请求也走同一套
-    retryMaxElapsed: config.retryMaxElapsed,    // 一直失败最多再试多久（秒），到点把错误交给上层
-    requestTimeout: config.requestTimeout,      // 单笔模型请求的限时（毫秒）；不设就不限时
-    maxTokens: config.maxTokens,                // 上下文 Token 上限，压缩阈值判断和裁剪预算都用它
-    compactThreshold: config.compactThreshold,  // 触发自动压缩的比例
-    maxSteps: config.maxSteps,                  // 一次 send 最多请求模型多少轮，防止一直调工具不结束
-    noToolPrompt: config.noToolPrompt,          // 临时提示文本
-    noToolRounds: config.noToolRounds,          // 连续多少轮不调工具就结束
-    stream: config.stream,                      // 是否流式输出
-})
+// --- 模型和循环共用同一份配置，不再逐字段抄一遍 ---
+// 逐字段抄的写法每加一个配置项就要多改一处，改了这里忘了那里就会静默丢参数。
+// 唯一要挡掉的是 system：它已经被 Context 折进消息（包括压缩总结），再单独传给模型会盖掉那份消息。
+// 其余字段原样传下去，LLM.chat 只取自己认识的，不认识的（比如 maxToolOutput）自然被忽略。
+const buildLLM = config => ({ ...config, system: undefined })
 
 
 // --- 默认值只有这一处，改一次就够 ---
