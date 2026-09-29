@@ -1,4 +1,4 @@
-/*
+﻿/*
 MCP 使用本地假服务验证完整协议路径，不需要联网或真实密钥。
 调用：bun test tests/mcp.test.js。发现、执行、失败、取消都走真实工具子进程。
 */
@@ -71,7 +71,7 @@ test('MCP、结构化结果和网页流可以在同一台 Agent 中组合', asyn
         const permissions = []
         const agent = Agent.create({
             tools: await Agent.tool.mcp({ transport: remote.transport, prefix: 'web_' }),
-            config: { baseURL: `http://127.0.0.1:${model.port}/v1`, model: 'test', stream: false, provider: { output: Agent.output.object({ schema: Agent.schema.object({ total: Agent.schema.number() }) }) } },
+            config: { baseURL: `http://127.0.0.1:${model.port}/v1`, model: 'test', stream: false, output: Agent.output.object({ schema: Agent.schema.object({ total: Agent.schema.number() }) }) },
             callbacks: { onPermission: call => { permissions.push(call.toolName); return true } },
         })
         const run = agent.stream('调用工具后给出总数')

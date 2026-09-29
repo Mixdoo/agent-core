@@ -50,7 +50,7 @@ try {
             const result = await Agent.llm.chat({ baseURL: ${JSON.stringify(`http://127.0.0.1:${server.port}/v1`)}, model: 'test', messages: [{ role: 'user', content: 'hi' }], stream: false })
             if (result.text !== 'ok') throw new Error('模型请求失败')
             const agent = Agent.create({ config: { baseURL: ${JSON.stringify(`http://127.0.0.1:${server.port}/v1`)}, model: 'test', stream: false,
-                provider: { output: Agent.output.object({ schema: Agent.schema.object({ total: Agent.schema.number() }) }) } } })
+                output: Agent.output.object({ schema: Agent.schema.object({ total: Agent.schema.number() }) }) } })
             const run = agent.stream('total')
             const response = run.response()
             const events = await response.text()

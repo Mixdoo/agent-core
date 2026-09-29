@@ -1,4 +1,4 @@
-# @kernel4632/agent-core
+﻿# @kernel4632/agent-core
 
 一个轻量的 AI Agent 核心包。给它一个 LLM 地址和一堆工具文件，它就能自动循环"问模型 → 执行工具 → 再问模型"，直到任务完成。
 
@@ -680,8 +680,6 @@ console.log(output.total)
 ```
 
 `Agent.output` 是包内 AI SDK 的 Output，`Agent.schema` 是包内 Zod，无需另装一套。数组可用 `Agent.output.array({ element: Agent.schema.string() })`，普通 JSON 可用 `Agent.output.json()`。所选模型服务须支持对应输出格式。
-
-写成 `provider.output` 也一样能用（`provider` 是 AI SDK 生成参数的归属地），两者都写时以顶层 `output` 为准。
 
 有工具时先完成工具调用，再读取最终对象。工具轮、`tool-stop` 或轮数用尽不会凭空产生 `output`。最终对象校验成功立即结束；格式错误直接抛出，不当成网络故障无限重试。手动及自动压缩只生成文本总结，不继承任务的对象格式。流式和非流式都在最终结果上提供 `output`；流中仍会有生成时的文字片段。
 

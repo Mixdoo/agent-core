@@ -1,4 +1,4 @@
-/*
+﻿/*
 事件流和网页响应共用 send；测试读取顺序、慢消费者、错误、关闭以及旧流不能取消新任务。
 调用：bun test tests/stream.test.js。只使用本地模拟模型。
 */
@@ -46,7 +46,7 @@ test('事件流保持模型事件、轮次、最终结果顺序，原回调照�
 test('Response 输出标准 SSE 和最终结构化对象，可附加响应头', async () => {
     const { server, config } = service('{"total":42}')
     try {
-        const agent = Agent.create({ config: { ...config, provider: { output: Agent.output.object({ schema: Agent.schema.object({ total: Agent.schema.number() }) }) } } })
+        const agent = Agent.create({ config: { ...config, output: Agent.output.object({ schema: Agent.schema.object({ total: Agent.schema.number() }) }) } })
         const run = agent.stream('总数')
         const response = run.response({ headers: { 'X-Test': 'yes' } })
         expect(response.headers.get('content-type')).toContain('text/event-stream')

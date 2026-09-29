@@ -82,7 +82,7 @@ await agent.compact({ onCompact: event => console.log(event) }) // 本次覆盖�
 const result = await Agent.llm.chat({ baseURL, apiKey, model, messages })
 
 // 要一个有固定格式的对象时，格式定义也从本包拿；返回值里直接读取 output。
-// config.provider.output = Agent.output.object({ schema: Agent.schema.object({ total: Agent.schema.number() }) })
+// config.output = Agent.output.object({ schema: Agent.schema.object({ total: Agent.schema.number() }) })
 // const { output } = await agent.send('计算总数')
 
 // callbacks 中可使用下面这些回调：
@@ -115,12 +115,12 @@ import { version } from './package.json'      // 版本号只在 package.json �
 // --- 模型和循环共用同一份配置，不再逐字段抄一遍 ---
 // 逐字段抄的写法每加一个配置项就要多改一处，改了这里忘了那里就会静默丢参数。
 // overrides 是给压缩留的覆盖层：压缩想换便宜模型时，只覆盖它写了的字段。
-// 唯一要挡掉的是 system：它已经被 Context 折进消息（包括压缩总结），再单独传给模型会盖掉那份消息。
-// output 是结构化输出格式，属于"要什么形状的结果"，建议写在配置顶层；这里并进 provider 交给 AI SDK。
-// 同时保留 provider.output 这条老写法：两者都写时以顶层的 output 为准。
+// system 要挡掉：它已经被 Context 折进消息（包括压缩总结），再单独传给模型会盖掉那份消息。
+// output 回答"要什么形状的结果"，是这个包自己的配置，并进 provider 交给 AI SDK；并进之后顶层不再留它。
+// 其余字段原样传下去，LLM.chat 只取自己认识的，不认识的（比如 maxToolOutput）自然被忽略。
 const buildLLM = (config, overrides = {}) => {
-    const merged = { ...config, ...overrides }
-    return { ...merged, provider: { ...merged.provider, output: merged.output ?? merged.provider?.output }, output: undefined, system: undefined }
+    const { output, ...merged } = { ...config, ...overrides }
+    return { ...merged, provider: { ...merged.provider, output }, system: undefined }
 }
 
 

@@ -117,7 +117,7 @@ describe('请求里到底发了什么', () => {
     })
 
     test('能力开关可以关闭结构化输出', async () => {
-        const body = await send({ capabilities: { structuredOutput: false }, provider: { output: Agent.output.json() } })
+        const body = await send({ capabilities: { structuredOutput: false }, output: Agent.output.json() })
         expect(body).not.toHaveProperty('response_format')
     })
 })
