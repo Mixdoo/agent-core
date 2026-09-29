@@ -45,6 +45,7 @@ MCP 服务也返回同样的工具集合，可以直接混用：
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { basename } from 'node:path'
 import { jsonSchema } from 'ai'
+import PQueue from 'p-queue' // 排队与并发上限交给它，这个包不再自己数名额、维护等待队列。
 import toolProcessSource from './tool-process.js' with { type: 'text' } // 工具进程源码以文本引入，打包成单文件时会被原样内联成字符串。
 export { MCP } from './mcp.js' // 供子进程按当前模块地址导入，源码和单文件产物使用同一入口。
 
@@ -59,8 +60,23 @@ const runtime = /^bun(\.exe)?$/i.test(basename(process.execPath)) ? process.exec
 // 一池工具进程，全进程共用。不按工具集合分池：取消已经按 signal 精确到轮次了，
 // 再按集合分池只会让每次 Tool.scan 都新建一池、旧池的空闲进程永远没人回收。
 // 工具在忙时按各自的 signal 控制并发；空闲进程最多留 8 个，避免多个 Agent 跑完后长期占内存。
-const pool = { live: new Set(), idle: [], busy: new Map(), queue: [], limit: 8 } // busy：工具进程 → 它手上那次调用；queue：等着借工具进程的调用。
-let sequence = 0                                                // 调用流水号，一池同时跑多次调用时靠它区分谁是谁。
+const pool = { live: new Set(), idle: [], busy: new Map(), limit: 8 } // busy：工具进程 → 它手上那次调用。
+let sequence = 0                                                       // 调用流水号，一池同时跑多次调用时靠它区分谁是谁。
+
+// --- 并发上限按"一次运行"（同一个 signal）分开 ---
+// 每次运行一个队列：p-queue 保证同一队列内同时最多跑 concurrency 个，超出的自己排队。
+// 队列彼此独立，所以一台 Agent 调窄自己的上限，不会影响另一台。
+// 直接调用（没有 signal）共用一个队列，和以前"共用默认批次"的行为一致。
+const queues = new WeakMap()   // signal → 它的队列。
+const direct = new PQueue({ concurrency: 8 }) // 无 signal 的直接调用共用的队列，默认受池子上限约束。
+
+const queueOf = (signal, concurrency) => {
+    if (!signal) { direct.concurrency = concurrency ?? pool.limit; return direct } // 没给上限就用池子上限，避免一次涌进几十个进程。
+    let queue = queues.get(signal)
+    if (!queue) { queue = new PQueue({ concurrency: Infinity }); queues.set(signal, queue) } // 先建队列，再设上限。
+    queue.concurrency = concurrency ?? Infinity // 本次调用给的上限就是这一批的上限。
+    return queue
+}
 
 
 // --- 扫描工具目录，返回一份完全独立的工具集合 ---
@@ -138,52 +154,10 @@ const buffer = limit => {
 }
 
 
-// --- 每次运行各有自己的并发上限 ---
-// 同一个 signal 是同一次 Agent 运行；没有 signal 的直接调用共用默认批次。
-// 名额在 grant 里同步占用，避免同一 tick 内的多个工具同时越过上限。
-const batches = new WeakMap()
-const direct = { running: 0, limit: Infinity }
-const batchOf = (signal, concurrency) => {
-    if (!signal) {
-        direct.limit = concurrency ?? Infinity
-        return direct
-    }
-    if (!batches.has(signal)) batches.set(signal, { running: 0 })
-    const batch = batches.get(signal)
-    batch.limit = concurrency ?? Infinity
-    return batch
-}
-
-// 只看自己的批次；共享池负责复用进程，不再悄悄限制 Agent 明确设置的并发数。
-const fits = call => call.batch.running < call.batch.limit
-
-// 占名额和拿进程在同一个同步步骤里完成。拆开的话，同一个 tick 里涌进来的调用会全部通过检查，上限形同虚设。
-const grant = (call, take) => {
-    if (call.batch) call.batch.running += 1
-    call.reserved = true
-    const free = pool.idle.pop()
-    if (free) { free.ref(); take(free); return } // 借出期间要吊住事件循环，否则工具还没跑完进程就退了。
-    open().then(take)
-}
-
-// --- 有名额或进程松出来时，按顺序放排队的人上来 ---
-// 不能只看队首：队首那一批可能已经满了，后面别的批次其实能上。
-const pump = () => {
-    for (let i = 0; i < pool.queue.length;) {
-        const waiter = pool.queue[i]
-        if (waiter.call.done) { pool.queue.splice(i, 1); continue } // 排队时就被取消了，它已经结算过，直接移出。
-        if (!fits(waiter.call)) { i += 1; continue }
-        pool.queue.splice(i, 1)
-        grant(waiter.call, waiter.take)
-    }
-}
-
-
-// --- 一个工具进程空出来了：先还池，再看排队的人谁能上 ---
+// --- 一个工具进程空出来了：先还池，再让排队的人去借 ---
 const release = child => {
     child.unref()                  // 空闲工具进程不能吊住事件循环，否则跑过一次工具的进程就再也退不出去。
     pool.idle.push(child)
-    pump()
     if (pool.idle.length > pool.limit) { // 忙时允许多开，闲下来后仍只留默认数量。
         const extra = pool.idle.shift()
         pool.live.delete(extra)
@@ -201,13 +175,13 @@ const stopChildren = call => {
     }
 }
 
-// --- 一个工具进程废了（自己死掉、或被我们杀掉）：它不能再被借出去，腾出的位置给排队的人 ---
+// --- 一个工具进程废了（自己死掉、或被我们杀掉）：它不能再被借出去 ---
+// 借进程的动作由队列负责，这里只需要把它从池子里摘掉，让后来的人开新的。
 const retire = child => {
     stopChildren(pool.busy.get(child)) // 主进程登记了服务 PID，执行进程崩溃时也能清理。
     if (!pool.live.delete(child)) return // 已经退役过了。主动杀掉时这里会走一遍，child.exited 之后还会再走一遍。
     pool.busy.delete(child)
     pool.idle = pool.idle.filter(one => one !== child)
-    pump()
 }
 
 
@@ -264,18 +238,21 @@ const open = () => {
 }
 
 
-// --- 借一个工具进程：能上就立刻占住，不能上就排队 ---
-const acquire = call => new Promise(take => {
-    if (fits(call)) return grant(call, take)
-    pool.queue.push({ call, take })
-})
+// --- 借一个工具进程：池里有空闲就直接用，没有就开一个新的 ---
+const borrow = () => {
+    const free = pool.idle.pop()
+    if (!free) return open()
+    free.ref()             // 借出期间要吊住事件循环，否则工具还没跑完进程就退了。
+    return free
+}
 
 
 // --- 执行一个工具。handlers 必须由调用方明确传入，不存在默认工具表 ---
 const execute = ({ name, input, handlers, signal, onOutput, limit = Infinity, concurrency }) => {
     const handler = handlers?.[name] // 用工具名从地址表里找到它在哪个文件。
     if (!handler?.url) throw new Error(`Tool ${name} was not found in handlers`) // 认 url 而不是认对象，'__proto__' 这种名字才不会蒙混过关。
-    const call = { id: String(++sequence), name, signal, batch: batchOf(signal, concurrency), onOutput, output: buffer(limit), done: false }
+    const call = { id: String(++sequence), name, signal, onOutput, output: buffer(limit), done: false }
+    const queue = queueOf(signal, concurrency) // 这次调用属于哪一批；同一批共用同一个上限。
 
     return new Promise(resolve => {
         const interrupted = one => ({ output: { type: 'error-text', value: `${one.output.text()}\n工具执行已中断` }, interrupted: true })
@@ -290,7 +267,7 @@ const execute = ({ name, input, handlers, signal, onOutput, limit = Infinity, co
                 child.kill()                            // 工具此刻在跑什么都不重要，进程被杀就是杀，孙进程一起带走。
                 running.finish(interrupted(running))
             }
-            call.finish(interrupted(call))              // 还没借到工具进程就被取消的这次调用，也在这里收口，不然它永远不结算。
+            call.finish(interrupted(call))              // 这次调用自己也要收口：它还排在队里、或已经借到进程，都算结束。
         }
 
         // 五条收尾路径（跑完、抛错、工具进程死掉、超时、被取消）共用这一个出口，所以"结算两次"在结构上不存在。
@@ -299,15 +276,13 @@ const execute = ({ name, input, handlers, signal, onOutput, limit = Infinity, co
             call.done = true
             clearTimeout(call.timer)                    // 超时看门狗跟着这次调用一起结束。
             signal?.removeEventListener('abort', stop)  // 一次调用只挂一个监听器，跑完就摘，不随调用次数累积。
-            if (call.reserved && call.batch) call.batch.running -= 1 // 名额还给这一批。
-            call.reserved = false
+            call.done2?.()                              // 告诉队列这次调用真的结束了，名额可以让给同批的下一个。
             resolve(result)
-            pump()                                      // 名额松出来了，同一批排队的人可以上了。
         }
 
-        // 拿到工具进程就开跑。排队期间被取消的，拿到也不跑，直接把工具进程让给下一个。
+        // 真正开跑：占住一个进程，挂上看门狗，把活派给它。
         const start = child => {
-            if (call.done) return release(child)        // 名额已经在 finish 里还过了，这里只还进程。
+            if (call.done) return release(child)        // 排队时就被取消了，拿到也不跑，直接把进程让回池子。
             pool.busy.set(child, call)
 
             // 只有工具自己声明了 timeout 才有看门狗。不设全局超时是有意的：
@@ -324,7 +299,13 @@ const execute = ({ name, input, handlers, signal, onOutput, limit = Infinity, co
         signal?.addEventListener('abort', stop, { once: true })
         if (signal?.aborted) return stop()              // 进来之前就已经取消了，直接停。
 
-        acquire(call).then(start)
+        // 排队、并发上限、占住名额都由队列负责：这个任务要等整次调用结束才算完，
+        // 所以同一批里同一时刻最多有 concurrency 个在跑，超出的等前一个结算。
+        queue.add(async () => {
+            const child = await borrow()                // 池里有空闲就用，没有就开一个新的。
+            if (call.done) return release(child)        // 排队时就被取消了，拿到也不跑，直接把进程让回池子。
+            await new Promise(done => { call.done2 = done; start(child) }) // 等这次调用结算，队列才知道可以让下一个上。
+        })
     })
 }
 
