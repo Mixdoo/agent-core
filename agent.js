@@ -11,11 +11,13 @@ provider: { temperature, topP, topK, maxOutputTokens, stopSequences, seed, toolC
 // 3. system：人给这台 Agent 的身份。它不属于模型参数，是这个包要往上下文里放的东西。
 
 // 4. Agent 的策略：这个包自己的旋钮，和模型无关。
-maxTokens?, compactThreshold, maxSteps?, maxToolOutput?, maxToolConcurrency?, retryMaxDelay?, retryMaxElapsed?, noToolPrompt?, requestTimeout?, noToolRounds?, stream, cache, capabilities, mediaFallback
+maxTokens?, compactThreshold, maxSteps?, maxToolOutput?, maxToolConcurrency?, retryMaxDelay?, retryMaxElapsed?, noToolPrompt?, requestTimeout?, noToolRounds?, stream, cache, capabilities, mediaFallback, compact?
 // capabilities: { image, audio, video, file, tools, structuredOutput, toolChoice, reasoning }
 // mediaFallback: 'error'（默认）或 'strip'；关闭某种媒体后，strip 会保留文字并丢掉媒体块。
 // requestTimeout: 单笔模型请求最多等多久（毫秒）；不设就不限时，卡住的请求会一直等。
 // noToolRounds: 连续多少轮不调工具就结束（默认 3）；设成 Infinity 就永不因不调工具结束，需要调用方给出别的停止条件。
+// compact: 压缩单独用一套模型时写在这里，比如 { model: '便宜的小模型' }；也能换 baseURL / apiKey。
+//          不写就和主模型共用；自动压缩和手动 compact() 都用它。
 // 带 ? 的策略默认不限制；只有调用方主动填写才会启用对应保护。
 maxTokens 和 provider.maxOutputTokens 名字像但是两回事：前者是这个包的上下文预算（超了就压缩），
 后者是"这次最多生成多少 token"。改其中一个不会影响另一个。
@@ -110,9 +112,16 @@ import { version } from './package.json'      // 版本号只在 package.json �
 
 // --- 模型和循环共用同一份配置，不再逐字段抄一遍 ---
 // 逐字段抄的写法每加一个配置项就要多改一处，改了这里忘了那里就会静默丢参数。
+// overrides 是给压缩留的覆盖层：压缩想换便宜模型时，只覆盖它写了的字段。
 // 唯一要挡掉的是 system：它已经被 Context 折进消息（包括压缩总结），再单独传给模型会盖掉那份消息。
 // 其余字段原样传下去，LLM.chat 只取自己认识的，不认识的（比如 maxToolOutput）自然被忽略。
-const buildLLM = config => ({ ...config, system: undefined })
+const buildLLM = (config, overrides = {}) => ({ ...config, ...overrides, system: undefined })
+
+
+// --- 压缩用的模型配置：和主模型同源，config.compact 里写什么就覆盖什么 ---
+// 常见用法是换一个更便宜的小模型做总结：compact: { model: 'gpt-4o-mini' }
+// baseURL、apiKey、protocol 也能一起换，所以压缩完全可以走另一家供应商。
+const buildCompact = config => buildLLM(config, config.compact)
 
 
 // --- 默认值只有这一处，改一次就够 ---
@@ -153,6 +162,7 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
             retryMaxElapsed: undefined, // 不限制重试总时长；服务恢复前持续重试，调用方可主动设置秒数。
             requestTimeout: undefined, // 不限制单笔请求时长；调用方需要防卡死时主动设置毫秒数。
             noToolPrompt: undefined, // 不主动催促模型；调用方需要无工具提醒时主动设置。
+            compact: undefined,     // 压缩想用另一套模型时写在这里（{ model, baseURL, apiKey, provider… }）；不写就和主模型共用。
             stream: true,           // 主循环和压缩请求都使用流式输出。
             system: '',             // 没有系统提示词时仍允许 Agent 运行。
             ...config,              // 传入配置覆盖默认配置，且配置结构只包含 Agent 需要的字段。
@@ -198,13 +208,14 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
                 await previous.task.catch(() => {})                 // 旧任务以 AbortError 结束是正常的，不当成新异常。
             }
             agent.history.push(History.user({ content: input }))   // 等旧任务把它的收尾消息写完再写新指令，history 的顺序才和实际发生的顺序一致。
+            const compactLLM = buildCompact(agent.config)  // 压缩用哪套模型在这里定下来，自动压缩和手动压缩共用同一个来源。
             return Loop.run({
                 history: agent.history,           // Loop 直接使用这份公开数组，执行结果也会继续写入这里。
                 system: agent.config.system,      // 系统提示词本轮不变，直接取当前配置。
                 tools: agent.config.capabilities.tools === false ? {} : agent.tools.schema, // 兼容开关关闭工具时，模型请求和 Loop 都看不到工具。
-                llm: buildLLM(agent.config),      // 统一从配置构建，两处使用完全一致。
+llm: buildLLM(agent.config),      // 主请求用的模型配置。
                 buildContext: options => Context.build({ ...options, capabilities: agent.config.capabilities, mediaFallback: agent.config.mediaFallback }), // 上下文构建交给 Context 模块，并带上本次模型的能力开关。
-                compact: Compact.run,             // 压缩交给 Compact 模块。
+                compact: request => Compact.run({ ...request, llm: compactLLM, stream: compactLLM.stream }), // 压缩用哪套模型由 Agent 决定；Loop 只负责什么时候压、压哪些消息。
                 executeTool: request => Tool.execute({ ...request, handlers: agent.tools.handlers, limit: agent.config.maxToolOutput, concurrency: agent.config.maxToolConcurrency }), // 执行器需要的处理表、输出上限和并发上限由 Agent 补上，Loop 不用知道它们。
                 sessionId: agent.id,             // 会话 ID 用于权限询问时区分实例。
                 ...callbacks,                     // 本次回调快照，后来的 send 不会改变正在运行的通知出口。
@@ -244,12 +255,13 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
                 previous.controller.abort()
                 await previous.task.catch(() => {})
             }
-            const context = Context.build({ history: agent.history, system: agent.config.system, tools: agent.tools.schema, capabilities: agent.config.capabilities, mediaFallback: agent.config.mediaFallback })
+const context = Context.build({ history: agent.history, system: agent.config.system, tools: agent.tools.schema, capabilities: agent.config.capabilities, mediaFallback: agent.config.mediaFallback })
+            const compactLLM = buildCompact(agent.config) // 与 send 里的自动压缩用同一个来源，手动压缩不会偷偷换成主模型。
             const content = await Compact.run({
                 ...options,
                 messages: context.messages,       // 把裁剪后的上下文交给 Compact。
-                llm: buildLLM(agent.config),      // 与 send 共用同一个构建函数，保证一致性。
-                stream: agent.config.stream,      // 压缩使用与 Agent 相同的流式配置。
+                llm: compactLLM,                  // 压缩专用的模型配置。
+                stream: compactLLM.stream,        // 流式与否也跟着压缩那套配置走。
                 onCompact,                         // 单次回调优先，否则沿用 Agent 的默认回调。
                 onRetry,                           // 手动压缩和自动压缩走同一套重试通知。
                 signal: controller.signal,

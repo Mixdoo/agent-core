@@ -399,6 +399,7 @@ import Agent from '@kernel4632/agent-core'
 | `maxToolOutput` | `undefined` | 默认不截断工具输出；主动设置后超出部分从中间截断并告知模型 |
 | `maxTokens` | `undefined` | 默认不估算或压缩上下文；主动设置后超过预算触发自动压缩 |
 | `compactThreshold` | `0.8` | 压缩触发比例，0.8 表示到达 80% 时压缩 |
+| `compact` | `undefined` | 压缩单独用一套模型时写在这里，例如 `{ model: '便宜的小模型' }`；不写就和主模型共用 |
 | `maxSteps` | `undefined` | 默认不限制模型轮数；主动设置正整数后，到上限先保存这一轮的工具结果，再返回 `step-limit` |
 | `maxToolConcurrency` | `undefined` | 默认不限制同一轮工具并发；主动设置后超出的调用排队 |
 | `retryMaxDelay` | `undefined` | 默认不限制单次退避时间；主动设置后限制秒数 |
@@ -844,6 +845,17 @@ const agent = Agent.create({ config: { /* ... */ }, tools })
 上下文超过 `config.maxTokens` 的 80%（可用 `compactThreshold` 调整）时，Loop 会自动调用 Compact 把历史压缩成一段总结，然后继续运行。
 
 **压缩只往 `agent.history` 里追加一条总结，永远不删任何东西。** `history` 是唯一权威数据来源，该保留多少由持有它的你来决定——压缩控制的是"这一轮发给模型的内容有多大"，不是"历史能留多少"。
+
+**压缩可以另配一套模型。** 总结不需要主模型那么聪明，用便宜的小模型就够，写在 `config.compact` 里：
+
+```js
+config: {
+    baseURL: 'https://api.example.com/v1', apiKey: 'sk-xxx', model: '主模型',
+    compact: { model: '便宜的小模型' },   // 也能一起换 baseURL / apiKey / provider
+}
+```
+
+不写 `compact` 就和主模型共用。自动压缩和手动 `agent.compact()` 用的都是这一套。
 
 **最新的那条总结会折进 `system`，而不是当成一条用户消息塞进对话里**，并且带一句"这是你自己之前做过的工作，数据已由工具确认"。裸的 `role:'user'` 总结会被模型读成"用户塞给我一张表"，于是它从头重做整个任务——真实端点实测 `gpt-oss-120b` 改之前 1/6 能正确续跑，改之后 6/6。
 

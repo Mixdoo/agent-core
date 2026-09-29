@@ -112,6 +112,62 @@ describe('Agent 的状态机', () => {
 
 
 describe('压缩这条路径', () => {
+    test('压缩可以改用另一套模型配置', async () => {
+        // 压缩是省钱的常规手段：主模型要聪明，做总结的小模型只要便宜。
+        // 两个假服务各记各的请求，谁被调用、用的哪个模型名，一目了然。
+        const seen = { main: [], compact: [] }
+        const reply = content => Response.json({ choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }], usage: {} })
+        const small = Bun.serve({ port: 0, async fetch(request) { seen.compact.push(await request.json()); return reply('小模型总结') } })
+        const big = Bun.serve({ port: 0, async fetch(request) { seen.main.push(await request.json()); return reply('主模型回答') } })
+        try {
+            const agent = Agent.create({
+                history: [History.user({ content: '之前的工作' })],
+                config: {
+                    ...config, baseURL: `http://127.0.0.1:${big.port}/v1`, model: 'big-model',
+                    compact: { baseURL: `http://127.0.0.1:${small.port}/v1`, model: 'small-model' },
+                },
+            })
+
+            expect(await agent.compact()).toBe('小模型总结')              // 结果来自小模型那台服务。
+            expect(seen.compact).toHaveLength(1)                          // 压缩只打给了小模型。
+            expect(seen.compact[0].model).toBe('small-model')
+            expect(seen.main).toHaveLength(0)                             // 主模型一次都没被压缩请求碰到。
+        } finally { small.stop(true); big.stop(true) }
+    })
+
+    test('自动压缩也走压缩专用的模型', async () => {
+        // 自动压缩才是生产里真正天天跑的那条路：上下文超阈值时 Loop 自己触发一次。
+        const seen = { main: [], compact: [] }
+        const reply = content => Response.json({ choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }], usage: {} })
+        const small = Bun.serve({ port: 0, async fetch(request) { seen.compact.push(await request.json()); return reply('小模型总结') } })
+        const big = Bun.serve({ port: 0, async fetch(request) { seen.main.push(await request.json()); return reply('主模型回答') } })
+        try {
+            const agent = Agent.create({
+                history: [History.user({ content: '很久以前的工作记录'.repeat(50) })],
+                config: {
+                    ...config, baseURL: `http://127.0.0.1:${big.port}/v1`, model: 'big-model',
+                    maxTokens: 20, compactThreshold: 0.5, noToolRounds: 1,
+                    compact: { baseURL: `http://127.0.0.1:${small.port}/v1`, model: 'small-model' },
+                },
+            })
+
+            await agent.send('继续')
+            expect(seen.compact).toHaveLength(1)                                   // 超阈值触发了一次自动压缩。
+            expect(seen.compact[0].model).toBe('small-model')                      // 压缩打给小模型。
+            expect(seen.main.every(body => body.model === 'big-model')).toBe(true) // 主请求从来不用小模型。
+        } finally { small.stop(true); big.stop(true) }
+    })
+
+    test('不写 compact 时压缩仍用主模型', async () => {
+        const seen = []
+        const mock = Bun.serve({ port: 0, async fetch(request) { seen.push(await request.json()); return Response.json({ choices: [{ index: 0, message: { role: 'assistant', content: '总结' }, finish_reason: 'stop' }], usage: {} }) } })
+        try {
+            const agent = Agent.create({ history: [History.user({ content: '之前的工作' })], config: { ...config, baseURL: `http://127.0.0.1:${mock.port}/v1` } })
+            expect(await agent.compact()).toBe('总结')
+            expect(seen[0].model).toBe('m') // config 里的主模型名。
+        } finally { mock.stop(true) }
+    })
+
     test('手动压缩沿用默认回调，单次传入的回调优先', async () => {
         let calls = 0
         const mock = Bun.serve({
