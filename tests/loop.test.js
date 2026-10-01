@@ -47,7 +47,7 @@ describe('Agent 的状态机', () => {
         } finally { single.stop(true) }
     })
 
-    test('注册工具后仍保留原来的三轮无工具结束规则', async () => {
+    test('默认注册工具后，模型不调工具即结束，不再多问', async () => {
         let calls = 0
         const mock = Bun.serve({
             port: 0,
@@ -62,7 +62,7 @@ describe('Agent 的状态机', () => {
             const result = await agent.send('检查一下')
 
             expect(result).toEqual({ reason: 'no-tool', text: '暂时不用工具' })
-            expect(calls).toBe(3)
+            expect(calls).toBe(1) // 默认 noToolRounds=1：模型不调工具的那一轮就是最终回答，不要再追问。
         } finally { mock.stop(true) }
     })
 

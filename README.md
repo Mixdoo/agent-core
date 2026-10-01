@@ -156,7 +156,7 @@ agent.send(input)
        │    └─ 把工具结果写入 history，继续下一轮循环
        │
        └─ [没有工具调用]
-            └─ 连续 3 轮无工具则返回 { reason: 'no-tool' }
+            └─ 模型不调工具则返回 { reason: 'no-tool' }
 ```
 
 ---
@@ -406,8 +406,8 @@ import Agent from '@kernel4632/agent-core'
 | `retryMaxDelay` | `undefined` | 默认不限制单次退避时间；主动设置后限制毫秒数 |
 | `retryMaxElapsed` | `undefined` | 默认不限制重试总时长；主动设置后到点把错误交给上层（毫秒） |
 | `requestTimeout` | `undefined` | 默认不限制单笔请求时长；主动设置毫秒数后，卡住的一笔会被中断 |
-| `noToolPrompt` | `undefined` | 默认不插入催促消息；主动设置后模型连续两轮不调工具时使用 |
-| `noToolRounds` | `3` | 连续多少轮不调工具就结束一次 `send`；设成 `Infinity` 就永不因不调工具结束 |
+| `noToolPrompt` | `undefined` | 默认不插入催促消息；主动设置后模型连续 `noToolRounds` 轮不调工具时的前一轮使用 |
+| `noToolRounds` | `1` | 连续多少轮不调工具就结束一次 `send`（默认 1，模型不调工具即结束）；设成 `Infinity` 就永不因不调工具结束 |
 
 陌生中转站建议先使用默认能力。遇到只支持文字、但接口声称兼容 OpenAI 的模型，可以按能力关闭：
 
@@ -510,7 +510,7 @@ const result = await agent.send({
 
 // result.text → 最后一轮模型生成的文字
 // result.reason:
-//   'no-tool'    → 没注册工具时一次回答结束；有工具时连续 noToolRounds 轮（默认 3）没调用工具才结束
+//   'no-tool'    → 没注册工具时一次回答结束；有工具时连续 noToolRounds 轮（默认 1）没调用工具才结束
 //   'tool-stop'  → 某个工具返回了 stop: true
 //   'step-limit' → 达到 maxSteps，当前工具结果已保存，下一次 send 可继续
 ```
@@ -941,7 +941,7 @@ export default {
 有两种方式：
 
 1. 写一个 `finish` 工具，让它 `return { stop: true }`，并在系统提示词里告诉模型"完成任务时调用 finish 工具"。
-2. 不写 finish 工具，依赖默认行为：模型连续 3 轮不调用任何工具时，Loop 自动返回 `{ reason: 'no-tool' }`。
+2. 不写 finish 工具，依赖默认行为：模型连续 `noToolRounds` 轮（默认 1）不调用任何工具时，Loop 自动返回 `{ reason: 'no-tool' }`。
 
 ---
 

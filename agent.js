@@ -15,7 +15,7 @@ maxTokens?, compactThreshold, maxSteps?, maxToolOutput?, maxToolConcurrency?, re
 // capabilities: { image, audio, video, file, tools, structuredOutput, toolChoice, reasoning }
 // mediaFallback: 'error'（默认）或 'strip'；关闭某种媒体后，strip 会保留文字并丢掉媒体块。
 // requestTimeout: 单笔模型请求最多等多久（毫秒）；不设就不限时，卡住的请求会一直等。
-// noToolRounds: 连续多少轮不调工具就结束（默认 3）；设成 Infinity 就永不因不调工具结束，需要调用方给出别的停止条件。
+// noToolRounds: 连续多少轮不调工具就结束（默认 1，即模型不调工具就算答完）；调大可让模型多坚持几轮，设成 Infinity 就永不因不调工具结束。
 // output: 结构化输出格式，如 Agent.output.object({ schema: Agent.schema.object({...}) })；返回值里读 output。
 //         写在配置顶层（它回答"要什么形状的结果"），底层会并进 provider 交给 AI SDK。
 // compact: 压缩单独用一套模型时写在这里，比如 { model: '便宜的小模型' }；也能换 baseURL / apiKey。
@@ -132,7 +132,9 @@ const buildCompact = config => buildLLM(config, config.compact)
 // capabilities 里媒体那几项的默认值由 History 拥有（mediaDefaults），这里只补上工具、结构化输出等 Agent 自己的开关。
 const DEFAULT_CAPABILITIES = { ...History.mediaDefaults, tools: true, structuredOutput: true, toolChoice: true, reasoning: false } // 陌生渠道默认只发通用能力，高级能力由调用方逐项打开。
 const DEFAULT_COMPACT_THRESHOLD = 0.8 // 设置 maxTokens 后，上下文到这个比例就压缩。
-const DEFAULT_NO_TOOL_ROUNDS = 3      // 有工具时连续几轮不调工具就结束一次 send。
+// 有工具时连续几轮不调工具就结束一次 send。默认 1：模型不调工具就是在给最终回答。
+// 实测默认 3 时，模型答完还会被追问两轮，最后一轮常是"谢谢确认"甚至空字符串，把真正的答案盖掉，耗时也翻几倍。
+const DEFAULT_NO_TOOL_ROUNDS = 1
 
 // --- 登记一次运行，并保证它结束后只清理自己 ---
 // send 和 compact 共用这一份：谁后发起谁顶替前一个，任务结束时只有"当前这一个"会把状态清空。
