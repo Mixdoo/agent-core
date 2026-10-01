@@ -68,6 +68,7 @@ body 和 cache 是本包创建连接时加上的 fetch 行为，无法补进一�
 "这次回答是不是其实失败了"不会流到上层，所以 Loop 和 Retry 都不需要再判断一遍。
 
 抛出去的模型错误会带一个稳定的 kind：aborted / auth / limit / timeout / server / network / request / unknown。
+unknown 指服务返回了成功状态码，但回答格式对不上（不完全兼容的中转站最常见）。
 上层靠它决定"该重试、该换模型、还是该直接报给用户"，不用去认 AI SDK 的内部错误形状。
 kind 只补充信息，"能不能重试"仍然只由 error.isRetryable 决定，这里不制造第二套判断标准。
 
@@ -186,7 +187,8 @@ const label = (error, timeout) => {
     else if (error.statusCode === 429) error.kind = 'limit'
     else if (error.statusCode === 408) error.kind = 'timeout'
     else if (error.statusCode >= 500) error.kind = 'server'
-    else error.kind = 'request'                                  // 4xx 里的参数、格式、鉴权之外的问题。
+    else if (error.statusCode >= 400) error.kind = 'request'     // 4xx 里的参数、格式、鉴权之外的问题。
+    else error.kind = 'unknown'                                  // 服务说成功（2xx）但回答对不上格式：不是调用方传错了，不能贴成 request。
     if (error.kind === 'timeout' && error.isRetryable === undefined) error.isRetryable = true // 超时是瞬时故障，交给 Retry 决定。
     return error
 }

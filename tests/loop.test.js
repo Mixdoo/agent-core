@@ -44,6 +44,7 @@ describe('Agent 的状态机', () => {
             expect(result).toEqual({ reason: 'no-tool', text: '你好' })
             expect(calls).toBe(1) // 没有可用工具时，不要让模型连续三轮尝试调用不存在的工具。
             expect(agent.history.at(-1).role).toBe('assistant')
+            expect(agent.history.every(message => typeof message.id === 'string' && message.id)).toBe(true) // 模型产出的消息也要有 id，前端靠它定位每一条。
         } finally { single.stop(true) }
     })
 

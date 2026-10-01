@@ -98,7 +98,7 @@ const run = async ({
 
         // --- 处理无工具调用的情况 ---
         const toolCalls = result.toolCalls || []                                                        // 模型这轮想调用的工具。
-        const assistantMessages = result.responseMessages.filter(message => message.role === 'assistant') // 只保留 assistant 消息，保留思考和厂商内容。
+        const assistantMessages = result.responseMessages.filter(message => message.role === 'assistant').map(History.stored) // 只保留 assistant 消息；补上 id 再进 history，前端才能定位每一条。
 
         if (!toolCalls.length) {
             history.push(...assistantMessages)                                  // 保存模型完整 assistant 消息。

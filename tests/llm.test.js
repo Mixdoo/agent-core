@@ -365,6 +365,17 @@ describe('单笔请求限时与错误分类', () => {
         expect(error.kind).toBe('network')
     })
 
+    test('服务返回 200 但回答格式对不上时归到 unknown，不冒充调用方的 request 错误', async () => {
+        // 真实中转站实测：Responses 接口返回 200，但 output_text 缺了规范要求的 annotations，AI SDK 当场校验失败。
+        // 这不是调用方传错了参数，贴成 request 会把排查方向引到调用方自己身上。
+        const server = Bun.serve({ port: 0, fetch: () => Response.json({ unexpected: true }) })
+        try {
+            const error = await LLM.chat({ baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'k', model: 'm', messages: [{ role: 'user', content: 'hi' }], stream: false, ...noRetry }).catch(caught => caught)
+            expect(error.statusCode).toBe(200)
+            expect(error.kind).toBe('unknown')
+        } finally { server.stop(true) }
+    })
+
     test('分类只加信息，不改"能不能重试"的唯一来源', async () => {
         const server = Bun.serve({ port: 0, fetch: () => Response.json({ error: { message: 'x' } }, { status: 400 }) })
         try {

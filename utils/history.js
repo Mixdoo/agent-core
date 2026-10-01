@@ -92,6 +92,11 @@ const tool = ({ id, toolCallId, toolName, content }) => ({
 // 创建压缩总结块；它仍然是 user 角色，但 compact 标记让 Context 识别最新总结。
 const compact = ({ id, content }) => ({ id: messageId(id), role: 'user', content: text(content, 'content'), compact: true })
 
+// --- 把外部来的消息收进历史时补上 id ---
+// AI SDK 返回的 assistant 消息没有 id，而 history 里的每条消息都该有 id（前端靠它定位和更新）。
+// 所以模型产出在写入 history 之前统一在这里贴一个，其它字段原样保留——包括厂商的思考签名。
+const stored = message => ({ ...message, id: message.id ?? nanoid() })
+
 
 // content 既可能是内容块数组，也可能是一段纯文本；纯文本里不会有工具调用。
 const parts = message => (Array.isArray(message.content) ? message.content : [])
@@ -228,4 +233,4 @@ const render = history => history
     .join('\n')
 
 
-export default { user, assistant, tool, compact, turns, render, model, parts }
+export default { user, assistant, tool, compact, stored, turns, render, model, parts }
