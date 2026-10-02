@@ -12,8 +12,9 @@ const result = await LLM.chat({
     // --- 工具（可选）---
     tools: tools.schema,           // Agent.tool.scan() 返回的工具名 → 描述对象
     toolChoice: "auto",             // 也可写在 provider 里；没传 tools 时不会出现在请求里
-    toolMode: "auto",               // auto：原生优先；接口拒收工具时自动改用文字协议，模型把调用写成文字时也能读回
-                                    // native：只用原生工具字段；text：纯对话模型，工具说明写进 system、调用从文字里读
+    toolMode: "native",             // native（默认）：只用原生工具字段，system 零注入
+                                    // text：模拟工具——不发 tools，把工具说明注入 system，调用从文字里读
+                                    // auto：兼容降级——原生优先，接口拒收时才改用文字协议（那时才注入）
 
     // --- 生成参数，全部可选（原样交给 AI SDK，这个文件不认识它们）---
     provider: {
@@ -231,7 +232,7 @@ const chat = async ({
     messages,             // 要发给模型的完整消息，必填。
     tools,                // 工具描述表；没有工具就不下发。
     toolChoice = 'auto',  // 工具选择策略；provider 里可以覆盖。
-    toolMode = 'auto',    // 工具走哪条路：auto（原生优先，自动降级和兜底）/ native（只用原生）/ text（只用文字协议）。
+    toolMode = 'native',  // 默认零注入：只用原生工具字段。'text'（模拟工具）或 'auto'（兼容降级）才会把工具说明注入 system。
     stream = true,        // 是否流式；两条路最终返回同一种结果。
     cache = true,         // 提示词缓存；四协议默认开启，false 完全关闭，或传 { key, retention, body }。
     capabilities = {},    // 模型能力开关；关闭后对应的字段不下发。

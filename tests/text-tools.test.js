@@ -146,7 +146,7 @@ describe('三种 toolMode 跑完整的 Agent 循环', () => {
         const { server, requests } = plainChatModel()
         try {
             const tools = await Agent.tool.scan(TOOLS)
-            const agent = Agent.create({ config: { baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'k', model: 'plain-auto', stream: false }, tools }) // 不写 toolMode，默认 auto。
+            const agent = Agent.create({ config: { baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'k', model: 'plain-auto', stream: false, toolMode: 'auto' }, tools }) // 兼容降级是主动打开的开关，不是默认行为。
             const answer = await agent.send('回显你好')
 
             expect(answer.text).toBe('答案是 done:你好。')
@@ -162,20 +162,23 @@ describe('三种 toolMode 跑完整的 Agent 循环', () => {
         try {
             const tools = await Agent.tool.scan(TOOLS)
             const results = []
-            const agent = Agent.create({ config: { baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'k', model: 'leaky', stream: false }, tools, callbacks: { onToolResult: one => results.push(one) } })
+            const agent = Agent.create({ config: { baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'k', model: 'leaky', stream: false, toolMode: 'auto' }, tools, callbacks: { onToolResult: one => results.push(one) } })
             await agent.send('回显 x')
             expect(results[0].output.value).toBe('done:x')
         } finally { server.stop(true) }
     })
 
-    test('native：只认原生字段，文字里的调用当成普通回答', async () => {
-        const server = Bun.serve({ port: 0, async fetch(request) { await request.json(); return chatReply('<tool_call>{"name":"echo","arguments":{"value":"x"}}</tool_call>') } })
+    test('默认只走原生：文字里的调用当成普通回答，system 零注入', async () => {
+        const requests = []
+        const server = Bun.serve({ port: 0, async fetch(request) { requests.push(await request.json()); return chatReply('<tool_call>{"name":"echo","arguments":{"value":"x"}}</tool_call>') } })
         try {
             const tools = await Agent.tool.scan(TOOLS)
             const results = []
-            const agent = Agent.create({ config: { baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'k', model: 'm', stream: false, toolMode: 'native' }, tools, callbacks: { onToolResult: one => results.push(one) } })
-            await agent.send('回显 x')
-            expect(results).toHaveLength(0)
+            const agent = Agent.create({ config: { baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'k', model: 'm', stream: false, system: '你是助手。' }, tools, callbacks: { onToolResult: one => results.push(one) } }) // 不写 toolMode，默认 native。
+            const answer = await agent.send('回显 x')
+            expect(results).toHaveLength(0)                                   // 没有主动打开兼容开关，就不去猜模型文字里的调用。
+            expect(answer.text).toContain('<tool_call>')                      // 那段文字就是普通回答。
+            expect(requests[0].messages[0].content).toBe('你是助手。')          // 调用方给的 system 原样送出，没有被追加任何工具说明。
         } finally { server.stop(true) }
     })
 
