@@ -191,8 +191,11 @@ const shape = (tool, result, limit) => {
 // 目前只有「按需加载技能」这一个动作：技能正文在扫描时就读好了，这里按名字取出来交给模型。
 const builtin = data => {
     if (data.name !== 'skill') throw new Error(`未知的内置动作：${data.name}`)             // 只认识 skill 一个动作。
-    const body = data.skills?.[data.input?.skill]                                         // 按模型给的技能名取出正文。
-    if (body === undefined) throw new Error(`找不到技能 "${data.input?.skill ?? ''}"。可用的技能见系统提示词的「可用技能」列表。`) // 名字写错时告诉模型去哪里找对的名字。
+    // Object.fromEntries 建出的对象有原型链，名字是 constructor / toString 等时会取到继承的方法而不是 undefined。
+    // 用 hasOwn 挡住这条路，继承来的东西不算技能。
+    const skillName = data.input?.skill ?? ''
+    const body = Object.hasOwn(data.skills ?? {}, skillName) ? data.skills[skillName] : undefined
+    if (body === undefined) throw new Error(`找不到技能 "${skillName}"。可用的技能见系统提示词的「可用技能」列表。`) // 名字写错时告诉模型去哪里找对的名字。
     return { type: 'text', value: body }                                                  // 正文原样交给模型。
 }
 

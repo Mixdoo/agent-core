@@ -229,7 +229,10 @@ const open = () => {
     // 工具进程整个死掉（工具里 process.exit、原生崩溃、工具文件语法错误）时既没有 done 也没有 error。
     // 不接住它，这次调用就永远不结算，整个 Agent 会无声卡死。
     // 被我们主动杀掉时这里也会走一遍，但那次调用早已结算过，finish 自带一次性语义，不会重复。
+    // 握手完成前就死掉时 ready 还没被调用，waiting 会永远挂着——用 ready(null) 解除挂起，
+    // borrow 收到 null 就知道进程启动失败，给出错误结果而不是卡死。
     child.exited.then(code => {
+        ready(null)   // 握手前死掉：解除 borrow 那一侧的等待；握手后 ready 已调用、这次是空操作。
         const call = pool.busy.get(child)
         retire(child)
         call?.finish({ output: { type: 'error-text', value: `工具执行失败：工具进程退出（代码 ${code}）` }, error: 'process-exited' })
@@ -240,11 +243,11 @@ const open = () => {
 
 
 // --- 借一个工具进程：池里有空闲就直接用，没有就开一个新的 ---
-const borrow = () => {
+const borrow = async () => {
     const free = pool.idle.pop() // 从空闲池拿一个。
-    if (!free) return open()     // 没有空闲的就新开一个。
-    free.ref()             // 借出期间要吊住事件循环，否则工具还没跑完进程就退了。
-    return free
+    const child = free ? (free.ref(), free) : await open() // 有空闲就借，没有就开新的。
+    if (!child) throw new Error('工具进程启动失败：进程在握手完成前就退出了') // open() 返回 null 说明进程握手前已死。
+    return child
 }
 
 
