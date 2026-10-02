@@ -151,6 +151,9 @@ const DEFAULT_NO_TOOL_ROUNDS = 1
 // 不会出现两个任务同时往同一份 history 里写。
 // work 拿到本次的取消信号，返回这一次要做的事；返回的 Promise 就是 send / compact 的返回值。
 const start = (agent, work, outside) => {
+    // 调用方的取消信号必须是真的 AbortSignal，否则下面的 AbortSignal.any 会同步抛错，
+    // 打破"出错只从 Promise 拒绝出来"的约定。
+    if (outside !== undefined && !(outside instanceof AbortSignal)) return Promise.reject(new TypeError('signal must be an AbortSignal'))
     const previous = agent.running                              // 上一次运行（可能是 send，也可能是 compact）。
     const controller = new AbortController()                    // stop() 靠它中断这一次。
     const signal = outside ? AbortSignal.any([controller.signal, outside]) : controller.signal // 调用方自己的取消信号也能停掉它。
@@ -221,21 +224,28 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
 
         // --- 检查输入：被入口直接调用的指令，只在这里查一次 ---
         const empty = typeof input === 'string' ? !input.trim() : !Array.isArray(input) || !input.length
-        const limits = { ...agent.config, ...(options.config ?? {}) } // 本次真正生效的配置：即将覆盖的值也要一起检查。
+        const badConfig = 'config' in options && (typeof options.config !== 'object' || options.config === null || Array.isArray(options.config))
+        const limits = { ...agent.config, ...(badConfig ? {} : options.config ?? {}) } // 本次真正生效的配置：即将覆盖的值也要一起检查。
+        const positive = (value, finite = true) => value === undefined || (finite ? Number.isInteger(value) && value >= 1 : value === Infinity || Number.isInteger(value) && value >= 1)
         const invalid =
             empty ? new TypeError('input must be a non-empty string or a non-empty content array')                            // 没有本次输入就没有可执行指令。
-            : limits.maxSteps !== undefined && (!Number.isInteger(limits.maxSteps) || limits.maxSteps < 1) ? new RangeError('maxSteps must be a positive integer') // 设成 0 却仍然发出一次请求，是调用方最容易被骗到的地方。
-            : limits.noToolRounds !== undefined && limits.noToolRounds !== Infinity && (!Number.isInteger(limits.noToolRounds) || limits.noToolRounds < 1) ? new RangeError('noToolRounds must be a positive integer or Infinity') // 0 会让一次 send 一轮都不走。
+            : badConfig ? new TypeError('config must be an object')                                                              // null 或数组会在合并时同步抛错。
+            : !positive(limits.maxSteps) ? new RangeError('maxSteps must be a positive integer') // 设成 0 却仍然发出一次请求，是调用方最容易被骗到的地方。
+            : !positive(limits.noToolRounds, false) ? new RangeError('noToolRounds must be a positive integer or Infinity') // 0 会让一次 send 一轮都不走。
+            : !positive(limits.maxToolConcurrency, false) ? new RangeError('maxToolConcurrency must be a positive integer or Infinity') // 0 会让每个工具都"执行失败"，而不是一开始就说清楚。
             : null
         if (invalid) return Promise.reject(invalid)
-        if ('history' in options) agent.history = options.history                                           // 传入空数组也代表明确覆盖历史。
-        if ('config' in options) agent.config = { ...agent.config, ...options.config, provider: 'provider' in options.config ? { ...options.config.provider } : agent.config.provider, capabilities: 'capabilities' in options.config ? { ...agent.config.capabilities, ...options.config.capabilities } : agent.config.capabilities } // provider 整包替换；能力开关按字段合并，调用方只改一个开关就够。
-        if ('tools' in options) agent.tools = options.tools                                                 // 工具是整体替换，不在 Agent 内部猜测如何合并。
-        if ('skills' in options) agent.skills = options.skills ?? null                                      // 技能整份替换；传 null 表示这台 Agent 不使用技能。
-        if ('callbacks' in options) agent.callbacks = { ...agent.callbacks, ...options.callbacks }         // 回调逐项合并，避免替换一个回调时清掉其他回调。
-        const callbacks = { ...agent.callbacks }                    // 拍下本次回调，后来的 send 不会改变正在运行的通知出口。
 
         return start(agent, signal => {
+            // 覆盖项在真正开跑时才写进 Agent：这次 send 如果在等上一次收尾时就被更新的 send 顶掉，
+            // 它的 history / config / tools 覆盖不该留下来，否则"被取消的指令"会悄悄改掉 Agent 的状态。
+            if ('history' in options) agent.history = options.history                                           // 传入空数组也代表明确覆盖历史。
+            if ('config' in options) agent.config = { ...agent.config, ...options.config, provider: 'provider' in options.config ? { ...options.config.provider } : agent.config.provider, capabilities: 'capabilities' in options.config ? { ...agent.config.capabilities, ...options.config.capabilities } : agent.config.capabilities } // provider 整包替换；能力开关按字段合并，调用方只改一个开关就够。
+            if ('tools' in options) agent.tools = options.tools                                                 // 工具是整体替换，不在 Agent 内部猜测如何合并。
+            if ('skills' in options) agent.skills = options.skills ?? null                                      // 技能整份替换；传 null 表示这台 Agent 不使用技能。
+            if ('callbacks' in options) agent.callbacks = { ...agent.callbacks, ...options.callbacks }         // 回调逐项合并，避免替换一个回调时清掉其他回调。
+            const callbacks = { ...agent.callbacks }                    // 拍下本次回调，后来的 send 不会改变正在运行的通知出口。
+
             agent.history.push(History.user({ content: input }))   // 写下这次的指令。
             const compactLLM = buildCompact(agent.config)          // 压缩用哪套模型在这里定下来，自动压缩和手动压缩共用同一个来源。
 

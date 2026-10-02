@@ -113,7 +113,7 @@ const build = ({ history, system = '', tools = {}, budget, capabilities = {}, me
 
     const messages = [
         ...(instructions ? [{ role: 'system', content: instructions }] : []),                                   // system 进入 messages，并一起参与 Token 估算。
-        ...flat.map(message => History.model(message, { answered, capabilities, reasoning: capabilities.reasoning ?? false, mediaFallback, normalizeMedia: false })).filter(message => message.content.length), // 被摘空的消息（只剩思考、媒体或没人应答的调用）整条丢掉。
+        ...flat.map(message => History.model(message, { answered, capabilities, reasoning: capabilities.reasoning ?? false, mediaFallback, normalizeMedia: false })).filter(message => message.content != null && message.content !== '' && !(Array.isArray(message.content) && !message.content.length)), // 被摘空的消息（只剩思考、媒体或没人应答的调用）整条丢掉。null content 来自外部还原历史，也丢掉。
     ]
 
     // Token 只在真的有人读的时候才算：没设 maxTokens 时 Loop 压根不看它，

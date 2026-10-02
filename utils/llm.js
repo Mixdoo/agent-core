@@ -188,7 +188,10 @@ const request = async ({ input, stream, requestTimeout, markAttempt, onLLMEvent,
         // 流被截断、SSE 格式坏掉、缺 finish_reason 这类错误，AI SDK 不给 isRetryable 标记，
         // 但它们全是传输层的瞬时故障——中转站和代理最常见的就是这种，重试一次通常就好了。
         // 在边界上补标记而不是让 Retry 去认 AI SDK 的内部错误类型：判断"能不能重试"仍然只有一处来源。
-        if (error?.isRetryable === undefined && error?.name !== 'AbortError') error.isRetryable = true
+        // 唯独"服务返回成功、但内容对不上格式"（TypeValidation）不能重试：字节已经完整收到了，
+        // 再发一次还是同一份坏内容，只会变成无限重试。
+        const format = error?.name === 'AI_TypeValidationError' || error?.name === 'AI_NoObjectGeneratedError'
+        if (error?.isRetryable === undefined && error?.name !== 'AbortError') error.isRetryable = !format
         throw error
     }
     // 格式错误属于最终回答错误，放在传输重试之外，避免反复重试一段不符合 schema 的 JSON。
@@ -211,6 +214,7 @@ const label = (error, timeout) => {
     if (error?.kind) return error                                // 已经分过类，不重复贴。
     if (timeout?.aborted) error.kind = 'timeout'                 // 我们自己的限时先判，避免被当成用户取消。
     else if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') error.kind = 'aborted'
+    else if (error?.name === 'AI_TypeValidationError' || error?.name === 'AI_NoObjectGeneratedError') error.kind = 'unknown' // 连上了、状态码也成功，只是内容对不上格式。
     else if (error?.statusCode === undefined) error.kind = 'network' // 连接根本没建起来，没有状态码。
     else if (error.statusCode === 401 || error.statusCode === 403) error.kind = 'auth'
     else if (error.statusCode === 429) error.kind = 'limit'

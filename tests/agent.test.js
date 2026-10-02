@@ -91,6 +91,43 @@ describe('Agent 入口', () => {
         expect(agent.history.length).toBe(0)                              // 被拒绝的输入不写进历史。
     })
 
+    test('非法配置和非法 signal 也走 Promise 拒绝，不抛出同步异常', async () => {
+        // README 承诺"出错只有 Promise 拒绝一种"，所以这两种最常见的误用在调用现场也不该炸。
+        const agent = Agent.create({ config: config() })
+
+        // 调用那一刻不能抛同步异常：返回的必须是 Promise（下面再等它拒绝）。
+        const badConfig = agent.send({ input: 'x', config: null })
+        const badSignal = agent.send('x', { signal: {} })
+        expect(badConfig).toBeInstanceOf(Promise)
+        expect(badSignal).toBeInstanceOf(Promise)
+        await expect(badConfig).rejects.toThrow('config must be an object')
+        await expect(badSignal).rejects.toThrow('signal must be an AbortSignal')
+        await expect(agent.send({ input: 'x', config: { maxToolConcurrency: 0 } })).rejects.toThrow('maxToolConcurrency')
+        await expect(agent.send({ input: 'x', config: { noToolRounds: 0 } })).rejects.toThrow('noToolRounds')
+    })
+
+    test('maxToolConcurrency 设成 Infinity 是合法的', async () => {
+        const agent = Agent.create({ config: config({ maxToolConcurrency: Infinity }) })
+        await agent.send('不限并发')
+        expect(agent.config.maxToolConcurrency).toBe(Infinity)
+    })
+
+    test('send 被后来的指令顶掉时，它的 history/config 覆盖不会留下', async () => {
+        // 同一个 tick 里 B 带着覆盖项发出，还没开跑就被 C 顶掉。B 是一次已取消的指令，
+        // 不该改掉这台 Agent 的历史和配置——否则 C 会跑在 B 留下的状态上。
+        const agent = Agent.create({ config: config() })
+        const other = [History.user({ content: '另一份历史' })]
+
+        const a = agent.send('任务A').catch(() => {})
+        const b = agent.send({ input: '任务B', history: other, config: { provider: { temperature: 0.99 } } }).catch(() => {})
+        const c = agent.send('任务C')
+
+        await Promise.allSettled([a, b, c])
+        expect(agent.history).not.toBe(other)                          // B 的 history 覆盖没生效。
+        expect(agent.config.provider.temperature).toBeUndefined()      // B 的 provider 覆盖没生效。
+        expect(agent.history.some(message => message.content === '任务B')).toBe(false) // B 的输入也没写进去。
+    })
+
     test('send 之后 config 按字段合并，没传的字段继续保留', async () => {
         const agent = Agent.create({ config: config({ maxToolOutput: 1000, provider: { temperature: 0.1 } }) })
         await agent.send({ input: '第一次', config: { maxToolOutput: 2000 } })

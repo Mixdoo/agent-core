@@ -210,7 +210,10 @@ const open = () => {
 
             if (message.type === 'output') {
                 call.output.push(String(message.data))                                          // 攒着，中断时把已产出的内容一起还给模型。
-                call.onOutput?.({ tool: call.name, stream: message.stream, data: message.data }) // 实时通知上层，上层决定如何展示。
+                // 实时通知是给界面用的，Loop 有意不等它。它自己抛错必须在这里拦住：
+                // 这是 IPC 回调，异常没人接住就是未捕获异常，会让宿主进程整个退出。
+                try { call.onOutput?.({ tool: call.name, stream: message.stream, data: message.data }) }
+                catch { /* 展示回调自己的错误不影响工具执行。 */ }
                 return
             }
 
