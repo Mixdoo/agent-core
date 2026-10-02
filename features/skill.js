@@ -83,7 +83,16 @@ const scan = async (...directories) => {
     for (const directory of directories.flat()) {
         const cwd = directory instanceof URL ? fileURLToPath(directory) : String(directory)
 
-        for await (const file of new Bun.Glob('**/SKILL.md').scan({ cwd, absolute: true, onlyFiles: true })) {
+        let files
+        try {
+            files = []
+            for await (const file of new Bun.Glob('**/SKILL.md').scan({ cwd, absolute: true, onlyFiles: true })) files.push(file)
+        } catch (error) {
+            if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') continue // 技能目录还没建是正常状态（就是"没有技能"），不当错误。工具目录走的是另一条规则：写错路径要立刻发现。
+            throw error
+        }
+
+        for (const file of files) {
             const folder = file.replace(/[\\/]SKILL\.md$/i, '').split(/[\\/]/).pop()
             const { meta } = frontmatter(await Bun.file(file).text())
 

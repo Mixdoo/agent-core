@@ -55,6 +55,12 @@ describe('扫描技能目录', () => {
         expect(skills).toEqual({ list: [], prompt: '', schema: {}, handlers: {} })
     })
 
+    test('目录还没建：当作没有技能，不报错', async () => {
+        // 技能是可选的。项目刚起步还没建 skills/ 文件夹时，scan 应该安静地返回"没有技能"。
+        const skills = await Skill.scan(new URL('./fixtures/no-such-skills-dir', import.meta.url))
+        expect(skills).toEqual({ list: [], prompt: '', schema: {}, handlers: {} })
+    })
+
     test('name 和目录名对不上时当场报错，不做无声的猜测', async () => {
         expect(Skill.scan(new URL('./fixtures/bad-skills', import.meta.url))).rejects.toThrow('对不上')
     })
