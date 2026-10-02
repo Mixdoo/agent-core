@@ -14,6 +14,7 @@ export const CYCLIC_FORMAT = new URL('./fixtures/cyclicformat', import.meta.url)
 export const TOOLS = new URL('./fixtures/tools', import.meta.url)
 export const MEDIA = new URL('./fixtures/media', import.meta.url)
 export const LIMITS = new URL('./fixtures/limits', import.meta.url)
+export const PROTO = new URL('./fixtures/proto', import.meta.url)  // 工具名故意叫 __proto__，验证工具表不会被写穿原型链。
 
 
 // --- 造一段真实形态的历史：用户指令 + 若干轮工具调用 ---

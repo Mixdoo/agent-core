@@ -89,8 +89,8 @@ const queueOf = (signal, concurrency) => {
 // 路径字符串是相对宿主进程当前目录解析的。作为被嵌入的库，这一点很容易出错，
 // 所以直接收 URL：`new URL('./tools', import.meta.url)` 永远指向调用方自己那份代码旁边的目录。
 const scan = async (...directories) => {
-    const schema = {}   // 工具名 → 给 LLM 的工具描述（不含执行信息）。
-    const handlers = {} // 工具名 → 工具在哪个文件里、它自己声明的超时（不给 LLM 看）。
+    const schema = Object.create(null)   // 工具名 → 给 LLM 的工具描述（不含执行信息）。null 原型防止工具名为 __proto__ 时污染对象原型链。
+    const handlers = Object.create(null) // 工具名 → 工具在哪个文件里、它自己声明的超时（不给 LLM 看）。
     const files = []    // 所有目录里找到的工具文件，按顺序排好。
 
     // 先收集完整文件列表再排序，保证每次扫描同一目录的加载顺序都一样。

@@ -7,7 +7,7 @@
 
 import { expect, test, describe } from 'bun:test'
 import Tool from '../features/tool.js'
-import { BROKEN, CYCLIC_FORMAT, TOOLS } from './helpers.js'
+import { BROKEN, CYCLIC_FORMAT, PROTO, TOOLS } from './helpers.js'
 
 describe('Tool 扫描', () => {
     test('工具目录里的非工具文件被跳过，不再让整次扫描崩溃', async () => {
@@ -182,5 +182,21 @@ describe('Tool 执行', () => {
         const results = await Promise.all(values.map(value => Tool.execute({ name: 'echo', input: { value }, handlers: tools.handlers })))
 
         expect(results.map(result => result.output.value)).toEqual(values.map(value => `done:${value}`))
+    })
+
+    test('工具名写成 __proto__ 也不会污染原型链', async () => {
+        // 工具目录里放一个 name: '__proto__' 的文件：如果工具表是普通对象，
+        // schema['__proto__'] = … 走的是 setter，会把这张表的原型改成另一份对象，
+        // 别人的工具表跟着受影响。null 原型 + 认 url 而不是认对象挡住了这两条路。
+        const tools = await Tool.scan(PROTO)
+
+        expect(Object.getPrototypeOf(tools.handlers)).toBeNull()          // 工具表本身没有可被踩的原型。
+        expect(Object.getPrototypeOf(tools.schema)).toBeNull()
+        expect(tools.handlers['__proto__']?.url).toBeTruthy()             // 名字怪，但工具本身照样找得到。
+        expect(({}).url).toBeUndefined()                                  // 全局对象没被写脏。
+        expect(({}).timeout).toBeUndefined()
+
+        const result = await Tool.execute({ name: '__proto__', input: {}, handlers: tools.handlers })
+        expect(result.output.value).toEqual({ value: 'ok' })
     })
 })

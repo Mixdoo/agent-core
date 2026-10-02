@@ -113,7 +113,7 @@ const agent = Agent.create({
 
 // 发送指令，等待完成
 const result = await agent.send('帮我向小明打个招呼')
-console.log('Agent 结束，原因:', result.reason)   // 'no-tool' 表示模型认为任务完成
+console.log('Agent 结束，原因:', result.reason)   // 'no-tool' 模型认为任务完成；另两种见下方 result.reason 说明
 ```
 
 运行：
