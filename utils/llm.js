@@ -40,8 +40,8 @@ const result = await LLM.chat({
     signal: abortSignal,
     requestTimeout: undefined,      // 单笔请求最多等多久（毫秒）；不设就不限时
 
-    // --- 提示词缓存（默认关闭）---
-    cache: false,                   // true 使用默认键；也可传 { key, retention, body } 自定义原始字段
+    // --- 提示词缓存（默认开启）---
+    cache: true,                    // true 使用默认键；{ key, retention, body } 自定义；false 完全关闭
     capabilities: { image, audio, video, file, tools, structuredOutput, toolChoice, reasoning }, // 针对脆弱渠道逐项关闭能力
     mediaFallback: 'error',         // 关闭媒体后报错；'strip' 只保留文字继续请求
 });
@@ -86,15 +86,37 @@ import Retry from './retry.js'                                       // 主请�
 import History from './history.js'                                   // 在发给供应商前把旧媒体块统一成 AI SDK 当前形态。
 
 
+// --- 提示词缓存：每种协议要的东西不一样，这里集中回答 ---
+// 实测（lingloft 中转站，同一会话的多步工具循环，默认配置）：
+//   chat：服务端按 prompt_cache_key 路由到同一处缓存。不发 0%，发了第二步起 99%。
+//   anthropic：服务端不自动缓存，必须在内容块上标 cache_control。不标 0%，标了第三步起每步命中整段开头。
+//   gemini：隐式缓存由服务端自己决定，请求里没有可发的字段。
+// 键只取"这段对话从哪开始"：同一台 Agent 的连续请求开头相同，自然落在同一个键上。
+const cacheKey = ({ baseURL, model, system }, options) => options.key ?? `agent:${baseURL}:${model}:${Bun.hash(JSON.stringify(system || ''))}`
+
+// Anthropic 一次请求最多 4 个缓存断点。这里用 2 个：
+// system 一个（工具描述排在 system 前面，会被一起缓存），最后一条消息一个（下一轮从这里接着读）。
+// 两个断点覆盖了"固定开头"和"上一轮为止的全部对话"，再多不会多命中。
+const mark = target => ({ ...target, providerOptions: { ...target.providerOptions, anthropic: { ...target.providerOptions?.anthropic, cacheControl: { type: 'ephemeral' } } } })
+
+// 断点标在最后一个内容块上而不是消息上：AI SDK 对块级标记支持最完整，tool 消息和多块消息都一样处理。
+// 纯文本消息先摊成一个文字块，才有地方挂标记。
+const markLast = message => {
+    const content = Array.isArray(message.content) ? message.content : [{ type: 'text', text: message.content }]
+    if (!content.length) return message
+    return { ...message, content: [...content.slice(0, -1), mark(content.at(-1))] }
+}
+
+
 // --- 建一条模型连接：模型名写法专用，协议决定用哪个 Provider ---
 // 已创建的模型实例不走这里，它的连接由调用方自己负责。
 const connect = ({ baseURL, apiKey, model, protocol, system, headers, cache, bodyOverrides, generation }) => {
     const settings = { apiKey, baseURL, headers } // 连接三件套：地址、密钥、额外请求头。
 
-    // prompt_cache_key 是 OpenAI 私有字段，中转站大多不认；只有明确打开时才发送。
+    // 默认开启。chat / responses 发 prompt_cache_key；个别不认这个字段的中转站会 400，设 cache:false 即可关掉。
     const cacheOptions = cache === true ? {} : cache || {}
     const cacheBody = cache && ['chat', 'responses'].includes(protocol)
-        ? { prompt_cache_key: cacheOptions.key ?? `agent:${baseURL}:${model}:${Bun.hash(JSON.stringify(system || ''))}`, prompt_cache_retention: cacheOptions.retention ?? '24h', ...cacheOptions.body }
+        ? { prompt_cache_key: cacheKey({ baseURL, model, system }, cacheOptions), ...(cacheOptions.retention ? { prompt_cache_retention: cacheOptions.retention } : {}), ...cacheOptions.body }
         : {}
     const finalBody = { ...cacheBody, ...bodyOverrides } // 自定义 body 可以覆盖默认缓存字段。
 
@@ -207,7 +229,7 @@ const chat = async ({
     tools,                // 工具描述表；没有工具就不下发。
     toolChoice = 'auto',  // 工具选择策略；provider 里可以覆盖。
     stream = true,        // 是否流式；两条路最终返回同一种结果。
-    cache = false,        // OpenAI 提示词缓存；true 或 { key, retention, body }。
+    cache = true,         // 提示词缓存；四协议默认开启，false 完全关闭，或传 { key, retention, body }。
     capabilities = {},    // 模型能力开关；关闭后对应的字段不下发。
     mediaFallback = 'error', // 模型不支持媒体时报错，还是只保留文字。
     requestTimeout,       // 单笔请求限时（毫秒）；不设就不限时。
@@ -235,7 +257,9 @@ const chat = async ({
 
     // --- 能力开关：决定哪些字段根本不发给这个模型 ---
     const { headers, body: bodyOverrides = {}, ...call } = provider // headers / body 是连接参数，其余生成参数直接交给 AI SDK。
-    if (typeof model !== 'string' && (cache || Object.keys(bodyOverrides).length)) throw new TypeError('cache and provider.body require a string model; configure custom models when creating them') // 已创建的模型无法再更换内部 fetch。
+    // 已创建的模型无法再更换内部 fetch：默认的 cache:true 对实例安静跳过，只有调用方明确写了缓存对象或 body 才报错。
+    if (typeof model !== 'string' && (typeof cache === 'object' && cache || Object.keys(bodyOverrides).length)) throw new TypeError('cache options and provider.body require a string model; configure custom models when creating them')
+    if (typeof model !== 'string') cache = false // 实例的连接由创建者负责，这个包不往里补缓存字段。
     const sendTools = capabilities.tools !== false
     const sendOutput = capabilities.structuredOutput !== false
     const sendToolChoice = capabilities.toolChoice !== false
@@ -250,7 +274,10 @@ const chat = async ({
     // maxRetries: 0 —— 重试在这个项目里只有 Retry 一个实现。交给 AI SDK 自己重试会导致
     // 一次 onLLMStart 对应服务端三次请求，而且原始错误会被包成 AI_RetryError，Retry 认不出来。
     // generation 是 provider 去掉 headers 和 body 之后的整份生成参数，原样展开，这里不逐个列字段。
-    const input = { ...generation, model: providerModel, system, messages: modelMessages, abortSignal: signal, maxRetries: 0 } // 生成参数可扩展，但不能覆盖 Agent 的上下文和重试控制。
+    // Anthropic 不自动缓存，必须在内容块上打 cache_control 断点，所以只有这一条协议要改写消息。
+    const requestMessages = cache && protocol === 'anthropic' && modelMessages.length ? [...modelMessages.slice(0, -1), markLast(modelMessages.at(-1))] : modelMessages
+    const requestSystem = cache && protocol === 'anthropic' && system ? mark({ role: 'system', content: system }) : system
+    const input = { ...generation, model: providerModel, system: requestSystem, messages: requestMessages, abortSignal: signal, maxRetries: 0 } // 生成参数可扩展，但不能覆盖 Agent 的上下文和重试控制。
     if (typeof model !== 'string' && headers) input.headers = headers // 已创建的模型按 AI SDK 请求级参数发送额外请求头。
     if (tools && sendTools) {
         input.tools = tools

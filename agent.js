@@ -158,7 +158,7 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
             model: '',              // 模型名称没有默认值，避免静默选择错误模型。
             protocol: 'chat',       // 大多数兼容 OpenAI Chat 的服务使用这个协议。
             provider: {},           // AI SDK 的生成参数整包转发，默认一个都不设——替调用者的模型默认 temperature 是在猜他的模型。
-            cache: false,           // prompt_cache_key 是 OpenAI 私有字段，中转站大多不认，默认不发。
+            cache: true,            // 默认开启提示词缓存：chat/responses 发 prompt_cache_key，anthropic 打 cache_control。个别中转站不认时设 false。
             mediaFallback: 'error', // 媒体能力关闭时默认明确报错；需要尽量跑完时改成 'strip'。
             maxToolOutput: undefined, // 不截断工具输出；需要保护内存时由调用方主动设置字符上限。
             maxToolConcurrency: undefined, // 不限制同一轮工具并发；需要排队时由调用方主动设置。

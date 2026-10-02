@@ -392,7 +392,7 @@ import Agent from '@kernel4632/agent-core'
 | `protocol` | `'chat'` | 本包创建模型连接时使用的协议：`chat` / `responses` / `anthropic` / `gemini` |
 | `system` | `''` | 系统提示词 |
 | `stream` | `true` | 是否流式请求模型。默认流式，`await send` 仍拿到完整结果；设为 `false` 才走非流式的旧式请求 |
-| `cache` | `false` | 是否发送 OpenAI 的 `prompt_cache_key`。中转站大多不认这个私有字段，默认不发 |
+| `cache` | `true` | 提示词缓存，默认开启。长会话的固定开头（system、工具、历史）会被服务端缓存，命中就是省时间和省钱 |
 | `capabilities` | 见下方 | 按模型能力逐项开关图片、音频、视频、文件、工具调用、结构化输出、toolChoice 和思考内容 |
 | `mediaFallback` | `'error'` | 媒体能力关闭时的处理方式；改成 `'strip'` 后保留文字并丢掉不支持的媒体 |
 | `provider` | `{}` | AI SDK 的生成参数，整份交给 AI SDK；不设时用模型自己的默认值 |
@@ -446,7 +446,15 @@ const agent = Agent.create({
 
 在 `agent.send({ input, config: { provider: { ... } } })` 里传入时，`provider` **整份替换**原值，其他未传的配置字段继续保留。`maxTokens` 是上下文预算，和 `provider.maxOutputTokens`（单次生成量）不是一回事。
 
-`cache` 默认关闭。打开后会发送 OpenAI 风格的 `prompt_cache_key` 和 `prompt_cache_retention`；也可以传对象自定义缓存键、保留时间和额外字段：
+`cache` 默认开启。四种协议各按自己的方式让服务端复用固定的开头（system、工具描述、历史），命中后那部分不再重新计算，长会话能明显变快、变便宜：
+
+| 协议 | 发的字段 |
+|------|----------|
+| `chat` / `responses` | `prompt_cache_key`，服务端按这个键把同一台 Agent 的连续请求路由到同一处缓存 |
+| `anthropic` | 在 system 和最后一条消息上打 `cache_control` 断点；Anthropic 不会自动缓存，不打就是 0% |
+| `gemini` | 隐式缓存由服务端自己决定，请求里没有可发的字段 |
+
+实测（同一会话的多步工具循环，默认配置）：`chat` 从第二步起命中约 99%，整个任务约 80%；`anthropic` 从第三步起每步命中整段开头，整个任务约 60%。键默认由 `baseURL + model + system` 推出，同一台 Agent 的连续请求自然落在同一个键上。也可以传对象自定义：
 
 ```js
 cache: {
@@ -456,7 +464,7 @@ cache: {
 }
 ```
 
-缓存字段不是所有中转站都认识。遇到 400 时保持 `cache:false`，或把供应商自己的字段放入 `provider.body`。
+个别中转站不认这组字段、直接返回 400，那时设 `cache: false` 关掉，或把供应商自己的字段放进 `provider.body`。
 
 需要包内没有预设的 Provider 或模型中间件时，直接传 AI SDK 模型实例；实例由调用方创建，`baseURL`、`apiKey`、`protocol` 就不必重复写。下面的进阶用法需要调用方安装对应的 Provider 包：
 
@@ -472,7 +480,7 @@ const answer = await agent.send('你好')
 console.log(answer.text)
 ```
 
-模型实例的额外请求头仍可写在 `provider.headers`；`provider.body` 和本包的 `cache` 需要本包创建连接，不能用于已创建的模型实例，设置时会明确报错。
+模型实例的额外请求头仍可写在 `provider.headers`；`provider.body` 和自定义的 `cache` 对象需要本包创建连接，不能用于已创建的模型实例，设置时会明确报错。默认的 `cache: true` 对模型实例会安静跳过——实例的缓存设置由创建它的人负责。
 
 > `provider.toolChoice` 保持 `auto` 时，模型才能在任务做完后正常收尾，`{ reason: 'no-tool' }` 这个结束方式也才有意义。
 > 改成 `required` 会强制模型每轮都调工具，而且部分服务（实测 gpt-oss-120b）在模型不想调工具时会直接返回 `tool_use_failed`。

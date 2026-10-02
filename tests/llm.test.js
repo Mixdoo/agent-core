@@ -75,14 +75,15 @@ describe('请求里到底发了什么', () => {
         return recorded[0]
     }
 
-    test('默认不发 OpenAI 私有的提示词缓存字段', async () => {
+    test('默认发送提示词缓存键，长会话从第二轮起才能命中', async () => {
         const body = await send()
-        expect(body).not.toHaveProperty('prompt_cache_key') // 实测 gpt-oss-120b 会因为这个字段直接 400。
-        expect(body).not.toHaveProperty('prompt_cache_retention')
+        expect(body).toHaveProperty('prompt_cache_key') // 默认开启：命中率 0% → 99% 全靠它，实测中转站按这个键路由到同一台机器。
     })
 
-    test('显式打开 cache 时才发缓存字段', async () => {
-        expect(await send({ cache: true })).toHaveProperty('prompt_cache_key')
+    test('显式关闭 cache 时不发缓存字段', async () => {
+        const body = await send({ cache: false })
+        expect(body).not.toHaveProperty('prompt_cache_key')
+        expect(body).not.toHaveProperty('prompt_cache_retention')
     })
 
     test('cache 可以自定义键、保留时间和额外字段', async () => {
@@ -90,6 +91,14 @@ describe('请求里到底发了什么', () => {
         expect(body.prompt_cache_key).toBe('session-1')
         expect(body.prompt_cache_retention).toBe('1h')
         expect(body.cache_namespace).toBe('agent')
+    })
+
+    test('anthropic 协议默认在 system 和最后一条消息上打缓存断点', async () => {
+        // Anthropic 不自动缓存，必须在内容块上标 cache_control；不标命中率就是 0%。
+        recorded.length = 0
+        await LLM.chat({ baseURL: `http://127.0.0.1:${echo.port}/v1`, apiKey: 'k', model: 'm', protocol: 'anthropic', system: '系统提示', messages: [{ role: 'user', content: 'hi' }], stream: false, ...noRetry }).catch(() => {}) // 假服务返回的形状 anthropic 解析不了，这里只关心发出去的请求体。
+        const marks = (JSON.stringify(recorded[0]).match(/cache_control/g) ?? []).length
+        expect(marks).toBe(2) // system 一个，最后一条消息一个；再多也不会多命中。
     })
 
     test('默认 toolChoice 是 auto，模型可以正常收尾', async () => {
@@ -177,8 +186,7 @@ describe('provider 生成参数透传', () => {
     })
 
     test('缓存字段仍然可以被 provider 里的自定义 body 覆盖', async () => {
-        // cache 是这个包的开关（默认关，因为中转站大多不认这组字段），
-        // 但调用者显式写在 provider 里的值必须赢——它是更具体的那一层。
+        // 默认发的 prompt_cache_key 必须能被调用者写在 provider 里的值盖掉——它是更具体的那一层。
         const body = await send({ body: { prompt_cache_key: 'mine' } })
         expect(body.prompt_cache_key).toBe('mine')
     })
@@ -283,8 +291,17 @@ describe('Agent 配置落到请求上', () => {
         const model = createOpenAICompatible({ name: 'custom', baseURL: `http://127.0.0.1:${echo.port}/v1` }).chatModel('m')
         const messages = [{ role: 'user', content: 'hi' }]
 
-        expect(LLM.chat({ model, messages, cache: true })).rejects.toThrow('require a string model')
+        expect(LLM.chat({ model, messages, cache: { key: 'x' } })).rejects.toThrow('require a string model') // 明确写了缓存设置却用不上，必须说出来。
         expect(LLM.chat({ model, messages, provider: { body: { extra: true } } })).rejects.toThrow('require a string model')
+    })
+
+    test('模型实例在默认缓存开启时照常可用', async () => {
+        // 默认值不该让最普通的进阶用法直接报错：实例的连接归创建者，这个包安静跳过缓存。
+        recorded.length = 0
+        const model = createOpenAICompatible({ name: 'custom', baseURL: `http://127.0.0.1:${echo.port}/v1` }).chatModel('m')
+        const result = await LLM.chat({ model, messages: [{ role: 'user', content: 'hi' }], stream: false })
+        expect(result.text).toBe('好')
+        expect(recorded[0]).not.toHaveProperty('prompt_cache_key')
     })
 })
 
