@@ -900,7 +900,7 @@ bun test --coverage
 bun run build
 ```
 
-只生成 `dist/agent-core.js`：Bun 运行时使用的依赖全部内联并压缩。构建脚本在没有 `node_modules` 的临时目录中导入产物，实际运行一次工具和模型模拟请求，成功后才替换 `dist/agent-core.js`。npm 包只包含这份产物、README 和 package.json；`npm pack` / `npm publish` 前会自动构建。产物顶部写有版本号和提交号，压缩不是加密。
+只生成 `dist/agent-core.js`：Bun 运行时使用的依赖全部内联并压缩。同时把手写的类型声明 `index.d.ts` 复制成 `dist/agent-core.d.ts`，TypeScript 用户导入时有参数补全和类型检查。构建脚本在没有 `node_modules` 的临时目录中导入产物，实际运行一次工具和模型模拟请求，成功后才替换 `dist/agent-core.js`。npm 包只包含这份产物、README 和 package.json；`npm pack` / `npm publish` 前会自动构建。产物顶部写有版本号和提交号，压缩不是加密。
 
 ```js
 import Agent from './agent-core.js'

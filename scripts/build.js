@@ -61,6 +61,7 @@ try {
 
     await mkdir(join(root, 'dist'), { recursive: true })
     await copyFile(filename, dist) // 自检通过才替换发布产物；失败时保留上一次可用的文件。
+    await copyFile(join(root, 'index.d.ts'), join(root, 'dist', 'agent-core.d.ts')) // 手写的类型声明跟着产物走，TS 用户导入时有补全。
     await rm(join(root, 'dist', 'agent-core.standalone.js'), { force: true }) // 旧构建留下的第二份产物容易被误当成最新版本。
     console.log(`已构建 dist/agent-core.js (${(await Bun.file(dist).size / 1048576).toFixed(2)} MB, ${revision})`)
 } finally { await rm(temp, { recursive: true, force: true }) }
