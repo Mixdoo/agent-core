@@ -141,6 +141,7 @@ export interface HistoryModule {
     render: (history: Message[]) => string
     model: (message: Message, options?: Record<string, any>) => { role: Role; content: any }
     parts: (message: Message) => any[]
+    answeredCalls: (messages: Message[]) => Set<string>
 }
 
 // --- 上下文、压缩、底层 LLM ---

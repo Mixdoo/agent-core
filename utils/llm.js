@@ -255,7 +255,7 @@ const chat = async ({
     // 但这里必须自己算出"哪些调用有结果"：History.model 会摘掉没人应答的调用，
     // 如果传一个空名单进去，它会连有结果的调用一起摘掉、只留下结果，真实中转站要求两者必须配对，会直接 400。
     const systemMessage = messages.find(message => message.role === 'system') // Context 可能已经把 system 放进 messages。
-    const answered = new Set(messages.flatMap(message => (Array.isArray(message.content) ? message.content : []).filter(part => part.type === 'tool-result').map(part => part.toolCallId)))
+    const answered = History.answeredCalls(messages)                          // 哪些工具调用已经拿到结果，由 History 统一判断。
     const prepare = message => History.model(message, { answered, capabilities, reasoning: capabilities.reasoning ?? false, mediaFallback, normalizeMedia: true })
     const modelMessages = messages.filter(message => message.role !== 'system').map(prepare) // AI SDK 的 system 单独传入，不重复放进消息列表。
     system ||= systemMessage?.content // 调用方单独传入的 system 优先级更高。

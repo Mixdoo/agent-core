@@ -101,6 +101,11 @@ const stored = message => ({ ...message, id: message.id ?? nanoid() })
 // content 既可能是内容块数组，也可能是一段纯文本；纯文本里不会有工具调用。
 const parts = message => (Array.isArray(message.content) ? message.content : [])
 
+// --- 这批消息里，哪些工具调用已经拿到了结果 ---
+// History.model 会摘掉没人应答的调用（供应商要求调用和结果必须配对）。
+// Context 和 LLM.chat 两处都要用这份名单，所以只在这里算一次。
+const answeredCalls = messages => new Set(messages.flatMap(message => parts(message).filter(part => part.type === 'tool-result').map(part => part.toolCallId)))
+
 
 // --- 统一旧媒体块：AI SDK 当前用 file，旧渠道常用 image / audio / video ---
 // 历史原样保存，只有发给模型的副本做转换；这样换模型不会破坏数据库里的原始消息。
@@ -157,12 +162,12 @@ const model = (message, { answered = new Set(), capabilities = DEFAULTS.capabili
     const options = { answered, capabilities, reasoning, mediaFallback, normalizeMedia }
     const content = Array.isArray(message.content)
         ? message.content.flatMap(part => {
-            const prepared = preparePart(part, options)
-            if (!prepared) return []
-            return prepared.type === 'tool-result' ? [{ ...prepared, output: prepareOutput(prepared.output, options) }] : [prepared]
+            const prepared = preparePart(part, options)                    // 这一块要不要发、长什么样的规则都在这里。
+            if (!prepared) return []                                       // 被摘掉的块（思考、没人应答的调用、不支持且选择丢掉的媒体）不占位置。
+            return prepared.type === 'tool-result' ? [{ ...prepared, output: prepareOutput(prepared.output, options) }] : [prepared] // 工具结果里的媒体也要按同一套规则处理。
         })
         : message.content
-    return { role: message.role, content }
+    return { role: message.role, content }                                 // 只留角色和内容，id、compact 这些内部字段不带出门。
 }
 
 
@@ -233,4 +238,4 @@ const render = history => history
     .join('\n')
 
 
-export default { user, assistant, tool, compact, stored, turns, render, model, parts }
+export default { user, assistant, tool, compact, stored, turns, render, model, parts, answeredCalls }

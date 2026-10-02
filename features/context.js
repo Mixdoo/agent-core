@@ -108,7 +108,7 @@ const build = ({ history, system = '', tools = {}, budget, capabilities = {}, me
 
     // --- 出口：回合只是 Context 内部的形状，交给模型的仍然是平铺消息 ---
     const flat = selected.flat()                                                                                // 回合内部保持原始顺序，展平后就是一段时间上连续的消息。
-    const answered = new Set(flat.flatMap(message => History.parts(message).filter(part => part.type === 'tool-result').map(part => part.toolCallId))) // 这批消息里真正拿到结果的调用。
+    const answered = History.answeredCalls(flat) // 这批消息里真正拿到结果的调用。
     const instructions = brief(system, summary)                                                                 // 系统提示词 + 最新总结。
 
     const messages = [
