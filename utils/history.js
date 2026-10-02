@@ -49,9 +49,9 @@ const messageId = id => text(id ?? nanoid(), 'id')
 
 // 字符串是最简单的写法；数组则原样保留 AI SDK 风格的内容块。
 const contentParts = (content, name = 'content') => {
-    if (Array.isArray(content)) return content
-    if (content === null && name === 'assistant content') return []
-    return [{ type: 'text', text: text(content, name) }]
+    if (Array.isArray(content)) return content                                          // 已经是内容块数组，原样用。
+    if (content === null && name === 'assistant content') return []                     // assistant 可以只调工具、不写字。
+    return [{ type: 'text', text: text(content, name) }]                                // 一句纯文本，包成一个文字块。
 }
 
 // 创建用户历史块；Context.build() 最终会只取 role 和 content。
@@ -59,7 +59,7 @@ const contentParts = (content, name = 'content') => {
 // （AI SDK 的 UserContent 本来就是 string | Array<TextPart | ImagePart | FilePart>）。
 const user = ({ id, content }) => {
     if (Array.isArray(content) && !content.length) throw new TypeError('content must not be an empty array') // 空消息会被供应商拒收。
-    return { id: messageId(id), role: 'user', content: Array.isArray(content) ? content : text(content, 'content') }
+    return { id: messageId(id), role: 'user', content: Array.isArray(content) ? content : text(content, 'content') } // 纯文本直接存，内容块原样存。
 }
 
 // 创建 assistant 历史块；内容块和工具调用最终都放在同一个 content 数组里。
@@ -68,7 +68,7 @@ const assistant = ({ id, content = null, toolCalls = [] }) => ({
     role: 'assistant',                                          // 这是模型说的话。
     content: [
         ...contentParts(content, 'assistant content'),          // 正文和思考按原样放进 content。
-        ...toolCalls.map(({ id: callId, name, arguments: rawArguments, input }) => ({
+        ...toolCalls.map(({ id: callId, name, arguments: rawArguments, input }) => ({ // 每个工具调用也变成一个内容块。
             type: 'tool-call',                                  // 一次工具调用就是一个内容块。
             toolCallId: text(callId, 'toolCalls[].id'),         // 结果靠这个 id 找回它，不能为空。
             toolName: text(name, 'toolCalls[].name'),           // 调用的工具名。
@@ -84,7 +84,7 @@ const tool = ({ id, toolCallId, toolName, content }) => ({
     content: [{
         type: 'tool-result',                               // 一次工具结果就是一个内容块。
         toolCallId: text(toolCallId, 'toolCallId'),        // 认回它在回答哪一次调用。
-        toolName: text(toolName, 'toolName'),
+        toolName: text(toolName, 'toolName'),              // 哪个工具返回的。
         output: typeof content === 'string' ? { type: 'text', value: text(content, 'content') } : content, // 纯文本包成 text 块，成形的输出块原样保留。
     }],
 })
@@ -115,44 +115,48 @@ const answeredCalls = messages => new Set(messages.flatMap(message => parts(mess
 // --- 统一旧媒体块：AI SDK 当前用 file，旧渠道常用 image / audio / video ---
 // 历史原样保存，只有发给模型的副本做转换；这样换模型不会破坏数据库里的原始消息。
 const media = (part, value, fallback) => ({
-    type: 'file',
-    mediaType: part.mediaType ?? fallback,
-    data: value,
-    ...(part.filename ? { filename: part.filename } : {}),
+    type: 'file',                                  // AI SDK 现在统一用 file 装媒体。
+    mediaType: part.mediaType ?? fallback,         // 没写类型时按调用方给的默认值。
+    data: value,                                   // 媒体的内容（base64 或 URL）。
+    ...(part.filename ? { filename: part.filename } : {}), // 有文件名就带上。
 })
 
+// 看一个内容块装的是什么媒体。认不出来返回 null，说明它根本不是媒体块。
 const mediaKind = part => {
-    if (part.type === 'image' || part.type === 'audio' || part.type === 'video') return part.type
-    if (part.type !== 'file' && part.type !== 'file-data' && part.type !== 'file-url') return null
-    if (part.mediaType?.startsWith('image/')) return 'image'
+    if (part.type === 'image' || part.type === 'audio' || part.type === 'video') return part.type // 旧写法：类型直接写在块上。
+    if (part.type !== 'file' && part.type !== 'file-data' && part.type !== 'file-url') return null // 不是任何媒体块。
+    if (part.mediaType?.startsWith('image/')) return 'image' // 新写法：看 mediaType 判断媒体种类。
     if (part.mediaType?.startsWith('audio/')) return 'audio'
     if (part.mediaType?.startsWith('video/')) return 'video'
-    return 'file'
+    return 'file'                                  // 认得出是文件，但不是图音视，按普通文件算。
 }
 
+// --- 一个内容块要不要发、长什么样 ---
+// 三类变化都在这里：摘掉思考、摘掉没人应答的调用、把旧媒体块转成 file。
 const preparePart = (part, options) => {
     if (part.type === 'reasoning' && options.reasoning === false) return null // 思考是上一家模型的内部产物，默认不喂给下一家。
     if (part.type === 'tool-call' && !options.answered.has(part.toolCallId)) return null // 没有结果的调用会让很多接口拒绝整段历史。
 
-    const kind = mediaKind(part)
-    if (!kind) return part
-    if (options.capabilities[kind] === false) {
+    const kind = mediaKind(part)                       // 不是媒体块的话，后面几行都不用管。
+    if (!kind) return part                             // 普通文字、工具调用、工具结果，原样发出去。
+    if (options.capabilities[kind] === false) {        // 调用方说这个模型不支持这种媒体。
         if (options.mediaFallback === 'strip') return null // 不支持媒体时只丢掉媒体，文字和任务仍可继续。
         throw new TypeError(`当前模型未启用 ${kind} 内容；设置 capabilities.${kind}=true，或使用 mediaFallback:'strip'`)
     }
-    if (!options.normalizeMedia) return part // Context 对外只读历史，不在这里改变内容块的公开形状。
+    if (!options.normalizeMedia) return part           // Context 对外只读历史，不在这里改变内容块的公开形状。
 
-    if (part.type === 'image') return media(part, part.image, 'image/png')
-    if (part.type === 'audio') return media(part, part.audio, 'audio/mpeg')
-    if (part.type === 'video') return media(part, part.video, 'video/mp4')
-    if (part.type === 'file-data') return media(part, part.data, part.mediaType ?? 'application/octet-stream')
+    if (part.type === 'image') return media(part, part.image, 'image/png')                    // 旧 image 块 → file 块。
+    if (part.type === 'audio') return media(part, part.audio, 'audio/mpeg')                   // 旧 audio 块 → file 块。
+    if (part.type === 'video') return media(part, part.video, 'video/mp4')                    // 旧 video 块 → file 块。
+    if (part.type === 'file-data') return media(part, part.data, part.mediaType ?? 'application/octet-stream') // 已经是 file 系列，补上默认类型。
     if (part.type === 'file-url') return media(part, part.url ?? part.data, part.mediaType ?? 'application/octet-stream')
-    return part
+    return part                                        // 已经是标准 file 块，不动它。
 }
 
+// 工具结果里的内容块也要走同一套规则（结果里可能带图片）。
 const prepareOutput = (output, options) => output?.type !== 'content'
-    ? output
-    : { ...output, value: output.value.flatMap(part => { const prepared = preparePart(part, options); return prepared ? [prepared] : [] }) }
+    ? output                                                                                        // 不是多模态结果，原样返回。
+    : { ...output, value: output.value.flatMap(part => { const prepared = preparePart(part, options); return prepared ? [prepared] : [] }) } // 逐块处理，被摘掉的块丢掉。
 
 // --- 媒体能力开关的默认值，整个项目只有这一处 ---
 // Agent 组装完整能力表时从这里取媒体那几项，History.model 单独被调用时也用它，两处永远一致。
@@ -199,7 +203,7 @@ const turns = history => {
             list.push(open ?? [message])
         }
 
-        for (const part of parts(message)) if (part.type === 'tool-call') caller.set(part.toolCallId, list.at(-1))
+        for (const part of parts(message)) if (part.type === 'tool-call') caller.set(part.toolCallId, list.at(-1)) // 记下这次调用属于哪个回合，结果回来时靠它找家。
     }
 
     // --- 第二趟：工具结果按 id 回到发起它的回合，跟它排在谁后面完全无关 ---
@@ -208,23 +212,23 @@ const turns = history => {
         caller.get(parts(message)[0]?.toolCallId)?.push(message)                      // 找不到发起者的结果不构成任何回合，自然消失。
     }
 
-    return list
+    return list                                                                       // 每个回合都是一组消息，顺序和时间一致。
 }
 
 
 // 一个工具输出块长什么样是这个包定义的（text / json / content / error-text / …），
 // 所以"怎么把它变成一句人能看的话"也该由这个包回答，而不是让每个调用方照着内部结构重写。
-const readOutput = output => output?.type === 'content' ? output.value.map(part => part.type === 'text' ? part.text : `[${part.type}]`).join(' ')
-    : typeof output?.value === 'string' ? output.value
-    : JSON.stringify(output?.value ?? output)
+const readOutput = output => output?.type === 'content' ? output.value.map(part => part.type === 'text' ? part.text : `[${part.type}]`).join(' ') // 多模态结果：文字照出，媒体标一个类型。
+    : typeof output?.value === 'string' ? output.value                                                                                            // 文字结果直接用。
+    : JSON.stringify(output?.value ?? output)                                                                                                     // 其余序列化成 JSON 文字。
 
 // 每种内容块显示成什么样。思考和媒体折叠成一个标记，正文原样出。
 const readPart = {
-    text: part => part.text,
-    reasoning: () => '[思考]',
-    'tool-call': part => `[调用 ${part.toolName} ${JSON.stringify(part.input ?? {})}]`,
-    'tool-result': part => `[${part.toolName} 返回] ${readOutput(part.output)}`,
-    image: () => '[图片]',
+    text: part => part.text,                                                              // 正文原样出。
+    reasoning: () => '[思考]',                                                            // 思考太啰嗦，折叠成标记。
+    'tool-call': part => `[调用 ${part.toolName} ${JSON.stringify(part.input ?? {})}]`,    // 工具调用显示名字和参数。
+    'tool-result': part => `[${part.toolName} 返回] ${readOutput(part.output)}`,           // 工具结果显示是哪次、返回了什么。
+    image: () => '[图片]',                                                                // 下面四种媒体都折叠成标记。
     file: () => '[文件]',
     audio: () => '[音频]',
     video: () => '[视频]',
@@ -238,8 +242,8 @@ const readPart = {
 // 想自己排版的，用 turns() 拿回合，再按下面这些块类型自己拼。
 const render = history => history
     .map(message => `${message.role}: ${Array.isArray(message.content)
-        ? message.content.map(part => (readPart[part.type] ?? (one => `[${one.type}]`))(part)).join(' ')
-        : message.content}`)
+        ? message.content.map(part => (readPart[part.type] ?? (one => `[${one.type}]`))(part)).join(' ') // 每种块交给对应的显示函数，不认识的块显示类型名。
+        : message.content}`)                                                                             // 纯文本消息直接出。
     .join('\n')
 
 
