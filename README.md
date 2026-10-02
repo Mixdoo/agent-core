@@ -43,7 +43,7 @@
 从 GitHub Release 安装（现在就能用）：
 
 ```bash
-bun add https://github.com/kernel4632/agent-core/releases/download/v0.10.2/kernel4632-agent-core-0.10.2.tgz
+bun add https://github.com/kernel4632/agent-core/releases/download/v0.10.3/kernel4632-agent-core-0.10.3.tgz
 ```
 
 > `bun add @kernel4632/agent-core` 现在**还不能用**：这个包尚未发布到 npm，那个名字在 npm 上不存在，运行会报 404。等发到 npm 后才能改用这条短命令，代码不用改。
