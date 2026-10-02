@@ -30,7 +30,8 @@
     "test": "bun test",
     "build": "bun scripts/build.js",
     "prepack": "bun run build",
-    "prepublishOnly": "bun test"
+    "prepublishOnly": "bun test",
+    "release": "npm publish --registry=https://registry.npmjs.org --access public"
   },
   "devDependencies": {
     "@ai-sdk/anthropic": "^4.0.41",
