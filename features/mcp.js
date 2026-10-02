@@ -26,33 +26,34 @@ const file = (mimeType, data) => ({ type: 'file', mediaType: mimeType ?? 'applic
 // --- 一个 MCP 内容块变成模型能读的输出块 ---
 // 远端可能给文字、图片、内嵌资源或资源链接；协议以后加新块时兜底成原文，不静默丢弃。
 const block = one => {
-    if (one?.type === 'text') return { type: 'text', text: one.text }
-    if (one?.type === 'image') return file(one.mimeType, one.data)
-    if (one?.type === 'resource') return one.resource?.text !== undefined ? { type: 'text', text: one.resource.text } : file(one.resource?.mimeType, one.resource?.blob)
-    if (one?.type === 'resource_link') return { type: 'text', text: `[资源] ${one.uri}${one.description ? `：${one.description}` : ''}` }
-    return { type: 'text', text: JSON.stringify(one) }
+    if (one?.type === 'text') return { type: 'text', text: one.text }                                              // 文字原样。
+    if (one?.type === 'image') return file(one.mimeType, one.data)                                                 // 图片变成 file 块，模型能看图就看得到。
+    if (one?.type === 'resource') return one.resource?.text !== undefined ? { type: 'text', text: one.resource.text } : file(one.resource?.mimeType, one.resource?.blob) // 内嵌资源：有文字用文字，否则当文件。
+    if (one?.type === 'resource_link') return { type: 'text', text: `[资源] ${one.uri}${one.description ? `：${one.description}` : ''}` } // 资源链接给模型一个可读的地址。
+    return { type: 'text', text: JSON.stringify(one) }                                                             // 没见过的块，序列化后交出去，不丢。
 }
 
 // --- 翻完游标分页 ---
 // 工具由 SDK 自己翻；资源和提示词是游标分页，由调用方翻，这里统一收口。
 const pages = async (load, pick) => {
-    const all = []
-    let cursor
+    const all = []                     // 攒下来的全部条目。
+    let cursor                         // 下一页的游标；没有就是最后一页。
     while (true) {
-        const page = await load(cursor)
-        all.push(...pick(page))
-        cursor = page.nextCursor
-        if (!cursor) return all
+        const page = await load(cursor) // 取一页。
+        all.push(...pick(page))         // 只要这一页里我们需要的那部分。
+        cursor = page.nextCursor        // 拿下一页的游标。
+        if (!cursor) return all         // 没有下一页就结束。
     }
 }
 
 // --- 发现工具或调用一个工具 ---
 // kind 决定这次连接要做哪件事，全部在子进程里完成；协议解析和媒体转换复用上游。
 const run = async ({ transport, kind = 'discover', name }, input, onProcess) => {
-    const connection = transport.type === 'stdio'
+    const connection = transport.type === 'stdio'                     // 本地服务走标准输入输出，远端走 HTTP / SSE。
         ? new Experimental_StdioMCPTransport(transport)
         : transport // HTTP / SSE 配置由 SDK 建立连接。
     if (transport.type === 'stdio') {
+        // 本地服务起来之后，把它的进程号告诉主进程，取消时主进程靠它把服务一起杀掉。
         const start = connection.start.bind(connection)
         connection.start = async () => {
             await start()
@@ -66,36 +67,36 @@ const run = async ({ transport, kind = 'discover', name }, input, onProcess) => 
 
         // --- 发现：把服务端公开的三种原语读回来，跨进程只送普通数据 ---
         if (kind === 'discover') {
-            const value = { tools: [], prompts: [], resources: [] }
+            const value = { tools: [], prompts: [], resources: [] } // 三种原语各收一份。
             if (offers.tools) {
                 const tools = await client.tools() // SDK 自动读取所有分页，并建立标准工具定义。
-                value.tools = Object.entries(tools).map(([name, tool]) => ({ name, description: tool.description, inputSchema: tool.inputSchema.jsonSchema }))
+                value.tools = Object.entries(tools).map(([name, tool]) => ({ name, description: tool.description, inputSchema: tool.inputSchema.jsonSchema })) // 只留模型需要的那几项。
             }
             if (offers.prompts) {
-                const prompts = await pages(cursor => client.experimental_listPrompts({ params: cursor ? { cursor } : undefined }), page => page.prompts)
+                const prompts = await pages(cursor => client.experimental_listPrompts({ params: cursor ? { cursor } : undefined }), page => page.prompts) // 翻完所有页。
                 value.prompts = prompts.map(one => ({ name: one.name, description: one.description, arguments: one.arguments ?? [] }))
             }
             if (offers.resources) {
-                const listed = await pages(cursor => client.listResources({ params: cursor ? { cursor } : undefined }), page => page.resources)
-                const templates = (await client.listResourceTemplates()).resourceTemplates
+                const listed = await pages(cursor => client.listResources({ params: cursor ? { cursor } : undefined }), page => page.resources) // 列出的具体资源。
+                const templates = (await client.listResourceTemplates()).resourceTemplates                                                            // 资源模板也要列给模型。
                 value.resources = [
                     ...listed.map(one => ({ uri: one.uri, name: one.name, description: one.description, mimeType: one.mimeType })),
                     ...templates.map(one => ({ uri: one.uriTemplate, name: one.name, description: one.description, mimeType: one.mimeType, template: true })), // 模板的占位由模型自己填。
                 ]
             }
-            return { output: { type: 'json', value } }
+            return { output: { type: 'json', value } } // 发现结果就是一份纯数据，交给主进程。
         }
 
         // --- 读一个资源：地址由模型给出，这里不做白名单校验 ---
         if (kind === 'resource') {
             const read = await client.readResource({ uri: input.uri })
-            return { output: { type: 'content', value: read.contents.map(block) } }
+            return { output: { type: 'content', value: read.contents.map(block) } } // 内容可能是文字也可能是图，逐块转换。
         }
 
         // --- 取一段提示词：模板参数就是工具参数，取回来的消息带上角色，模型看得出这是谁说的话 ---
         if (kind === 'prompt') {
             const got = await client.experimental_getPrompt({ name, arguments: input })
-            return { output: { type: 'content', value: got.messages.flatMap(one => [{ type: 'text', text: `${one.role}：` }, block(one.content)]) } }
+            return { output: { type: 'content', value: got.messages.flatMap(one => [{ type: 'text', text: `${one.role}：` }, block(one.content)]) } } // 每条消息前面标上角色。
         }
 
         // --- 执行一个工具 ---
