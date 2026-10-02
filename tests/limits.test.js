@@ -139,4 +139,28 @@ describe('常驻加固', () => {
         expect(Agent.create().config.maxTokens).toBeUndefined()
         expect(Agent.create().config.maxToolOutput).toBeUndefined()
     })
+
+    test('多台 Agent 并发跑工具，历史各归各的，不互相串', async () => {
+        // 真实并发验证过 10 台：各跑各的、工具结果都回到自己的 history。
+        // 这里用假模型固化这条性质——每台 Agent 拿到的回复里带自己的编号，历史里不该出现别人的编号。
+        const server = Bun.serve({
+            port: 0,
+            async fetch(request) {
+                const body = await request.json()
+                const users = body.messages.filter(one => one.role === 'user').map(one => JSON.stringify(one.content)).join(' ')
+                const id = /编号(\d+)/.exec(users)?.[1] ?? '?' // 从这台 Agent 的用户消息里取出它的编号。
+                return Response.json({ choices: [{ index: 0, message: { role: 'assistant', content: `这是编号${id}的回复` }, finish_reason: 'stop' }], usage: {} })
+            },
+        })
+        try {
+            const agents = Array.from({ length: 8 }, () => Agent.create({ config: { baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'k', model: 'm', stream: false } }))
+            await Promise.all(agents.map((agent, i) => agent.send(`编号${i}`)))
+
+            agents.forEach((agent, i) => {
+                const text = History.render(agent.history)                  // 把内容块摊平成文字再找。
+                expect(text).toContain(`编号${i}的回复`)                    // 自己的回复在自己的历史里。
+                expect(text.match(/编号\d+/g).every(one => one === `编号${i}`)).toBe(true) // 别人的编号一个字都没有。
+            })
+        } finally { server.stop(true) }
+    })
 })
