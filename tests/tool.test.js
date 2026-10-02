@@ -168,6 +168,24 @@ describe('Tool 执行', () => {
         expect(exited).toBe(0)
     })
 
+    test('工具进程起不来时立刻返回错误，而不是永远挂着', async () => {
+        // spawn 会失败：bun 不在 PATH、系统进程数满。以前这次调用永远不结算，
+        // 整个 Agent 无声卡死。用子进程跑，避免前面的用例把进程池灌满（池里有空闲就借不到空位）。
+        const child = Bun.spawn(['bun', '-e', `
+            import Tool from '${new URL('../features/tool.js', import.meta.url).href}'
+            const tools = await Tool.scan('./tests/fixtures/tools')
+            Bun.spawn = () => { throw new Error('bun 不在 PATH') }
+            const result = await Tool.execute({ name: 'echo', input: { value: 'x' }, handlers: tools.handlers })
+            console.log(result.error ? 'ERROR:' + result.error : 'NOERROR')
+        `], { cwd: process.cwd(), stdout: 'pipe', stderr: 'pipe' })
+
+        const exited = await Promise.race([child.exited.then(() => child.stdout.text()), Bun.sleep(8000).then(() => 'HUNG')])
+        if (exited === 'HUNG') child.kill()
+
+        expect(exited).toContain('ERROR') // 挂住的话这里拿到 HUNG，测试失败。
+        expect(exited).not.toBe('HUNG')
+    })
+
     test('自带 toModelOutput 的工具返回循环引用时也不会毒化 history', async () => {
         const tools = await Tool.scan(CYCLIC_FORMAT)
         const result = await Tool.execute({ name: 'cyclicformat', input: {}, handlers: tools.handlers })

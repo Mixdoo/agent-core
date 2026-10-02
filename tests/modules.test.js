@@ -80,6 +80,21 @@ describe('Retry', () => {
         // 传进来的值合不合法由下游（p-retry）说了算，报错也由它给出。
         expect(Retry.run({ operation: async () => 'ok', maxDelay: -1 })).rejects.toThrow('maxTimeout')
     })
+
+    test('onRetry 回调抛错不会顶替真正的模型错误', async () => {
+        // onRetry 只是给 UI 的通知。它坏掉时重试必须照常进行——
+        // 否则真实故障会被"通知回调坏了"这句无关的话盖掉，排查方向全错。
+        let attempts = 0
+        const flaky = Object.assign(new Error('服务暂时不可用'), { isRetryable: true })
+        const result = await Retry.run({
+            operation: async () => { attempts += 1; if (attempts === 1) throw flaky; return 'ok' },
+            onRetry: () => { throw new Error('通知回调坏了') }, // 第一次重试前调用它，抛错。
+            minTimeout: 1,
+        })
+
+        expect(result).toBe('ok')      // 重试成功，没有被 onRetry 打断。
+        expect(attempts).toBe(2)       // 确实重试过一次。
+    })
 })
 
 describe('Tool and Worker', () => {

@@ -39,7 +39,8 @@ const run = async ({ operation, signal, onRetry, maxDelay = Infinity, maxElapsed
         maxRetryTime: maxElapsed,                 // 一直失败最多再试多久（毫秒）。
         shouldRetry: async ({ error, attemptNumber, retryDelay }) => {
             if (!isRetryable(error)) return false  // 不能重试的错误立刻收手，把原始错误交给上层。
-            await onRetry?.({ attempt: attemptNumber, error, delay: retryDelay }) // 让上层能显示"正在重试第几次"。
+            // onRetry 是给 UI 的通知，坏掉不该顶替真正的模型错误——吞掉它，重试照常进行。
+            try { await onRetry?.({ attempt: attemptNumber, error, delay: retryDelay }) } catch {}
             return true
         },
     }
