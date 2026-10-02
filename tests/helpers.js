@@ -51,14 +51,16 @@ export const pairing = messages => {
 
 // --- 一个只会报错的假中转站：真实服务报错时就是这个形状 ---
 // 它同时被 LLM 和压缩两条路径的测试用到，所以建在这里，调用方自己负责 stop。
-export const failingServer = (port = 39931) => Bun.serve({
+// port 默认 0：让系统分配一个空闲端口。写死端口在 CI 并行跑时会偶发 EADDRINUSE，
+// 把整条流水线堵住，而失败原因和被测代码毫无关系。
+export const failingServer = (port = 0) => Bun.serve({
     port,
     fetch: () => Response.json({ error: { message: '上游负载已满', type: 'server_error' } }, { status: 503 }),
 })
 
 
 // --- 一个把收到的请求体记下来的假服务：用来确认我们到底发了什么字段 ---
-export const echoServer = (port = 39932) => {
+export const echoServer = (port = 0) => {
     const recorded = []
     const server = Bun.serve({
         port,

@@ -17,10 +17,10 @@ import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import { TOOLS, failingServer, echoServer } from './helpers.js'
 
 // 一个只会报错的假中转站：真实服务报错时就是这个形状。
-const failing = failingServer(39931)
+const failing = failingServer()
 
 // 记录收到的请求体，用来确认我们到底发了什么字段。
-const { server: echo, recorded } = echoServer(39932)
+const { server: echo, recorded } = echoServer()
 
 // retryMaxElapsed: 0 = 一次都不重试。这几条测的是"错误有没有如实抛出来"，
 // 不是重试行为；不关掉的话 LLM.chat 会老老实实对着这个永远 503 的假服务一直重试。
