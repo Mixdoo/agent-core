@@ -11,7 +11,8 @@ provider: { temperature, topP, topK, maxOutputTokens, stopSequences, seed, toolC
 // 3. system：人给这台 Agent 的身份。它不属于模型参数，是这个包要往上下文里放的东西。
 
 // 4. Agent 的策略：这个包自己的旋钮，和模型无关。
-maxTokens?, compactThreshold, maxSteps?, maxToolOutput?, maxToolConcurrency?, retryMaxDelay?, retryMaxElapsed?, noToolPrompt?, requestTimeout?, noToolRounds?, stream, cache, capabilities, mediaFallback, compact?, output?
+maxTokens?, compactThreshold, maxSteps?, maxToolOutput?, maxToolConcurrency?, retryMaxDelay?, retryMaxElapsed?, noToolPrompt?, requestTimeout?, noToolRounds?, stream, cache, toolMode, capabilities, mediaFallback, compact?, output?
+// toolMode: 'auto'（默认）原生工具优先，接口拒收时自动改用文字协议；'native' 只用原生；'text' 给纯对话模型用文字调用工具。
 // capabilities: { image, audio, video, file, tools, structuredOutput, toolChoice, reasoning }
 // mediaFallback: 'error'（默认）或 'strip'；关闭某种媒体后，strip 会保留文字并丢掉媒体块。
 // requestTimeout: 单笔模型请求最多等多久（毫秒）；不设就不限时，卡住的请求会一直等。
@@ -171,6 +172,7 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
             compact: undefined,     // 压缩想用另一套模型时写在这里（{ model, baseURL, apiKey, provider… }）；不写就和主模型共用。
             output: undefined,      // 要固定格式的结果时写在这里，如 Agent.output.object({ schema })；不写就返回普通文字。
             stream: true,           // 主循环和压缩请求都使用流式输出。
+            toolMode: 'auto',       // 原生工具优先；接口不支持时自动改用文字协议，模型把调用写成文字时也读回来。
             system: '',             // 没有系统提示词时仍允许 Agent 运行。
             ...config,              // 传入配置覆盖默认配置，且配置结构只包含 Agent 需要的字段。
             provider: { ...config.provider },                                                                                   // 单独浅拷一层：两个 Agent 共用一个 provider 对象时，改其中一个不该动到另一个。

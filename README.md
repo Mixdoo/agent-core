@@ -125,6 +125,7 @@ bun main.js
 │
 └── utils/               ← 基础工具
     ├── llm.js            ← 底层 LLM 请求（支持多种协议）
+    ├── text-tools.js     ← 文字工具协议：让纯对话模型也能调用工具
     ├── history.js        ← 创建标准格式的历史消息块
     └── retry.js          ← 失败自动重试（指数退避）
 ```
@@ -393,6 +394,7 @@ import Agent from '@kernel4632/agent-core'
 | `system` | `''` | 系统提示词 |
 | `stream` | `true` | 是否流式请求模型。默认流式，`await send` 仍拿到完整结果；设为 `false` 才走非流式的旧式请求 |
 | `cache` | `true` | 提示词缓存，默认开启。长会话的固定开头（system、工具、历史）会被服务端缓存，命中就是省时间和省钱 |
+| `toolMode` | `'auto'` | 工具走哪条路，见下方「让没有原生工具的模型也能用工具」。`auto`（默认）/ `native` / `text` |
 | `capabilities` | 见下方 | 按模型能力逐项开关图片、音频、视频、文件、工具调用、结构化输出、toolChoice 和思考内容 |
 | `mediaFallback` | `'error'` | 媒体能力关闭时的处理方式；改成 `'strip'` 后保留文字并丢掉不支持的媒体 |
 | `provider` | `{}` | AI SDK 的生成参数，整份交给 AI SDK；不设时用模型自己的默认值 |
@@ -465,6 +467,30 @@ cache: {
 ```
 
 个别中转站不认这组字段、直接返回 400，那时设 `cache: false` 关掉，或把供应商自己的字段放进 `provider.body`。
+
+#### 让没有原生工具的模型也能用工具
+
+有的中转站模型只会对话：请求里一带 `tools` 字段就报错。也有的模型接口支持工具，模型自己却不会用，把调用当成一段文字写了出来。`toolMode` 让这两种模型也能和正常模型一样跑工具循环：
+
+| `toolMode` | 行为 |
+|------------|------|
+| `'auto'`（默认） | 先用原生工具。接口拒收工具字段时，自动改用文字协议重发，并记住这个模型，之后的请求直接走文字协议；模型没走原生调用、却在文字里写了调用时，也会读出来执行 |
+| `'native'` | 只用原生工具字段，文字里的调用一律当成普通回答 |
+| `'text'` | 只用文字协议：不发 `tools` 字段，把工具说明写进 system，从模型的文字里读回调用 |
+
+文字协议的格式（参考 Roo Code / Cline 的文本工具调用）：
+
+```
+<tool_call>
+{"name": "add", "arguments": {"a": 1, "b": 2}}
+</tool_call>
+```
+
+工具结果用 `<tool_result name="add">…</tool_result>` 作为一条 user 消息送回模型。读取时尽量宽容：一次回复里写多个调用、`arguments` 写成字符串、外面套一层 `{"type":"function","function":{…}}`、参数平铺在同一层、带 Markdown 代码围栏、多一个尾逗号、最后一块没闭合，都能读出来。Roo Code 风格的 XML 写法（`<read_file><path>a.js</path></read_file>`）也认，会按工具的 schema 把 `"7"` 还原成数字 `7`。JSON 坏到读不出来时，会生成一条无效调用告诉模型重写，不会悄悄当成普通回答。模型自己编了 `<tool_result>` 时，从那里往后的内容全部丢掉，免得假结果混进历史。
+
+**历史始终是标准形状。** 文字协议只在发请求和读响应的时候转换，`agent.history` 里存的永远是标准的 `tool-call` 块和 `tool` 消息。同一台 Agent 中途从纯对话模型换成原生工具模型（或反过来），历史直接接着用。
+
+流式输出时，文字协议的 `<tool_call>` 原文也会出现在 `onLLMEvent` 的 `text-delta` 里，前端想隐藏可以按这个标签过滤。`result.text` 和历史里的文字已经去掉了调用部分。
 
 需要包内没有预设的 Provider 或模型中间件时，直接传 AI SDK 模型实例；实例由调用方创建，`baseURL`、`apiKey`、`protocol` 就不必重复写。下面的进阶用法需要调用方安装对应的 Provider 包：
 
