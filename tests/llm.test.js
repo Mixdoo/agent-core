@@ -107,8 +107,13 @@ describe('请求里到底发了什么', () => {
     })
 
     test('provider 里的 toolChoice 可以覆盖默认值', async () => {
+        // 这里只关心 required 有没有发到请求里。假服务只会回"好"、不调工具，
+        // 新版 AI SDK 发现 required 却没调工具会抛 ToolChoiceViolationError——那是请求发出去之后的事，
+        // 所以接住它，再看真正发出去的请求体。
         const tools = (await Tool.scan(TOOLS)).schema
-        expect((await send({ tools, provider: { toolChoice: 'required' } })).tool_choice).toBe('required')
+        recorded.length = 0
+        await LLM.chat({ baseURL: `http://127.0.0.1:${echo.port}/v1`, apiKey: 'k', model: 'm', messages: [{ role: 'user', content: 'hi' }], stream: false, tools, provider: { toolChoice: 'required' } }).catch(() => {})
+        expect(recorded[0].tool_choice).toBe('required')
     })
 
     test('没有工具时不下发 tools 和 toolChoice', async () => {
