@@ -162,6 +162,29 @@ describe('三种 toolMode 跑完整的 Agent 循环', () => {
         } finally { server.stop(true) }
     })
 
+    test('auto：和工具无关的 400（比如上下文超长）不会把模型永久降级成文字协议', async () => {
+        // 以前任何 400 都会先记住"这个模型不支持原生工具"再重发。上下文超长时文字协议同样失败，
+        // 但模型已经被永久降级——这个进程里之后所有 Agent 都对它注入文字工具说明。
+        let calls = 0
+        const server = Bun.serve({
+            port: 0,
+            async fetch(request) {
+                const body = await request.json()
+                calls += 1
+                if (calls <= 2) return Response.json({ error: { message: 'context length exceeded' } }, { status: 400 }) // 原生和文字都失败。
+                return Response.json({ choices: [{ index: 0, message: { role: 'assistant', content: 'tools' in body ? '原生' : '文字' }, finish_reason: 'stop' }], usage: {} })
+            },
+        })
+        try {
+            const tools = await Agent.tool.scan(TOOLS)
+            const agent = Agent.create({ config: { baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'k', model: 'too-long-once', stream: false, toolMode: 'auto', retryMaxElapsed: 0 }, tools })
+            await agent.send('第一次').catch(() => {})  // 两条路都失败。
+            const answer = await agent.send('第二次')
+
+            expect(answer.text).toBe('原生') // 下一次仍然先试原生工具，没有被永久降级。
+        } finally { server.stop(true) }
+    })
+
     test('auto：模型支持原生工具，却把调用写成了文字，也能读回来执行', async () => {
         let round = 0
         const server = Bun.serve({ port: 0, async fetch(request) { await request.json(); round += 1; return round === 1 ? chatReply('<tool_call>{"name":"echo","arguments":{"value":"x"}}</tool_call>') : chatReply('完成') } })

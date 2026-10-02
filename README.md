@@ -351,7 +351,7 @@ export default {
 }
 ```
 
-`content` 块里只能放 `text` / `file` / `file-data` / `file-url` 四种部件。放别的（比如旧版 AI SDK 的 `media`）会被工具进程当场挡住、变成一条普通的工具失败——这是有意的：非法块一旦穿过去写进 `history`，AI SDK 会在本地校验时抛错、请求根本发不出去、重试也认不出来，而 `history` 只增不删，于是之后每次 `send` 都撞同一堵墙，重启装回历史也一样。
+`content` 块里只能放 `text` / `file` / `file-data` / `file-url`，以及旧写法 `image` / `audio` / `video`（发出前会自动转成 `file`）。放别的（比如旧版 AI SDK 的 `media`）会被工具进程当场挡住、变成一条普通的工具失败——这是有意的：非法块一旦穿过去写进 `history`，AI SDK 会在本地校验时抛错、请求根本发不出去、重试也认不出来，而 `history` 只增不删，于是之后每次 `send` 都撞同一堵墙，重启装回历史也一样。
 
 `output` 里给的块会被原样交给模型，不会再被套一层。`maxToolOutput` 的截断**只作用于文字块**——图截一刀就彻底废了，所以媒体内容一个字节都不动。
 
@@ -421,7 +421,6 @@ import Agent from '@kernel4632/agent-core'
 | `compactThreshold` | `0.8` | 压缩触发比例，0.8 表示到达 80% 时压缩 |
 | `compact` | `undefined` | 压缩单独用一套模型时写在这里，例如 `{ model: '便宜的小模型' }`；不写就和主模型共用 |
 | `output` | `undefined` | 结构化输出格式，例如 `Agent.output.object({ schema })`；不写就返回普通文字 |
-| `skills` | `undefined` | `Agent.skill.scan()` 的返回值。**默认零注入**：不传、或目录里一个技能都没有，system 一个字都不多、也不挂内置 skill 工具。扫到技能才会注入列表并挂上 `skill` 工具 |
 | `maxSteps` | `undefined` | 默认不限制模型轮数；主动设置正整数后，到上限先保存这一轮的工具结果，再返回 `step-limit` |
 | `maxToolConcurrency` | `undefined` | 默认不限制同一轮工具并发；主动设置后超出的调用排队 |
 | `retryMaxDelay` | `undefined` | 默认不限制单次退避时间；主动设置后限制毫秒数 |

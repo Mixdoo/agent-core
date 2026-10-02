@@ -12,7 +12,7 @@ import History from '../utils/history.js'
 
 const recorded = []
 const server = Bun.serve({
-    port: 39981,
+    port: 0,
     async fetch(request) {
         recorded.push(await request.json())
         return Response.json({ choices: [{ index: 0, message: { role: 'assistant', content: '好' }, finish_reason: 'stop' }], usage: {} })

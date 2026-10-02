@@ -32,16 +32,21 @@ const SUMMARIZE = `请把以上对话压缩成一段总结，供你自己后续�
 const run = async ({ messages, llm, stream = true, onCompact, onRetry, signal }) => {
     await onCompact?.({ type: 'compact-start', messages })                                        // 告诉上层：压缩开始了。
 
+    // 原来的 system 里折着上一次的总结（见 Context 的 brief）。直接丢掉它，第二次压缩就看不到第一次总结过的事实，
+    // 跑得越久忘得越多。所以把它作为背景并进压缩专用的 system，而不是夹在对话中间。
+    const earlier = messages.filter(message => message.role === 'system').map(message => message.content).filter(Boolean).join('\n\n')
+    const system = ['你在压缩一段你自己参与过的工作记录。只输出总结内容本身。', earlier && `下面是这段工作的背景设定和此前的压缩记录，新总结必须保留其中仍然有效的事实：\n\n${earlier}`].filter(Boolean).join('\n\n')
+
     const result = await LLM.chat({
         ...llm,                                                                                   // 用什么模型总结由调用方决定，这里不挑模型。
         provider: { ...llm.provider, output: undefined, toolChoice: undefined }, // 总结是自由文本：去掉任务的最终对象格式，也不强制它调工具。
-        system: '你在压缩一段你自己参与过的工作记录。只输出总结内容本身。',                       // 换成压缩专用的系统提示词。
+        system,                                                                                   // 压缩专用提示词 + 原背景和旧总结。
 
         // 要压缩的消息原样当成 messages 发过去，不要 JSON.stringify 塞进一条 user 消息里：
         // 那样引号会被二次转义，实测压缩请求能膨胀到它要压的上下文的 1.51 倍（工具输出是 JSON 时），
         // 于是"压缩"这个本该救命的动作，反而成了第一个把上下文窗口撑爆的请求——
         // 实测正常轮次最高才 92201 token 很安全，压缩请求 157011 直接 400 且不可重试。
-        // 原来的 system 要滤掉：它已经被上面那条换掉了，留着会变成一条夹在对话中间的 system 消息。
+        // 原来的 system 要滤掉：它的内容已经并进上面那条 system，留着会变成一条夹在对话中间的 system 消息。
         messages: [...messages.filter(message => message.role !== 'system'), { role: 'user', content: SUMMARIZE }],
 
         stream,                                                                                   // 流式与否跟调用方走。

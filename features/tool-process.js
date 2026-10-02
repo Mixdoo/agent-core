@@ -47,7 +47,6 @@ execute 写成 async * 时，每个 yield 也会实时发出去。
 */
 
 
-const decoder = new TextDecoder()               // 子进程输出是字节流，转成文本才能发给主线程。
 const encoder = new TextEncoder()               // 重放给工具的那一份要再变回字节流。
 const KEEP = 8 << 20                            // 替工具留着的子进程输出上限（8MB）：正常构建/测试日志都装得下，工具永远不读时内存也有天花板。
 
@@ -62,20 +61,23 @@ const report = (stream, data) => current && process.send({ callId: current, type
 // --- 子进程输出：工具进程是唯一读者，读到的每段既发给主线程，也留一份给工具自己读 ---
 // 不用 tee()：tee 的两路里只要有一路没人读，另一路读多少就在内存里堆多少，没有上限。
 const relay = (source, stream) => {
+    const decoder = new TextDecoder()                                   // 每条流各用一个解码器：共用的话，一个汉字被拆成两块时残留字节会拼到别的流上变成乱码。
     const kept = []                                                     // 留给工具读的副本，只保留尾部 KEEP 字节。
     let size = 0                                                        // 副本当前占用的字符数。
     let ended = false                                                   // 子进程这条流是否已经读完。
     let wake = null                                                     // 工具正等着新数据时，用它唤醒。
 
     void (async () => {                                                 // 后台一路读原始管道，读到什么就转发什么。
-        for await (const chunk of source) {
-            const text = typeof chunk === 'string' ? chunk : decoder.decode(chunk, { stream: true }) // 字节流转文字。
-            report(stream, text)                                        // 实时转发给主线程，发完即走，不占内存。
-            kept.push(text)                                             // 同一段也留给工具，它可能自己要读。
-            size += text.length
-            while (size > KEEP) size -= kept.shift().length             // 工具不读时丢最旧的，内存有明确上限。
-            wake?.()                                                    // 有新数据了，叫醒正在等的工具。
-        }
+        try {
+            for await (const chunk of source) {
+                const text = typeof chunk === 'string' ? chunk : decoder.decode(chunk, { stream: true }) // 字节流转文字。
+                report(stream, text)                                    // 实时转发给主线程，发完即走，不占内存。
+                kept.push(text)                                         // 同一段也留给工具，它可能自己要读。
+                size += text.length
+                while (size > KEEP) size -= kept.shift().length         // 工具不读时丢最旧的，内存有明确上限。
+                wake?.()                                                // 有新数据了，叫醒正在等的工具。
+            }
+        } catch {}                                                      // 管道被重置、孙进程被杀：当成流结束，不能让读这条流的工具永远等下去。
         ended = true                                                    // 子进程关流了，等待中的工具该收尾了。
         wake?.()
     })()

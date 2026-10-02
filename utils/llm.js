@@ -174,7 +174,8 @@ const request = async ({ input, stream, requestTimeout, markAttempt, onLLMEvent,
 
     try {
         for await (const event of result.stream) {
-            await onLLMEvent?.(event) // 不过滤事件，文字、思考、工具和错误都交给上层。
+            // 不过滤事件，文字、思考、工具和错误都交给上层。回调自己的 bug 不是网络抖动，标成不可重试，否则会无限重试。
+            try { await onLLMEvent?.(event) } catch (error) { throw Object.assign(error instanceof Error ? error : new Error(String(error)), { isRetryable: false }) }
             if (event.type === 'error') failure = event.error // AI SDK 只对"中断流的网络错误"抛异常，供应商自己报的错是一个事件，不接住就会被当成正常回答。
             if (event.type === 'text-delta') text.push(event.textDelta ?? event.text ?? event.delta ?? '') // 收集最终文字。
         }
@@ -333,8 +334,9 @@ const chat = async ({
     catch (error) {
         // auto：接口拒收工具字段时（不支持原生工具的纯对话模型），记住这个模型，改用文字协议再发一次。
         if (toolMode !== 'auto' || !hasTools || signal?.aborted || !rejectsTools(error)) throw error
-        noNativeTools.add(memory)
-        return run(true)
+        const result = await run(true)
+        noNativeTools.add(memory) // 文字协议真的跑通了才记住；上下文超长这类和工具无关的 400 换协议也会失败，不能把模型永久降级。
+        return result
     }
 }
 

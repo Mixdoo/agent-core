@@ -8,10 +8,8 @@ import LLM from '../utils/llm.js'
 import Compact from '../features/compact.js'
 import Loop from '../features/loop.js'
 
-const modelURL = 'http://127.0.0.1:39991/v1'
-
 const server = Bun.serve({
-    port: 39991,
+    port: 0,
     async fetch(request) {
         const body = await request.json()
         const lastMessage = body.messages.at(-1)
@@ -42,6 +40,7 @@ const server = Bun.serve({
         return Response.json(response)
     },
 })
+const modelURL = `http://127.0.0.1:${server.port}/v1` // 端口由系统分配，地址跟着服务走。
 
 describe('History and Context', () => {
     test('creates frontend history blocks with ids and AI SDK-like content', () => {

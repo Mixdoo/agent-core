@@ -160,6 +160,7 @@ const start = (agent, work, outside) => {
             previous.controller.abort()
             await previous.task.catch(() => {})                 // 旧任务以 AbortError 结束是正常的，不当成新异常。
         }
+        if (signal.aborted) throw new DOMException('Agent run aborted', 'AbortError') // 等待期间已被更新的任务取消：不写入这次输入，history 里不留没人回答的指令。
         return work(signal)                                     // 等旧任务收尾完再开始，history 的顺序才和实际发生的顺序一致。
     })()
 

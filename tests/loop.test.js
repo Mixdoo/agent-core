@@ -15,7 +15,7 @@ import Compact from '../features/compact.js'
 import Loop from '../features/loop.js'
 
 const server = Bun.serve({
-    port: 39933,
+    port: 0,
     async fetch(request) {
         await request.json()
         await Bun.sleep(120) // 留出足够窗口，让"两次 send 抢跑"这件事真的有机会发生。
@@ -84,6 +84,18 @@ describe('Agent 的状态机', () => {
 
         expect(stopped).toEqual({ ok: true })
         await task.catch(() => {})
+    })
+
+    test('同一 tick 连发三次 send，被跳过的中间那次不会把输入写进 history', async () => {
+        // B 还在等 A 收尾时，C 已经把 B 取消了。以前 B 照样写下自己的输入，
+        // history 里就留下一条没人回答的指令，紧跟着又是 C 的指令——连续两条 user。
+        const agent = Agent.create({ config })
+        const runs = ['任务A', '任务B', '任务C'].map(input => agent.send({ input }))
+        await Promise.allSettled(runs)
+
+        const inputs = agent.history.filter(message => message.role === 'user').map(message => message.content)
+        expect(inputs).not.toContain('任务B')
+        expect(inputs.at(-1)).toBe('任务C')
     })
 
     test('新指令写在旧任务收尾之后，history 顺序不错乱', async () => {
@@ -203,7 +215,7 @@ describe('压缩这条路径', () => {
         // history 是这个项目唯一的权威数据来源，该保留多少由持有它的上层决定。
         // 核心包替它丢数据是越权——压缩控制的是"这一轮发给模型的内容有多大"，不是"历史能留多少"。
         const server = Bun.serve({
-            port: 39941,
+            port: 0,
             async fetch(request) { await request.json(); return Response.json({ choices: [{ index: 0, message: { role: 'assistant', content: '这是一段总结' }, finish_reason: 'stop' }], usage: {} }) },
         })
 
@@ -233,7 +245,7 @@ describe('压缩这条路径', () => {
         // 压缩请求能膨胀到它要压的上下文的 1.51 倍——"压缩"反而成了第一个撑爆窗口的请求。
         let sent = 0
         const server = Bun.serve({
-            port: 39961,
+            port: 0,
             async fetch(request) { sent = JSON.stringify(await request.json()).length; return Response.json({ choices: [{ index: 0, message: { role: 'assistant', content: '总结' }, finish_reason: 'stop' }], usage: {} }) },
         })
 
@@ -252,7 +264,7 @@ describe('压缩这条路径', () => {
     test('上下文压不动时停止压缩，不再无限烧模型请求', async () => {
         let calls = 0
         const compacting = Bun.serve({
-            port: 39934,
+            port: 0,
             async fetch(request) { await request.json(); calls += 1; return Response.json({ choices: [{ index: 0, message: { role: 'assistant', content: '一段总结' }, finish_reason: 'stop' }], usage: {} }) },
         })
 
@@ -500,6 +512,63 @@ describe('Loop', () => {
             const answered = sent[1].messages.filter(message => message.role === 'tool').map(message => message.tool_call_id)
             expect(declared).toEqual(new Set(['call-1']))                 // 工具调用必须还在。
             expect(answered.every(id => declared.has(id))).toBe(true)     // 工具结果必须找得到发起它的调用。
+        } finally { mock.stop(true) }
+    })
+
+    test('onToolResult 回调抛错时，成功的工具结果不会被改写成"工具执行失败"', async () => {
+        // 回调是给界面用的。它自己出错时，错误顺着 send() 抛出去；
+        // 工具真实的成功结果不能被换成一句"工具执行失败：界面更新失败"，回调也不能被再调一次。
+        const history = [History.user({ content: '开始' })]
+        let calls = 0
+        let round = 0
+
+        const error = await Loop.run({
+            history,
+            system: '',
+            tools: { echo: { description: 'echo', inputSchema: jsonSchema({ type: 'object', properties: {} }) } },
+            llm: { baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'k', model: 'm', stream: false },
+            buildContext: Context.build,
+            compact: async () => '总结',
+            executeTool: async () => ({ output: { type: 'text', value: '真实输出' } }), // 工具本身成功。
+            onToolResult: () => { calls += 1; throw new Error('界面更新失败') },
+            onLLMFinish: result => {
+                round += 1
+                if (round === 1) result.toolCalls = [{ toolCallId: 'c1', toolName: 'echo', input: {} }]
+            },
+        }).catch(caught => caught)
+
+        expect(error.message).toBe('界面更新失败')  // 回调的错误如实交给调用方。
+        expect(calls).toBe(1)                       // 只通知一次，不会因为进了 catch 再通知一遍。
+        expect(JSON.stringify(history)).not.toContain('工具执行失败') // 没有把成功改写成失败。
+    })
+})
+
+describe('压缩', () => {
+    test('已经有一条总结时再压缩，旧总结里的事实会一起交给压缩模型', async () => {
+        // 旧总结折在 system 里；以前 Compact 把 system 整条丢掉，第二次压缩就看不到第一次记下的事实，
+        // 常驻 agent 跑得越久忘得越多。
+        const bodies = []
+        const mock = Bun.serve({
+            port: 0,
+            async fetch(request) {
+                bodies.push(await request.json())
+                return Response.json({ choices: [{ index: 0, message: { role: 'assistant', content: '新总结' }, finish_reason: 'stop' }], usage: {} })
+            },
+        })
+        try {
+            const history = [
+                History.user({ content: '帮我整理项目' }),
+                History.assistant({ content: '好的' }),
+                History.compact({ content: '旧总结：数据库端口是 5432' }),
+                History.user({ content: '继续' }),
+                History.assistant({ content: '在做' }),
+            ]
+            const agent = Agent.create({ history, config: { ...config, baseURL: `http://127.0.0.1:${mock.port}/v1` } })
+            await agent.compact()
+
+            const sent = JSON.stringify(bodies[0].messages)
+            expect(sent).toContain('5432')                                                // 旧总结的事实还在。
+            expect(bodies[0].messages.filter(message => message.role === 'system')).toHaveLength(1) // 仍然只有开头一条 system，不夹在对话中间。
         } finally { mock.stop(true) }
     })
 })

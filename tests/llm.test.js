@@ -372,6 +372,29 @@ describe('单笔请求限时与错误分类', () => {
         expect(error.kind).toBe('aborted')
     })
 
+    test('onLLMEvent 回调自己抛错时不当成网络抖动去无限重试', async () => {
+        // 流式里没带 isRetryable 的错误会被补成可重试；回调的 bug 也混在里面的话，
+        // 默认不限时的重试会让 send() 永远不结束。
+        let calls = 0
+        const server = Bun.serve({
+            port: 0,
+            async fetch() {
+                calls += 1
+                return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: '你好' } }] })}\n\ndata: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: {} })}\n\ndata: [DONE]\n\n`, { headers: { 'content-type': 'text/event-stream' } })
+            },
+        })
+        try {
+            const error = await Promise.race([
+                LLM.chat({ baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'k', model: 'm', messages: [{ role: 'user', content: 'hi' }], stream: true, onLLMEvent: () => { throw new Error('界面挂了') } }).catch(caught => caught),
+                Bun.sleep(5000).then(() => 'HUNG'),
+            ])
+
+            expect(error).not.toBe('HUNG')
+            expect(error.message).toBe('界面挂了')
+            expect(calls).toBeLessThanOrEqual(1) // 没有重试（start 事件在连接前就发出，所以可能一次都没连上）。
+        } finally { server.stop(true) }
+    })
+
     test('重试时每笔请求各自重新计时，上一轮的限时不会打断下一轮', async () => {
         // 第一次请求立刻失败（503），它的限时定时器（500ms）在重试开始后仍会到点。
         // 第二轮约 1000ms 才开始：旧写法在旧信号上叠加，那个已到点的定时器会让第二轮一开场就被判超时。

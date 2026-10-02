@@ -141,11 +141,10 @@ const run = async ({
             const allowed = await onPermission?.({ sessionId, toolCallId: call.toolCallId, toolName: call.toolName, arguments: call.input, signal }) ?? true // 没有权限回调时按无人值守模式直接放行。
             if (!allowed) return { call, output: { type: 'execution-denied', reason: '工具执行被用户拒绝' } } // 拒绝也是一条结果，模型需要知道。
 
+            let value
             try {
                 // onToolOutput 是高频流式回调，这里不等它：等一下就等于给模型输出加了一道节流阀。
-                const value = await executeTool({ name: call.toolName, input: call.input, signal, onOutput: output => onToolOutput?.({ ...output, ...call }) }) // Loop 只说要执行哪个工具，怎么找到它由调用方负责。
-                await onToolResult?.({ ...call, result: value, output: value.output })                              // 通知上层这个工具已经执行完。
-                return { call, output: value.output, stop: value?.stop === true || value?.interrupted === true }    // 工具主动停止或被中断都要结束循环。
+                value = await executeTool({ name: call.toolName, input: call.input, signal, onOutput: output => onToolOutput?.({ ...output, ...call }) }) // Loop 只说要执行哪个工具，怎么找到它由调用方负责。
             } catch (error) {
                 // 工具失败属于工具结果，不能让一次工具失败打断整个 Agent 循环。
                 // 取消路径由 tool.js 用 resolve 处理，不会走到这里；这里接的是"工具名不在表里"这类调用错误。
@@ -153,6 +152,9 @@ const run = async ({
                 await onToolResult?.({ ...call, error: error.message, output })
                 return { call, output }
             }
+            // 通知放在 try 外面：工具已经成功，回调自己出错只能顺着 send() 抛出去，不能把成功结果改写成"工具执行失败"。
+            await onToolResult?.({ ...call, result: value, output: value.output })                              // 通知上层这个工具已经执行完。
+            return { call, output: value.output, stop: value?.stop === true || value?.interrupted === true }    // 工具主动停止或被中断都要结束循环。
         }))
 
         // --- 把本轮消息和工具结果写回历史 ---
