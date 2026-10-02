@@ -1,5 +1,8 @@
 # 每次推送或提 PR：装依赖、跑测试、构建产物。
 # 目的很简单——代码合并进来之前，保证它是测过、能构建的。
+#
+# Linux 和 Windows 都跑：这个包在 Windows 上开发，工具子进程、路径、编码这些
+# 最容易只在某一个平台出问题（实测过发版脚本只在 Windows 上找不到 git）。
 
 name: CI
 
@@ -8,9 +11,18 @@ on:
     branches: [main]
   pull_request:
 
+# 同一个分支连续推送时，旧的那次检查直接取消，只看最新一次。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false             # 一个平台挂了，另一个照样跑完，方便看是不是平台问题
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
