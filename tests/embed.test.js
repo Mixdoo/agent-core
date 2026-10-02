@@ -19,6 +19,21 @@ describe('可嵌入性', () => {
         expect(Agent.version).toMatch(/^\d+\.\d+\.\d+/) // 排查问题时上层要能报出版本。
     })
 
+    test('手写的类型声明没有落后于代码', async () => {
+        // index.d.ts 是手写的，改了代码忘了改它，TS 用户就会看到不存在的字段、或找不到新字段。
+        // 这里拿运行时的真实形状去对照声明文件，漏掉任何一个都会红。
+        const declared = await Bun.file(new URL('../index.d.ts', import.meta.url)).text()
+        const block = name => declared.match(new RegExp(`export interface ${name} \\{([\\s\\S]*?)\\n\\}`))?.[1] ?? ''
+        const has = (name, key) => new RegExp(`^\\s+${key}\\??:`, 'm').test(block(name))
+
+        for (const key of Object.keys(Agent)) expect(has('Agent', key)).toBe(true)                                  // Agent.xxx 每一项都有声明。
+        const agent = Agent.create()
+        for (const key of Object.keys(agent)) expect(has('AgentInstance', key)).toBe(true)                          // 实例上的每个字段都有声明。
+        for (const key of Object.keys(agent.config)) expect(has('Config', key)).toBe(true)                          // 每个配置项都有声明。
+        for (const key of Object.keys(Agent.history)) expect(has('HistoryModule', key)).toBe(true)
+        for (const key of Object.keys(Agent.tool)) expect(has('ToolModule', key)).toBe(true)
+    })
+
     test('History 除了造消息块，还给出读历史的操作', () => {
         // 嵌入方拿到 history 之后要做的事不止"往里塞一条"：要渲染给用户看、要数聊了几轮。
         // 这两件事的知识（内容块有哪些形状、回合怎么划分）本来就在核心里，
