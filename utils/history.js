@@ -72,7 +72,7 @@ const assistant = ({ id, content = null, toolCalls = [] }) => ({
             type: 'tool-call',                                  // 一次工具调用就是一个内容块。
             toolCallId: text(callId, 'toolCalls[].id'),         // 结果靠这个 id 找回它，不能为空。
             toolName: text(name, 'toolCalls[].name'),           // 调用的工具名。
-            input: input ?? (typeof rawArguments === 'string' ? JSON.parse(text(rawArguments, 'toolCalls[].arguments')) : rawArguments), // 参数可以是对象，也可以是 JSON 字符串。
+            input: input ?? (typeof rawArguments === 'string' ? (() => { try { return JSON.parse(text(rawArguments, 'toolCalls[].arguments')) } catch { return {} } })() : rawArguments), // 参数可以是对象，也可以是 JSON 字符串；解析失败时用空对象，不能让坏参数崩掉整个 History.assistant。
         })),
     ],
 })

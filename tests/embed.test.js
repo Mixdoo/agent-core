@@ -88,6 +88,13 @@ describe('可嵌入性', () => {
         expect(typeof Agent.history.tool).toBe('function')
     })
 
+    test('工具调用的 arguments 是坏 JSON 字符串时也不崩，退化成空参数', () => {
+        // 从库里恢复会话、或手写历史时，arguments 可能是没解析好的字符串。
+        // 直接 JSON.parse 会抛 SyntaxError，把整次 send 打死；这里按"读不出参数"处理。
+        const assistant = Agent.history.assistant({ content: null, toolCalls: [{ id: 'c1', name: 'read', arguments: '{"path":' }] })
+        expect(assistant.content[0].input).toEqual({})
+    })
+
     test('scan 直接收 URL，不用调用方自己拼路径', async () => {
         // 嵌进别人项目时，工具目录的位置只能相对调用方自己的代码算，手边拿到的就是 URL。
         // 以前只收字符串路径，Windows 上还得自己剥掉 pathname 的前导斜杠。

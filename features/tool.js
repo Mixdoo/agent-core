@@ -300,7 +300,13 @@ const execute = ({ name, input, handlers, signal, onOutput, limit = Infinity, co
                 call.finish({ output: { type: 'error-text', value: `${call.output.text()}\n工具执行超时（${handler.timeout}ms）` }, error: 'timeout' })
             }, handler.timeout)
 
-            child.send({ callId: call.id, url: handler.url, mcp: handler.mcp, builtin: handler.builtin, skills: handler.skills, name, input, limit }) // MCP 连接只传数据，不能把执行函数移进主进程。
+            // 进程可能在借出后、发消息前这一刻退出；那时 send 会同步抛错。
+            // 抛出去会让这次调用永远不结算（没有人接住这个拒绝），所以在这里就地收口。
+            try { child.send({ callId: call.id, url: handler.url, mcp: handler.mcp, builtin: handler.builtin, skills: handler.skills, name, input, limit }) } // MCP 连接只传数据，不能把执行函数移进主进程。
+            catch (error) {
+                retire(child)
+                call.finish({ output: { type: 'error-text', value: `工具执行失败：无法派发到工具进程（${error.message}）` }, error: error.message })
+            }
         }
 
         signal?.addEventListener('abort', stop, { once: true }) // 取消信号一到就停。

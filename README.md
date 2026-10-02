@@ -602,7 +602,7 @@ await agent.send({
 停止正在运行的 Agent。
 
 ```js
-await agent.stop()   // 等待完全停止后返回 { ok: true }
+await agent.stop()   // 等待完全停止后返回 { ok: true }；Agent 空闲时返回 { ok: false }
 ```
 
 #### 流式与网页实时推送
