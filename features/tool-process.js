@@ -189,17 +189,12 @@ const shape = (tool, result, limit) => {
 
 
 // --- 内置动作：主线程把 handler.builtin 发过来时，跑包自己的一小段逻辑 ---
-// 目前只有「按需加载技能」这一个动作：把技能的正文读出来交给模型。
-// 放在子进程里跑，是因为工具进程本来就能读写文件，技能正文也没必要先经过主线程再发过来。
-const builtin = async data => {
-    if (data.name !== 'skill') throw new Error(`未知的内置动作：${data.name}`)
-
-    const path = data.skills?.[data.input?.skill]
-    if (!path) throw new Error(`找不到技能 "${data.input?.skill ?? ''}"。可用的技能见系统提示词的「可用技能」列表。`)
-
-    const raw = await Bun.file(path).text()
-    const body = raw.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, '').trim() // 去掉 frontmatter，只把正文交给模型。
-    return { type: 'text', value: body }
+// 目前只有「按需加载技能」这一个动作：技能正文在扫描时就读好了，这里按名字取出来交给模型。
+const builtin = data => {
+    if (data.name !== 'skill') throw new Error(`未知的内置动作：${data.name}`)             // 只认识 skill 一个动作。
+    const body = data.skills?.[data.input?.skill]                                         // 按模型给的技能名取出正文。
+    if (body === undefined) throw new Error(`找不到技能 "${data.input?.skill ?? ''}"。可用的技能见系统提示词的「可用技能」列表。`) // 名字写错时告诉模型去哪里找对的名字。
+    return { type: 'text', value: body }                                                  // 正文原样交给模型。
 }
 
 
@@ -208,7 +203,7 @@ process.on('message', async data => {
     current = data.callId                                                       // 本次调用的身份，console 输出也归到它名下。
     try {
         if (data.builtin) {                                                     // 内置动作不加载任何工具文件。
-            const output = await builtin(data)
+            const output = builtin(data)
             process.send({ callId: data.callId, type: 'done', output, stop: false })
             return
         }

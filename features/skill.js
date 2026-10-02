@@ -93,23 +93,24 @@ const scan = async (...directories) => {
         }
 
         for (const file of files) {
-            const folder = file.replace(/[\\/]SKILL\.md$/i, '').split(/[\\/]/).pop()
-            const { meta } = frontmatter(await Bun.file(file).text())
+            const folder = file.replace(/[\\/]SKILL\.md$/i, '').split(/[\\/]/).pop() // 技能所在的文件夹名。
+            const { meta, body } = frontmatter(await Bun.file(file).text())           // 说明给系统提示词用，正文留给 skill 工具。
 
             if (!meta.name) throw new Error(`${file} 缺少 name：frontmatter 里要写 name: 技能名`)
             if (meta.name !== folder) throw new Error(`${file} 的 name "${meta.name}" 和目录名 "${folder}" 对不上：技能名必须等于它所在的目录名`)
             if (!meta.description) throw new Error(`${file} 缺少 description：要写清什么时候该用这个技能`)
             if (meta.description.length > MAX_DESCRIPTION) throw new Error(`${file} 的 description 太长（${meta.description.length} 字，上限 ${MAX_DESCRIPTION}）`)
 
-            skills.set(meta.name, { name: meta.name, description: meta.description, path: file })
+            skills.set(meta.name, { name: meta.name, description: meta.description, path: file, body }) // 同名时后扫到的覆盖先扫到的。
         }
     }
 
-    const list = [...skills.values()].sort((one, two) => one.name.localeCompare(two.name))
+    const list = [...skills.values()].sort((one, two) => one.name.localeCompare(two.name)) // 按名字排好，每次扫描结果都一样。
 
     // 一个技能都没有：不注入任何东西，也不挂内置工具。这是默认状态，不是错误。
     if (!list.length) return { list: [], prompt: '', schema: {}, handlers: {} }
 
+    // 注入系统提示词的那一段：只有名字和说明，正文要等模型主动加载。
     const prompt = [
         '【可用技能】',
         '下面这些技能是现成的操作步骤。当请求和某个技能的说明对得上时，先用 skill 工具把它加载进来，再照着做。',
@@ -118,6 +119,7 @@ const scan = async (...directories) => {
         ...list.map(skill => `- ${skill.name}：${skill.description}`),
     ].join('\n')
 
+    // 给模型看的 skill 工具：只收一个参数，就是技能名。
     const schema = {
         [TOOL]: {
             description: '按名字加载一个技能的完整操作步骤。技能名从系统提示词的「可用技能」列表里选。',
@@ -128,10 +130,12 @@ const scan = async (...directories) => {
             }),
         },
     }
-    // builtin 是第三种工具地址：前两种是本地文件（url）和 MCP（mcp），这个是包内置的一小段逻辑，跑在工具子进程里。
-    const handlers = { [TOOL]: { builtin: TOOL, skills: Object.fromEntries(list.map(skill => [skill.name, skill.path])) } }
 
-    return { list, prompt, schema, handlers }
+    // builtin 是第三种工具地址：前两种是本地文件（url）和 MCP（mcp），这个是包内置的一小段逻辑，跑在工具子进程里。
+    // 正文在扫描时已经读出来了，直接带过去，工具进程不用再读一遍文件、也不用再解析一遍 frontmatter。
+    const handlers = { [TOOL]: { builtin: TOOL, skills: Object.fromEntries(list.map(skill => [skill.name, skill.body])) } }
+
+    return { list: list.map(({ body, ...skill }) => skill), prompt, schema, handlers } // 对外的 list 只给名字、说明和路径，正文不往外露。
 }
 
 export default { scan }
