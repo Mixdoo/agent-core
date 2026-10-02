@@ -362,7 +362,6 @@ const mcp = async ({ transport, prefix = '', signal, timeout }) => {
 
 // --- 合并本地和远端工具集合 ---
 // 同名时后面的整项覆盖前面，描述和执行地址一起更新，不会各来自不同集合。
-// 技能集合也能直接合进来：它只多了 list / prompt 两个字段，这里只取 schema 和 handlers。
 const merge = (...sets) => ({
     schema: Object.assign(Object.create(null), ...sets.map(set => set.schema ?? {})),
     handlers: Object.assign(Object.create(null), ...sets.map(set => set.handlers ?? {})),

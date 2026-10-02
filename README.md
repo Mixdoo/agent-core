@@ -121,7 +121,7 @@ bun main.js
 │   ├── tool.js           ← 工具扫描 + 工具执行（主线程这一半）
 │   ├── tool-process.js   ← 工具真正跑起来的地方（子进程那一半）
 │   ├── context.js        ← 把历史消息裁剪成模型上下文
-│   └── compact.js        ← 上下文太长时自动压缩总结
+│   ├── compact.js        ← 上下文太长时自动压缩总结
 │   └── skill.js          ← 扫描技能目录，内置 skill 工具按需加载
 │
 └── utils/               ← 基础工具
@@ -869,12 +869,7 @@ const agent = Agent.create({ config, tools, skills })
 - 传了 skills 且**扫到了技能**：往系统提示词追加一段「可用技能」，每行一个技能名和它的 `description`；同时挂上一个内置的 `skill` 工具。模型判断当前任务和某个技能对得上时，用 `skill` 工具把那个技能的**正文**读进来，再照着做。一次只加载一个，正文不会提前塞进上下文。
 - 没传 skills、传了 `null`、或目录里**一个技能都没有**：system 原样发出，工具表里也没有 `skill` 工具。这就是默认状态。
 
-`tools` 和 `skills` 可以分开传，也可以合成一份工具表：
-
-```js
-const tools = Agent.tool.merge(await Agent.tool.scan('./tools'), await Agent.skill.scan('./skills'))
-const agent = Agent.create({ config, tools })   // 合成后仍然只有扫到技能才会挂 skill 工具
-```
+技能要通过 `skills` 传进去，不要用 `Agent.tool.merge` 合进 `tools`：合进去只会多一个 `skill` 工具，技能列表不会注入 system，模型不知道有哪些技能可选。
 
 `skill` 这个名字如果和你的某个工具重名，内置技能工具优先——别给工具起这个名字就行。
 
