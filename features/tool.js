@@ -303,7 +303,11 @@ const execute = ({ name, input, handlers, signal, onOutput, limit = Infinity, co
         // 排队、并发上限、占住名额都由队列负责：这个任务要等整次调用结束才算完，
         // 所以同一批里同一时刻最多有 concurrency 个在跑，超出的等前一个结算。
         queue.add(async () => {
-            const child = await borrow()                // 池里有空闲就用，没有就开一个新的。
+            let child
+            // 工具进程起不来（bun 不在 PATH、系统进程数满）时 spawn 会直接抛错。
+            // 不接住的话这次调用永远不结算，整个 Agent 无声卡死，还会多一条未处理的拒绝。
+            try { child = await borrow() }
+            catch (error) { return call.finish({ output: { type: 'error-text', value: `工具执行失败：工具进程启动失败（${error.message}）` }, error: error.message }) }
             if (call.done) return release(child)        // 排队时就被取消了，拿到也不跑，直接把进程让回池子。
             await new Promise(done => { call.done2 = done; start(child) }) // 等这次调用结算，队列才知道可以让下一个上。
         })

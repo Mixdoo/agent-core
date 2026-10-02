@@ -540,7 +540,7 @@ console.log(answer.text)
 | `onLLMStart` | 每次请求模型前 | `{ messages, tools }` |
 | `onLLMFinish` | 模型请求完成 | LLM 返回的完整结果 |
 | `onLLMEvent` | 流式事件（每个 token） | AI SDK 原生事件 |
-| `onPermission` | 工具执行前 | `{ toolName, arguments, sessionId }` → 返回 `true/false` |
+| `onPermission` | 工具执行前 | `{ toolName, arguments, sessionId, toolCallId, signal }` → 返回 `true/false` |
 | `onToolCall` | 工具即将执行 | `{ toolCallId, toolName, input }` |
 | `onToolOutput` | 工具有流式输出 | `{ tool, stream, data, toolCallId, toolName }` |
 | `onToolResult` | 工具执行完成 | `{ toolName, output, ... }` |
