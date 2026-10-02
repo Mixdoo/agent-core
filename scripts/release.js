@@ -18,9 +18,10 @@
 发布进度在 https://github.com/kernel4632/agent-core/actions 看。
 */
 
+import { fileURLToPath } from 'node:url'
 import { repository } from '../package.json'
 
-const root = new URL('../', import.meta.url)
+const root = fileURLToPath(new URL('../', import.meta.url)) // 必须是路径字符串：Windows 上传 URL 对象给 cwd，spawn 会找不到 git。
 const slug = new URL(repository.url.replace(/^git\+/, '')).pathname.replace(/^\/|\.git$/g, '')
 
 const run = (command, args) => {

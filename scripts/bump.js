@@ -12,7 +12,7 @@
 
 import { version } from '../package.json'
 
-const root = new URL('../', import.meta.url)
+const root = new URL('../', import.meta.url) // 只是拼文件路径，URL 能用；要交给系统的路径才需要转成字符串。
 
 const part = process.argv[2]
 const [major, minor, patch] = version.split('.').map(Number)
