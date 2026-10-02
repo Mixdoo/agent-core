@@ -30,12 +30,12 @@ const SUMMARIZE = `请把以上对话压缩成一段总结，供你自己后续�
 
 // Compact 只负责把上下文变成总结文本，是否需要压缩由调用方决定。
 const run = async ({ messages, llm, stream = true, onCompact, onRetry, signal }) => {
-    await onCompact?.({ type: 'compact-start', messages })
+    await onCompact?.({ type: 'compact-start', messages })                                        // 告诉上层：压缩开始了。
 
     const result = await LLM.chat({
-        ...llm,
+        ...llm,                                                                                   // 用什么模型总结由调用方决定，这里不挑模型。
         provider: { ...llm.provider, output: undefined, toolChoice: undefined }, // 总结是自由文本：去掉任务的最终对象格式，也不强制它调工具。
-        system: '你在压缩一段你自己参与过的工作记录。只输出总结内容本身。',
+        system: '你在压缩一段你自己参与过的工作记录。只输出总结内容本身。',                       // 换成压缩专用的系统提示词。
 
         // 要压缩的消息原样当成 messages 发过去，不要 JSON.stringify 塞进一条 user 消息里：
         // 那样引号会被二次转义，实测压缩请求能膨胀到它要压的上下文的 1.51 倍（工具输出是 JSON 时），
@@ -44,16 +44,16 @@ const run = async ({ messages, llm, stream = true, onCompact, onRetry, signal })
         // 原来的 system 要滤掉：它已经被上面那条换掉了，留着会变成一条夹在对话中间的 system 消息。
         messages: [...messages.filter(message => message.role !== 'system'), { role: 'user', content: SUMMARIZE }],
 
-        stream,
-        signal,
+        stream,                                                                                   // 流式与否跟调用方走。
+        signal,                                                                                   // 取消压缩和取消普通请求是同一种。
         onRetry,               // 压缩失败能重试——它和主循环走的是同一条 LLM.chat，同一套退避。
-        onLLMEvent: onCompact,
+        onLLMEvent: onCompact, // 压缩过程中的每个流事件都转发给上层，UI 能显示进度。
     })
 
-    const content = result.text.trim()
+    const content = result.text.trim()                                                            // 总结就是模型输出的文字。
     if (!content) throw new Error('压缩失败：模型返回空总结') // 空总结会导致 History.compact 校验失败，提前报错。
-    await onCompact?.({ type: 'compact-finish', content })
-    return content
+    await onCompact?.({ type: 'compact-finish', content })                                        // 告诉上层：压缩完成，总结是这个。
+    return content                                                                                // 总结文本交回调用方（由它写进 history）。
 }
 
 export default { run }

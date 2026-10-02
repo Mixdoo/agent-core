@@ -55,11 +55,11 @@ const size = turn => turn.reduce((total, message) => total + JSON.stringify(mess
 
 // --- 在预算内按给定顺序挑回合，装不下就到此为止 ---
 const within = (turns, budget) => {
-    const picked = []
-    let used = 0
+    const picked = []                  // 装得下的回合。
+    let used = 0                       // 已经用掉的字符数。
     for (const turn of turns) {
         used += size(turn)
-        if (used > budget) break
+        if (used > budget) break       // 这一条装不下就停，后面的也不看了。
         picked.push(turn)
     }
     return picked
@@ -78,13 +78,13 @@ const brief = (system, summary) => summary
 // 默认去掉思考和未完成的工具调用；切换到支持它们的模型时只改 capabilities，不改裁剪流程。
 const build = ({ history, system = '', tools = {}, budget, capabilities = {}, mediaFallback = 'error' }) => {
     // --- 还原回合：从这里开始，历史只以回合为单位被处理 ---
-    const turns = History.turns(history)
+    const turns = History.turns(history)                 // 一个回合 = 一次用户发言，或模型的一次响应连同它的工具调用和结果。
 
     // --- 定位最新总结：从后往前找，多次压缩后只有最后那一条算数 ---
-    const summaryIndex = turns.findLastIndex(turn => turn[0].compact === true)
-    const room = Number.isFinite(budget) ? budget * PER_TOKEN : Infinity // 旧内容能用的字符预算。
+    const summaryIndex = turns.findLastIndex(turn => turn[0].compact === true) // 最后一次压缩留下的那条总结。
+    const room = Number.isFinite(budget) ? budget * PER_TOKEN : Infinity // 旧内容能用的字符预算。没设预算就不限制。
     let selected = turns                                                 // 没有总结时，完整历史就是最准确的上下文。
-    let summary = ''
+    let summary = ''                                                     // 有总结时，总结文本折进 system，不占消息位置。
 
     // --- 有总结时分三段挑：最初目标 + 总结前的最近现场 + 总结之后的全部新回合 ---
     if (summaryIndex >= 0) {
