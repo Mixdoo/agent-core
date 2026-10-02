@@ -40,6 +40,14 @@
 
 这个包需要 [Bun](https://bun.sh) 运行时（不支持 Node.js）。
 
+从 GitHub Release 安装（推荐，现在就能用）：
+
+```bash
+bun add https://github.com/kernel4632/agent-core/releases/download/v0.10.1/kernel4632-agent-core-0.10.1.tgz
+```
+
+以后发到 npm 之后，也可以直接：
+
 ```bash
 bun add @kernel4632/agent-core
 ```
