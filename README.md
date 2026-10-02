@@ -614,7 +614,7 @@ await agent.send({
     input: '帮我查一下',
     callbacks: {
         onLLMEvent: event => {
-            if (event.type === 'text-delta') show(event.textDelta) // 模型新吐的一段文字
+            if (event.type === 'text-delta') show(event.text) // 模型新吐的一段文字
         },
         onToolOutput: output => show(output.data),                  // 工具产生的实时输出
     },
@@ -635,7 +635,7 @@ app.get('/chat', async request => {
                 const result = await agent.send({
                     input: await request.text(),
                     callbacks: {
-                        onLLMEvent: event => { if (event.type === 'text-delta') send({ text: event.textDelta }) },
+                        onLLMEvent: event => { if (event.type === 'text-delta') send({ text: event.text }) },
                         onStep: () => send({ status: 'step-done' }),
                     },
                 })

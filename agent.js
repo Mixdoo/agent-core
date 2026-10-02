@@ -244,7 +244,7 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
                 history: agent.history,           // Loop 直接使用这份公开数组，执行结果也会继续写入这里。
                 system,                           // 系统提示词 + 本次真正启用的技能列表。
                 tools: agent.config.capabilities.tools === false ? {} : tools.schema, // 兼容开关关闭工具时，模型请求和 Loop 都看不到工具（技能工具也一并关掉）。
-llm: buildLLM(agent.config),      // 主请求用的模型配置。
+                llm: buildLLM(agent.config),      // 主请求用的模型配置。
                 buildContext: options => Context.build({ ...options, capabilities: agent.config.capabilities, mediaFallback: agent.config.mediaFallback }), // 上下文构建交给 Context 模块，并带上本次模型的能力开关。
                 compact: request => Compact.run({ ...request, llm: compactLLM, stream: compactLLM.stream }), // 压缩用哪套模型由 Agent 决定；Loop 只负责什么时候压、压哪些消息。
                 executeTool: request => Tool.execute({ ...request, handlers: tools.handlers, limit: agent.config.maxToolOutput, concurrency: agent.config.maxToolConcurrency }), // 执行器需要的处理表、输出上限和并发上限由 Agent 补上，Loop 不用知道它们。
@@ -282,7 +282,7 @@ llm: buildLLM(agent.config),      // 主请求用的模型配置。
                 previous.controller.abort()
                 await previous.task.catch(() => {})
             }
-const context = Context.build({ history: agent.history, system: agent.config.system, tools: agent.tools.schema, capabilities: agent.config.capabilities, mediaFallback: agent.config.mediaFallback })
+            const context = Context.build({ history: agent.history, system: agent.config.system, tools: agent.tools.schema, capabilities: agent.config.capabilities, mediaFallback: agent.config.mediaFallback })
             const compactLLM = buildCompact(agent.config) // 与 send 里的自动压缩用同一个来源，手动压缩不会偷偷换成主模型。
             const content = await Compact.run({
                 ...options,
