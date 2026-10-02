@@ -15,13 +15,12 @@
 发布需要本机装好并登录 gh（GitHub 命令行）。npm 那边有账号后，也能改用 `bun run publish:npm`。
 */
 
-import { readFileSync } from 'node:fs'
 import { rm } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
-import { version } from '../package.json'
+import { version, repository } from '../package.json'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
-const slug = new URL(JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).repository.url.replace(/^git\+/, '')).pathname.replace(/^\/|\.git$/g, '') // 从仓库地址里取出 kernel4632/agent-core。
+const slug = new URL(repository.url.replace(/^git\+/, '')).pathname.replace(/^\/|\.git$/g, '') // 从仓库地址里取出 kernel4632/agent-core。
 const pinned = `kernel4632-agent-core-${version}.tgz`
 
 const run = (command, args) => {
