@@ -688,7 +688,7 @@ const agent = Agent.create({ config, tools: Agent.tool.merge(local, remote) })
 
 #### `Agent.tool.scan(directory)`
 
-扫描目录（含子目录）里所有 `.js` 文件，把其中形状对得上的注册成工具，其余文件跳过。
+扫描目录（含子目录）里所有 `.js` / `.mjs` / `.ts` / `.mts` 文件，把其中形状对得上的注册成工具，其余文件跳过。Bun 直接执行 TypeScript，所以工具可以直接写成 `.ts`；只有类型、没有代码的 `.d.ts` 会被跳过。
 
 ```js
 Agent.tool.scan('./tools')                                // 路径字符串（相对宿主进程的当前目录）

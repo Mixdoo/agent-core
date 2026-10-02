@@ -95,10 +95,11 @@ const scan = async (...directories) => {
 
     // 先收集完整文件列表再排序，保证每次扫描同一目录的加载顺序都一样。
     // 目录之间保持传入顺序，所以"内置工具目录在前、用户工具目录在后"就等于让用户能覆盖内置工具。
+    // 这个包只跑在 Bun 上，Bun 直接执行 TypeScript，所以 .ts 工具和 .js 一样认；.d.ts 只有类型、没有代码，跳过。
     for (const directory of directories.flat()) {
         const cwd = directory instanceof URL ? fileURLToPath(directory) : String(directory)
         const found = []
-        for await (const file of new Bun.Glob('**/*.js').scan({ cwd, absolute: true, onlyFiles: true })) found.push(file)
+        for await (const file of new Bun.Glob('**/*.{js,mjs,ts,mts}').scan({ cwd, absolute: true, onlyFiles: true })) if (!/\.d\.m?ts$/.test(file)) found.push(file)
         files.push(...found.sort())
     }
 

@@ -42,6 +42,15 @@ describe('Tool 扫描', () => {
         const tools = await Tool.scan(TOOLS)
         expect(tools.handlers.echo).toEqual({ url: tools.handlers.echo.url })
     })
+
+    test('TypeScript 写的工具也认得，.d.ts 跳过', async () => {
+        // 这个包只跑在 Bun 上，Bun 直接执行 TypeScript。工具作者写 .ts 是很自然的事。
+        const tools = await Tool.scan(new URL('./fixtures/typescript', import.meta.url))
+        expect(Object.keys(tools.schema)).toEqual(['multiply'])   // .d.ts 只有类型，不能被当成工具加载。
+
+        const result = await Tool.execute({ name: 'multiply', input: { a: 6, b: 7 }, handlers: tools.handlers })
+        expect(result.output.value).toBe(42)                      // 真的能在工具进程里执行。
+    })
 })
 
 
