@@ -25,6 +25,7 @@
 
 import { asSchema } from 'ai'
 import { nanoid } from 'nanoid'
+import History from './history.js'
 
 
 // --- 给模型的说明书：一句话说清格式，再列出每个工具的 JSON Schema ---
@@ -207,16 +208,19 @@ const downgrade = messages => {
         if (message.role === 'system') { out.push(message); continue }
 
         if (message.role === 'tool') {
-            const content = (Array.isArray(message.content) ? message.content : []).flatMap(part => {
+            // 一条工具结果消息可能带着多个结果块，每个都写成一段 <tool_result> 文字，媒体块跟着保留。
+            const content = History.parts(message).flatMap(part => {
                 const blocks = outputBlocks(part.output)
-                return [{ type: 'text', text: `<tool_result name="${part.toolName}">\n${blocks.filter(one => one.type === 'text').map(one => one.text).join('\n')}\n</tool_result>` }, ...blocks.filter(one => one.type !== 'text')]
+                const text = blocks.filter(one => one.type === 'text').map(one => one.text).join('\n')
+                return [{ type: 'text', text: `<tool_result name="${part.toolName}">\n${text}\n</tool_result>` }, ...blocks.filter(one => one.type !== 'text')]
             })
             out.push({ role: 'user', content })
             continue
         }
 
-        if (message.role === 'assistant' && Array.isArray(message.content)) {
-            const content = message.content.flatMap(part => part.type === 'tool-call' ? [{ type: 'text', text: asToolCallText(part) }] : [part])
+        if (message.role === 'assistant') {
+            // 标准历史里的工具调用块，在这里改写成模型当初写的那样一段文字。
+            const content = History.parts(message).flatMap(part => part.type === 'tool-call' ? [{ type: 'text', text: asToolCallText(part) }] : [part])
             out.push({ ...message, content })
             continue
         }
@@ -228,8 +232,7 @@ const downgrade = messages => {
     return out.reduce((list, message) => {
         const previous = list.at(-1)
         if (!previous || previous.role !== message.role || message.role === 'system') { list.push(message); return list }
-        const asArray = one => Array.isArray(one.content) ? one.content : [{ type: 'text', text: String(one.content) }]
-        previous.content = [...asArray(previous), ...asArray(message)]
+        previous.content = [...History.parts(previous), ...History.parts(message)]
         return list
     }, [])
 }

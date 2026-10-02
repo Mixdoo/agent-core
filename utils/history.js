@@ -98,8 +98,13 @@ const compact = ({ id, content }) => ({ id: messageId(id), role: 'user', content
 const stored = message => ({ ...message, id: message.id ?? nanoid() })
 
 
-// content 既可能是内容块数组，也可能是一段纯文本；纯文本里不会有工具调用。
-const parts = message => (Array.isArray(message.content) ? message.content : [])
+// --- 一条消息的内容块：不管内容是数组还是一句纯文本，都给出块数组 ---
+// "消息内容长什么样"这件事只在这里判断一次：纯文本当成一个文字块，
+// 需要遍历内容块的地方（认工具调用、降级成纯对话消息、渲染）都调它，不用各自再判一遍。
+const parts = message => Array.isArray(message.content)
+    ? message.content
+    : message.content === undefined || message.content === null ? []
+    : [{ type: 'text', text: message.content }]
 
 // --- 这批消息里，哪些工具调用已经拿到了结果 ---
 // History.model 会摘掉没人应答的调用（供应商要求调用和结果必须配对）。
