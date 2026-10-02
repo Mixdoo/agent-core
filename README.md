@@ -122,6 +122,7 @@ bun main.js
 │   ├── tool-process.js   ← 工具真正跑起来的地方（子进程那一半）
 │   ├── context.js        ← 把历史消息裁剪成模型上下文
 │   └── compact.js        ← 上下文太长时自动压缩总结
+│   └── skill.js          ← 扫描技能目录，内置 skill 工具按需加载
 │
 └── utils/               ← 基础工具
     ├── llm.js            ← 底层 LLM 请求（支持多种协议）
@@ -381,6 +382,7 @@ import Agent from '@kernel4632/agent-core'
 | `options.history` | `array` | 初始历史消息，默认 `[]` |
 | `options.config` | `object` | 模型配置，见下表 |
 | `options.tools` | `object` | `Agent.tool.scan()` 的返回值 |
+| `options.skills` | `object` | `Agent.skill.scan()` 的返回值；不传就不启用技能 |
 | `options.callbacks` | `object` | 回调函数集合，见下表 |
 
 **`config` 字段：**
@@ -403,6 +405,7 @@ import Agent from '@kernel4632/agent-core'
 | `compactThreshold` | `0.8` | 压缩触发比例，0.8 表示到达 80% 时压缩 |
 | `compact` | `undefined` | 压缩单独用一套模型时写在这里，例如 `{ model: '便宜的小模型' }`；不写就和主模型共用 |
 | `output` | `undefined` | 结构化输出格式，例如 `Agent.output.object({ schema })`；不写就返回普通文字 |
+| `skills` | `undefined` | `Agent.skill.scan()` 的返回值。**默认零注入**：不传、或目录里一个技能都没有，system 一个字都不多、也不挂内置 skill 工具。扫到技能才会注入列表并挂上 `skill` 工具 |
 | `maxSteps` | `undefined` | 默认不限制模型轮数；主动设置正整数后，到上限先保存这一轮的工具结果，再返回 `step-limit` |
 | `maxToolConcurrency` | `undefined` | 默认不限制同一轮工具并发；主动设置后超出的调用排队 |
 | `retryMaxDelay` | `undefined` | 默认不限制单次退避时间；主动设置后限制毫秒数 |
@@ -819,6 +822,64 @@ History.turns(agent.history)   // 折成回合：[[user], [assistant, tool], [us
 
 ---
 
+### `Agent.skill`
+
+技能是"现成的操作步骤"：把一段固定的流程写成文件放进目录，模型需要时再按名字加载。和工具一样按目录扫描，但**默认零注入**——没扫到技能，系统的提示词一个字节都不多，也不会多出任何内置工具。
+
+```
+skills/
+├── create-mcp-server/
+│   └── SKILL.md
+└── review-pr/
+    └── SKILL.md
+```
+
+每个 `SKILL.md` 开头是一小段 frontmatter，下面才是正文：
+
+```md
+---
+name: review-pr
+description: 审查一个 PR 时使用。包含检查清单和固定话术。
+---
+
+# 审查 PR
+
+1. 先跑测试……
+2. 检查……
+```
+
+规则：
+
+- 技能名必须等于它所在的文件夹名（`review-pr/` 里就写 `name: review-pr`），对不上会当场报错，不做无声的猜测。
+- `description` 要写清"什么时候该用这个技能"，它会被注入系统提示词；正文不会。
+- 支持 YAML 的 `|` 和 `>` 写多行说明。
+
+扫描和接入：
+
+```js
+const skills = await Agent.skill.scan('./skills')               // 一个目录
+const skills = await Agent.skill.scan(builtinDir, userDir)      // 多个目录，后面的覆盖前面的同名技能
+const skills = await Agent.skill.scan(new URL('./skills', import.meta.url)) // 嵌进别人项目时用 URL
+
+const agent = Agent.create({ config, tools, skills })
+```
+
+**注入多少、什么时候注入：**
+
+- 传了 skills 且**扫到了技能**：往系统提示词追加一段「可用技能」，每行一个技能名和它的 `description`；同时挂上一个内置的 `skill` 工具。模型判断当前任务和某个技能对得上时，用 `skill` 工具把那个技能的**正文**读进来，再照着做。一次只加载一个，正文不会提前塞进上下文。
+- 没传 skills、传了 `null`、或目录里**一个技能都没有**：system 原样发出，工具表里也没有 `skill` 工具。这就是默认状态。
+
+`tools` 和 `skills` 可以分开传，也可以合成一份工具表：
+
+```js
+const tools = Agent.tool.merge(await Agent.tool.scan('./tools'), await Agent.skill.scan('./skills'))
+const agent = Agent.create({ config, tools })   // 合成后仍然只有扫到技能才会挂 skill 工具
+```
+
+`skill` 这个名字如果和你的某个工具重名，内置技能工具优先——别给工具起这个名字就行。
+
+---
+
 ## 运行测试
 
 ```bash
@@ -858,6 +919,7 @@ const agent = Agent.create({ config: { /* ... */ }, tools })
 | `Agent.version` | 包版本，排查问题时报得出来 |
 | `Agent.create(...)` | 创建 Agent 实例 |
 | `Agent.tool` | `.scan()` / `.execute()` |
+| `Agent.skill` | `.scan()` —— 扫描技能目录，见「`Agent.skill`」 |
 | `Agent.history` | `.user()` / `.assistant()` / `.tool()` / `.compact()` 造消息块；`.turns()` / `.render()` 读历史 |
 | `Agent.context` | `.build()` |
 | `Agent.compact` | `.run()` |

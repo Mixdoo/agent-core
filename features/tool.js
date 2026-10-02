@@ -250,7 +250,7 @@ const borrow = () => {
 // --- 执行一个工具。handlers 必须由调用方明确传入，不存在默认工具表 ---
 const execute = ({ name, input, handlers, signal, onOutput, limit = Infinity, concurrency }) => {
     const handler = handlers?.[name] // 用工具名从地址表里找到它在哪个文件。
-    if (!handler?.url) throw new Error(`Tool ${name} was not found in handlers`) // 认 url 而不是认对象，'__proto__' 这种名字才不会蒙混过关。
+    if (!handler?.url && !handler?.builtin) throw new Error(`Tool ${name} was not found in handlers`) // 认 url / builtin 而不是认对象，'__proto__' 这种名字才不会蒙混过关。
     const call = { id: String(++sequence), name, signal, onOutput, output: buffer(limit), done: false }
     const queue = queueOf(signal, concurrency) // 这次调用属于哪一批；同一批共用同一个上限。
 
@@ -293,7 +293,7 @@ const execute = ({ name, input, handlers, signal, onOutput, limit = Infinity, co
                 call.finish({ output: { type: 'error-text', value: `${call.output.text()}\n工具执行超时（${handler.timeout}ms）` }, error: 'timeout' })
             }, handler.timeout)
 
-            child.send({ callId: call.id, url: handler.url, mcp: handler.mcp, name, input, limit }) // MCP 连接只传数据，不能把执行函数移进主进程。
+            child.send({ callId: call.id, url: handler.url, mcp: handler.mcp, builtin: handler.builtin, skills: handler.skills, name, input, limit }) // MCP 连接只传数据，不能把执行函数移进主进程。
         }
 
         signal?.addEventListener('abort', stop, { once: true })
@@ -362,9 +362,10 @@ const mcp = async ({ transport, prefix = '', signal, timeout }) => {
 
 // --- 合并本地和远端工具集合 ---
 // 同名时后面的整项覆盖前面，描述和执行地址一起更新，不会各来自不同集合。
+// 技能集合也能直接合进来：它只多了 list / prompt 两个字段，这里只取 schema 和 handlers。
 const merge = (...sets) => ({
-    schema: Object.assign(Object.create(null), ...sets.map(set => set.schema)),
-    handlers: Object.assign(Object.create(null), ...sets.map(set => set.handlers)),
+    schema: Object.assign(Object.create(null), ...sets.map(set => set.schema ?? {})),
+    handlers: Object.assign(Object.create(null), ...sets.map(set => set.handlers ?? {})),
 })
 
 export default { scan, execute, mcp, merge }

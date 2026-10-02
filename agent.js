@@ -32,6 +32,10 @@ const tools = await Agent.tool.scan("./tools")
 // tools.schema   → 给 LLM 的工具描述
 // tools.handlers → 给执行器的工具处理表
 
+// 技能是可选的：每个技能一个文件夹、里面一份 SKILL.md。不传 skills 就零注入。
+// 扫到了才会往 system 追加一段技能列表、挂上内置的 skill 工具；目录是空的也一样零注入。
+const skills = await Agent.skill.scan("./skills")
+
 // 创建一个独立 Agent。参数会成为 Agent 的公开内部状态。
 const agent = Agent.create({
     history: [],
@@ -44,6 +48,7 @@ const agent = Agent.create({
         provider: { temperature: 0.3 },   // 要改模型参数就写在这里，不写就用模型自己的默认值
     },
     tools,        // Agent.tool.scan() 的返回值，直接整份传进来
+    skills,       // 可选：Agent.skill.scan() 的返回值
     callbacks: {},
 })
 
@@ -107,6 +112,7 @@ import Context from './features/context.js'   // 负责把历史消息裁剪成�
 import Compact from './features/compact.js'   // 负责把上下文压缩成总结文本
 import Loop from './features/loop.js'         // 负责驱动"请求模型 → 执行工具"的主循环
 import Tool from './features/tool.js'         // 负责扫描和执行工具文件
+import Skill from './features/skill.js'       // 负责扫描技能目录并按需加载技能
 import LLM from './utils/llm.js'              // 底层模型请求封装，也暴露给调用方直接使用
 import History from './utils/history.js'      // 负责创建标准格式的历史消息块
 import { version } from './package.json'      // 版本号只在 package.json 里写一次，打包时会被内联进产物
@@ -151,7 +157,7 @@ const track = (agent, controller, task) => {
 
 
 // 创建一台独立 Agent：传入的对象会成为这台机器公开、可继续修改的内部状态。
-const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}, handlers: {} }, callbacks = {} } = {}) => {
+const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}, handlers: {} }, skills = null, callbacks = {} } = {}) => {
     const agent = {
         id,       // Agent 的身份只用于区分实例和权限等待。
         history,  // 直接保存外部传入的数组，外部可以和 Agent 共同修改它。
@@ -183,6 +189,7 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
             noToolRounds: config.noToolRounds ?? DEFAULT_NO_TOOL_ROUNDS,                                                       // 无工具结束轮数只有这一个来源，Loop 直接用它。
         },
         tools,                       // Agent.tool.scan() 的返回值：{ schema, handlers }，后续 send 可以整份替换。
+        skills: skills ?? null,      // Agent.skill.scan() 的返回值；没传就是 null，system 和工具表都不受影响。
         callbacks: { ...callbacks }, // 回调逐项保存，后续 send 只覆盖传入的回调。
         running: null,               // null 表示空闲；运行对象保存当前停止控制器和任务。
     }
@@ -208,6 +215,7 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
         if ('history' in options) agent.history = options.history                                           // 传入空数组也代表明确覆盖历史。
         if ('config' in options) agent.config = { ...agent.config, ...options.config, provider: 'provider' in options.config ? { ...options.config.provider } : agent.config.provider, capabilities: 'capabilities' in options.config ? { ...agent.config.capabilities, ...options.config.capabilities } : agent.config.capabilities } // provider 整包替换；能力开关按字段合并，调用方只改一个开关就够。
         if ('tools' in options) agent.tools = options.tools                                                 // 工具是整体替换，不在 Agent 内部猜测如何合并。
+        if ('skills' in options) agent.skills = options.skills ?? null                                      // 技能整份替换；传 null 表示这台 Agent 不使用技能。
         if ('callbacks' in options) agent.callbacks = { ...agent.callbacks, ...options.callbacks }         // 回调逐项合并，避免替换一个回调时清掉其他回调。
 
         const previous = agent.running                              // 同步取走上一次运行，本函数末尾就把它顶替掉。
@@ -225,14 +233,21 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
             }
             agent.history.push(History.user({ content: input }))   // 等旧任务把它的收尾消息写完再写新指令，history 的顺序才和实际发生的顺序一致。
             const compactLLM = buildCompact(agent.config)  // 压缩用哪套模型在这里定下来，自动压缩和手动压缩共用同一个来源。
+
+            // 技能：扫到了才注入系统提示词、才挂上内置的 skill 工具。
+            // 没扫到（或没传）时这两行都是空操作，system 一个字节都不多，工具表也不动——默认零注入。
+            const active = agent.config.capabilities.tools === false || !agent.skills?.list?.length ? null : agent.skills
+            const system = active ? [agent.config.system, active.prompt].filter(Boolean).join('\n\n') : agent.config.system
+            const tools = active ? Tool.merge({ schema: agent.tools.schema, handlers: agent.tools.handlers }, active) : agent.tools // 内置技能工具和用户工具共用一张表，同名时技能工具优先。
+
             return Loop.run({
                 history: agent.history,           // Loop 直接使用这份公开数组，执行结果也会继续写入这里。
-                system: agent.config.system,      // 系统提示词本轮不变，直接取当前配置。
-                tools: agent.config.capabilities.tools === false ? {} : agent.tools.schema, // 兼容开关关闭工具时，模型请求和 Loop 都看不到工具。
+                system,                           // 系统提示词 + 本次真正启用的技能列表。
+                tools: agent.config.capabilities.tools === false ? {} : tools.schema, // 兼容开关关闭工具时，模型请求和 Loop 都看不到工具（技能工具也一并关掉）。
 llm: buildLLM(agent.config),      // 主请求用的模型配置。
                 buildContext: options => Context.build({ ...options, capabilities: agent.config.capabilities, mediaFallback: agent.config.mediaFallback }), // 上下文构建交给 Context 模块，并带上本次模型的能力开关。
                 compact: request => Compact.run({ ...request, llm: compactLLM, stream: compactLLM.stream }), // 压缩用哪套模型由 Agent 决定；Loop 只负责什么时候压、压哪些消息。
-                executeTool: request => Tool.execute({ ...request, handlers: agent.tools.handlers, limit: agent.config.maxToolOutput, concurrency: agent.config.maxToolConcurrency }), // 执行器需要的处理表、输出上限和并发上限由 Agent 补上，Loop 不用知道它们。
+                executeTool: request => Tool.execute({ ...request, handlers: tools.handlers, limit: agent.config.maxToolOutput, concurrency: agent.config.maxToolConcurrency }), // 执行器需要的处理表、输出上限和并发上限由 Agent 补上，Loop 不用知道它们。
                 sessionId: agent.id,             // 会话 ID 用于权限询问时区分实例。
                 ...callbacks,                     // 本次回调快照，后来的 send 不会改变正在运行的通知出口。
                 signal,                           // stop 和外部取消信号共同控制本次运行。
@@ -295,6 +310,7 @@ const Agent = {
     version,          // 包版本，来自 package.json；排查问题时上层要能报出来
     create,           // 创建 Agent 实例
     tool: Tool,       // 工具扫描和执行：Agent.tool.scan() / Agent.tool.execute()
+    skill: Skill,     // 技能扫描：Agent.skill.scan()；扫到技能才注入系统提示词、才挂内置 skill 工具
     history: History, // 造标准历史消息块：Agent.history.user() / assistant() / tool() / compact()
     context: Context, // 上下文构建：Agent.context.build()
     compact: Compact, // 生成压缩总结：Agent.compact.run()

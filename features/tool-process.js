@@ -8,6 +8,7 @@
 
 隔着进程的约定是几条消息，工具作者和调用方都不需要手写它们：
     主线程 → 工具进程   { callId, url, name, input, limit }      执行哪个文件里的哪个工具，输出最多留多长
+    主线程 → 工具进程   { callId, builtin, name, input, skills } 执行包内置的动作（目前只有按需加载技能）
     工具进程 → 主线程   { type: 'ready' }                        我起来了，可以派活
     工具进程 → 主线程   { callId, type: 'child', pid }           这次调用起了本地服务，取消时一起杀
     工具进程 → 主线程   { callId, type: 'output', stream, data } 工具产生了一段实时输出
@@ -187,10 +188,31 @@ const shape = (tool, result, limit) => {
 }
 
 
+// --- 内置动作：主线程把 handler.builtin 发过来时，跑包自己的一小段逻辑 ---
+// 目前只有「按需加载技能」这一个动作：把技能的正文读出来交给模型。
+// 放在子进程里跑，是因为工具进程本来就能读写文件，技能正文也没必要先经过主线程再发过来。
+const builtin = async data => {
+    if (data.name !== 'skill') throw new Error(`未知的内置动作：${data.name}`)
+
+    const path = data.skills?.[data.input?.skill]
+    if (!path) throw new Error(`找不到技能 "${data.input?.skill ?? ''}"。可用的技能见系统提示词的「可用技能」列表。`)
+
+    const raw = await Bun.file(path).text()
+    const body = raw.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, '').trim() // 去掉 frontmatter，只把正文交给模型。
+    return { type: 'text', value: body }
+}
+
+
 // --- 收到一次执行请求：找工具 → 跑工具 → 把成形后的结果发回去 ---
 process.on('message', async data => {
     current = data.callId                                                       // 本次调用的身份，console 输出也归到它名下。
     try {
+        if (data.builtin) {                                                     // 内置动作不加载任何工具文件。
+            const output = await builtin(data)
+            process.send({ callId: data.callId, type: 'done', output, stop: false })
+            return
+        }
+
         if (data.mcp) Bun.spawn = spawn                                        // MCP 客户端内部可能使用 Bun 的 spawn，不能把协议字节当普通日志读走。
         const module = await import(data.url)                                   // 工具进程是独立进程，工具文件在这里重新加载。
         const tool = data.mcp
