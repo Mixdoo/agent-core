@@ -30,6 +30,18 @@ const run = (command, args) => {
     return out
 }
 
+// GitHub 的接口偶尔会断连（实测出现过 EOF），网络问题重试几次就好；其他错误不重试，直接报出来。
+const github = async args => {
+    for (let attempt = 1; ; attempt += 1) {
+        try { return run('gh', args) }
+        catch (error) {
+            if (attempt >= 3 || !/EOF|timeout|ECONNRESET|connection|502|503|504/i.test(error.message)) throw error
+            console.log(`GitHub 连接不稳，${attempt * 3} 秒后重试…`)
+            await Bun.sleep(attempt * 3000)
+        }
+    }
+}
+
 // --- 1. 工作区必须干净：发布的内容要和仓库里的某一个提交对得上 ---
 const dirty = run('git', ['status', '--porcelain'])
 if (dirty) throw new Error(`工作区还有没提交的改动，先提交或撤销：\n${dirty}`)
@@ -48,8 +60,8 @@ const notes = `轻量的 AI Agent 核心：给它模型地址和工具文件，�
 const tag = `v${version}`
 const exists = Bun.spawnSync(['gh', 'release', 'view', tag, '--repo', slug], { cwd: root, stdout: 'ignore', stderr: 'ignore' }).exitCode === 0 // 查不到时 gh 以非零退出，这里只关心有没有，不当错误。
 try {
-    if (exists) run('gh', ['release', 'upload', tag, 'agent-core.tgz', pinned, '--clobber', '--repo', slug])
-    else run('gh', ['release', 'create', tag, 'agent-core.tgz', pinned, '--title', tag, '--notes', notes, '--repo', slug])
+    if (exists) await github(['release', 'upload', tag, 'agent-core.tgz', pinned, '--clobber', '--repo', slug])
+    else await github(['release', 'create', tag, 'agent-core.tgz', pinned, '--title', tag, '--notes', notes, '--repo', slug])
 } finally {
     await Promise.all([rm(`${root}agent-core.tgz`, { force: true }), rm(`${root}${pinned}`, { force: true })]) // 打出来的包只用于上传，不留在工作区。
 }
