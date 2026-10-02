@@ -40,11 +40,19 @@
 
 这个包需要 [Bun](https://bun.sh) 运行时（不支持 Node.js）。
 
-从 GitHub Release 安装（现在就能用）：
+从 GitHub Release 安装，永远拿到最新版：
 
 ```bash
-bun add https://github.com/kernel4632/agent-core/releases/download/v0.10.3/kernel4632-agent-core-0.10.3.tgz
+bun add https://github.com/kernel4632/agent-core/releases/latest/download/agent-core.tgz
 ```
+
+想锁死某个版本（比如 `0.10.3`），把链接里的 `latest/download` 换成 `download/v0.10.3`：
+
+```bash
+bun add https://github.com/kernel4632/agent-core/releases/download/v0.10.3/agent-core.tgz
+```
+
+以后升级到最新版，再运行一次第一条命令就行。
 
 > `bun add @kernel4632/agent-core` 现在**还不能用**：这个包尚未发布到 npm，那个名字在 npm 上不存在，运行会报 404。等发到 npm 后才能改用这条短命令，代码不用改。
 

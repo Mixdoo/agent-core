@@ -30,3 +30,16 @@
 bun test
 bun run build
 ```
+
+## 发布新版
+
+改好 `version` 之后运行一条命令，会自动跑测试、构建打包、发到 GitHub Release：
+
+```bash
+bun run release
+```
+
+安装链接固定用 `releases/latest/download/agent-core.tgz`，所以**发新版不需要改 README**。
+带版本号的包 `kernel4632-agent-core-X.Y.Z.tgz` 也会一起传上去，需要锁版本时用它。
+
+npm 那边有账号后，可以改用 `bun run publish:npm` 发到 npm。
