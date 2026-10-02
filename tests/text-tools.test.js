@@ -45,6 +45,12 @@ describe('从文字里读回工具调用', () => {
         expect(parsed.calls).toEqual([{ toolName: 'read_file', input: { path: 'src/main.js' } }, { toolName: 'add', input: { a: 7, b: 8 } }]) // 7 和 8 是数字，不是字符串。
     })
 
+    test('只有一个参数时，标签体本身就是参数值', () => {
+        // 有的模型写成 <read_file>src/main.js</read_file>（不套子标签）。只有一个参数时这没有歧义。
+        const parsed = TextTools.parse('<read_file>src/main.js</read_file>', spec)
+        expect(parsed.calls[0]).toEqual({ toolName: 'read_file', input: { path: 'src/main.js' } })
+    })
+
     test('没闭合的最后一块（被截断）仍然读得回来', () => {
         const parsed = TextTools.parse('<tool_call>\n{"name":"add","arguments":{"a":1,"b":1}}', spec)
         expect(parsed.calls[0].toolName).toBe('add')

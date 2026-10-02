@@ -396,6 +396,58 @@ describe('Loop', () => {
         } finally { server.stop(true) }
     })
 
+    test('工具返回 stop: true 时结束循环，reason 是 tool-stop', async () => {
+        // README 把这条列为三种正常结束方式之一，finish 工具就靠它。以前没有任何测试跑过它。
+        const seen = []
+        const history = [History.user({ content: '结束吧' })]
+        let round = 0
+
+        const answer = await Loop.run({
+            history,
+            system: '',
+            tools: { finish: { description: '结束', inputSchema: jsonSchema({ type: 'object', properties: { summary: { type: 'string' } } }) } },
+            llm: { baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'k', model: 'm', stream: false },
+            buildContext: Context.build,
+            compact: async () => '总结',
+            executeTool: async () => ({ output: { type: 'text', value: '做完了' }, stop: true }), // 工具主动要求结束。
+            onToolResult: one => seen.push(one.toolName),
+            onLLMFinish: result => {
+                round += 1
+                if (round === 1) result.toolCalls = [{ toolCallId: 'fin-1', toolName: 'finish', input: { summary: '做完了' } }]
+            },
+        })
+
+        expect(answer.reason).toBe('tool-stop')  // 整个循环因为工具要求而结束。
+        expect(seen).toEqual(['finish'])         // 那个工具确实跑过。
+        expect(round).toBe(1)                    // 结束后不再问模型，省一次请求。
+    })
+
+    test('工具执行抛错时变成一条错误结果交给模型，循环不中断', async () => {
+        // 模型幻觉出一个不存在的工具名时，Tool.execute 会抛错；这一轮不能让整个 Agent 崩掉。
+        const seen = []
+        const history = [History.user({ content: '开始' })]
+        let round = 0
+
+        await Loop.run({
+            history,
+            system: '',
+            tools: { ghost: { description: '不存在', inputSchema: jsonSchema({ type: 'object', properties: {} }) } },
+            llm: { baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'k', model: 'm', stream: false, noToolRounds: 1 },
+            buildContext: Context.build,
+            compact: async () => '总结',
+            executeTool: async () => { throw new Error('Tool ghost was not found in handlers') }, // 模拟找得到描述、找不到执行地址。
+            onToolResult: one => seen.push(one),
+            onLLMFinish: result => {
+                round += 1
+                if (round === 1) result.toolCalls = [{ toolCallId: 'g-1', toolName: 'ghost', input: {} }]
+            },
+        })
+
+        expect(seen[0].error).toContain('was not found')                                              // 上层收到的是一条失败结果，不是异常。
+        expect(history.some(message => Array.isArray(message.content) && message.content.some(part => part.output?.value?.includes('工具执行失败')))).toBe(true) // 失败信息写进了历史，模型看得到。
+        expect(round).toBe(2)                                                                          // 失败之后循环继续，模型还有机会换个方式。
+    })
+
     test('模型给出无法解析的工具调用时不执行它，而是告诉模型重来', async () => {
         const executed = []
         const history = [History.user({ content: '开始' })]

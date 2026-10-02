@@ -27,6 +27,33 @@ describe('多模态', () => {
         expect(() => History.user({ content: [] })).toThrow('empty array') // 空消息会被供应商拒收。
     })
 
+    test('音频、视频、普通文件块也按 mediaType 认出来，转成统一的 file 块', () => {
+        // 只测图片不够：调用方一样会用录音、视频、PDF。四种都要认出来，且都不丢掉 mediaType。
+        const parts = History.model({ role: 'user', content: [
+            { type: 'file', mediaType: 'audio/mpeg', data: 'AAA' },
+            { type: 'file', mediaType: 'video/mp4', data: 'BBB' },
+            { type: 'file', mediaType: 'application/pdf', data: 'CCC' },
+        ] }, { capabilities: { image: true, audio: true, video: true, file: true } }).content
+
+        expect(parts.map(one => one.mediaType)).toEqual(['audio/mpeg', 'video/mp4', 'application/pdf']) // 类型一个不丢。
+        expect(parts.every(one => one.type === 'file')).toBe(true)                                    // 都统一成 file 块。
+    })
+
+    test('file-data 和 file-url 两种写法都能转成标准 file 块', () => {
+        const parts = History.model({ role: 'user', content: [
+            { type: 'file-data', mediaType: 'image/png', data: 'DDD' },
+            { type: 'file-url', mediaType: 'image/jpeg', url: 'https://x/y.jpg' },
+        ] }, {}).content
+
+        expect(parts[0].data).toBe('DDD')            // 内嵌数据原样。
+        expect(parts[1].data).toBe('https://x/y.jpg') // 网址也能当数据取出来。
+    })
+
+    test('关掉媒体能力且不选择丢弃时，明确报错而不是悄悄发出去', () => {
+        // mediaFallback 默认是 'error'：调用方必须知道这次请求会失败，而不是拿到一份被截掉媒体的历史。
+        expect(() => History.model({ role: 'user', content: shot }, { capabilities: { image: false } })).toThrow('未启用')
+    })
+
     test('agent.send 可以直接发图片', async () => {
         const agent = Agent.create() // 没配 baseURL，这次 send 必然失败——我们只关心它没在入口那道检查就被拒掉。
         const error = await agent.send({ input: shot }).catch(caught => caught)
