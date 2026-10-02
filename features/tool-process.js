@@ -67,14 +67,14 @@ const relay = (source, stream) => {
     let ended = false                                                   // 子进程这条流是否已经读完。
     let wake = null                                                     // 工具正等着新数据时，用它唤醒。
 
-    void (async () => {
+    void (async () => {                                                 // 后台一路读原始管道，读到什么就转发什么。
         for await (const chunk of source) {
-            const text = typeof chunk === 'string' ? chunk : decoder.decode(chunk, { stream: true })
+            const text = typeof chunk === 'string' ? chunk : decoder.decode(chunk, { stream: true }) // 字节流转文字。
             report(stream, text)                                        // 实时转发给主线程，发完即走，不占内存。
             kept.push(text)                                             // 同一段也留给工具，它可能自己要读。
             size += text.length
             while (size > KEEP) size -= kept.shift().length             // 工具不读时丢最旧的，内存有明确上限。
-            wake?.()
+            wake?.()                                                    // 有新数据了，叫醒正在等的工具。
         }
         ended = true                                                    // 子进程关流了，等待中的工具该收尾了。
         wake?.()
@@ -84,7 +84,7 @@ const relay = (source, stream) => {
     return new ReadableStream({
         async pull(controller) {
             while (!kept.length && !ended) await new Promise(resolve => { wake = resolve }) // 没有新数据就挂起，等 relay 唤醒。
-            if (kept.length) controller.enqueue(encoder.encode(kept.shift()))
+            if (kept.length) controller.enqueue(encoder.encode(kept.shift()))               // 有数据就给它一段。
             else controller.close()                                     // 数据取完且子进程已结束，工具读到流尾。
         },
     })
@@ -104,7 +104,7 @@ Bun.spawn = (command, options = {}) => {
     const stdout = child.stdout && relay(child.stdout, 'stdout')        // 接管这一路，工具改读重放流。
     const stderr = child.stderr && relay(child.stderr, 'stderr')
 
-    return new Proxy(child, {
+    return new Proxy(child, {                                          // 用代理把 stdout / stderr 换成重放流，其余照旧。
         get(target, property) {
             if (property === 'stdout') return stdout
             if (property === 'stderr') return stderr
@@ -123,16 +123,15 @@ for (const name of ['log', 'info', 'warn', 'error']) {
     console[name] = (...args) => report('console', args.map(value => typeof value === 'string' ? value : Bun.inspect(value)).join(' '))
 }
 
-
 // --- 异步生成器工具：每个 yield 立刻发出去，最后把全部片段作为返回值 ---
 const collect = async result => {
-    if (!result || typeof result[Symbol.asyncIterator] !== 'function') return result
-    const chunks = []
+    if (!result || typeof result[Symbol.asyncIterator] !== 'function') return result // 普通返回值，不用收集。
+    const chunks = []                                                                 // 攒下每个 yield 出来的片段。
     for await (const chunk of result) {
         chunks.push(chunk)
         report('result', chunk)                                         // 逐段实时送达，上层不用等工具跑完。
     }
-    return chunks
+    return chunks                                                                     // 全部片段一起作为工具的返回值。
 }
 
 
@@ -156,13 +155,13 @@ const cut = (text, limit) => text.length <= limit ? text
 // 而且它会永久留在历史里——连压缩都救不回来，压缩本身就要把这坨东西发给模型去总结。
 // 但只截文本：图片这类媒体内容截一刀就彻底废了，截图工具的返回值本来就大，原样放行。
 const clip = (output, limit) => {
-    if (!limit) return output
+    if (!limit) return output // 没设上限就原样返回。
 
     // 多模态结果：逐块处理，文字块该截就截，媒体块一个字节不动。
     if (output.type === 'content') return { ...output, value: output.value.map(part => part.type === 'text' ? { ...part, text: cut(part.text, limit) } : part) }
 
-    const text = typeof output.value === 'string' ? output.value : JSON.stringify(output.value)
-    return text.length <= limit ? output : { type: 'text', value: cut(text, limit) }
+    const text = typeof output.value === 'string' ? output.value : JSON.stringify(output.value) // 先把输出变成一段文字。
+    return text.length <= limit ? output : { type: 'text', value: cut(text, limit) }            // 超了才截，并且明确告诉模型截过。
 }
 
 
@@ -173,9 +172,9 @@ const shape = (tool, result, limit) => {
     const value = result?.output ?? result                              // 工具可以返回 { output } 对象，也可以直接返回值。
     const output = tool.toModelOutput ? tool.toModelOutput(value)       // 工具自带格式化函数时优先用它。
         : BLOCK.has(result?.output?.type) ? result.output               // 工具自己就给了成形的输出块——图片和多模态结果走的就是这条路。
-        : value === undefined || value === null || value === '' ? { type: 'text', value: '工具执行成功，但没有输出' }
-        : typeof value === 'string' ? { type: 'text', value }
-        : { type: 'json', value }
+        : value === undefined || value === null || value === '' ? { type: 'text', value: '工具执行成功，但没有输出' } // 空返回也给一句交代。
+        : typeof value === 'string' ? { type: 'text', value }           // 返回字符串，直接当文字给模型。
+        : { type: 'json', value }                                       // 其余结构化值转成 JSON 块。
 
     // 边界校验：形状不对就在这里变成工具失败，绝不让它穿过去写进 history。
     if (!BLOCK.has(output?.type)) throw new TypeError(`工具输出块的 type 不合法：${JSON.stringify(output?.type)}，只能是 ${[...BLOCK].join(' / ')}`)
@@ -204,7 +203,7 @@ process.on('message', async data => {
     try {
         if (data.builtin) {                                                     // 内置动作不加载任何工具文件。
             const output = builtin(data)
-            process.send({ callId: data.callId, type: 'done', output, stop: false })
+            process.send({ callId: data.callId, type: 'done', output, stop: false }) // 内置动作不会要求停止循环。
             return
         }
 
@@ -213,7 +212,7 @@ process.on('message', async data => {
         const tool = data.mcp
             ? { execute: input => module.MCP.run(data.mcp, input ?? {}, pid => process.send({ callId: data.callId, type: 'child', pid })) } // 主进程持有本地服务 PID，取消时一起终止。
             : [module.default].flat().find(one => one.name === data.name) // 本地文件仍按工具名定位。
-        const result = await collect(await tool.execute(data.input))
+        const result = await collect(await tool.execute(data.input))            // 跑工具；生成器工具顺便把每个 yield 实时发出去。
         process.send({ callId: data.callId, type: 'done', output: shape(tool, result, data.limit), stop: result?.stop === true }) // stop 是工具主动要求结束整个循环。
     } catch (error) {
         process.send({ callId: data.callId, type: 'error', message: error?.message || String(error) }) // 工具抛错、toModelOutput 抛错、输出块非法、JSON 化失败，对模型来说都是"这个工具没成功"。

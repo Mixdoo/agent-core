@@ -72,7 +72,7 @@ const direct = new PQueue({ concurrency: 8 }) // 无 signal 的直接调用共�
 
 const queueOf = (signal, concurrency) => {
     if (!signal) { direct.concurrency = concurrency ?? pool.limit; return direct } // 没给上限就用池子上限，避免一次涌进几十个进程。
-    let queue = queues.get(signal)
+    let queue = queues.get(signal)                                                 // 这次运行已经有队列就复用。
     if (!queue) { queue = new PQueue({ concurrency: Infinity }); queues.set(signal, queue) } // 先建队列，再设上限。
     queue.concurrency = concurrency ?? Infinity // 本次调用给的上限就是这一批的上限。
     return queue
@@ -91,26 +91,26 @@ const queueOf = (signal, concurrency) => {
 const scan = async (...directories) => {
     const schema = {}   // 工具名 → 给 LLM 的工具描述（不含执行信息）。
     const handlers = {} // 工具名 → 工具在哪个文件里、它自己声明的超时（不给 LLM 看）。
-    const files = []
+    const files = []    // 所有目录里找到的工具文件，按顺序排好。
 
     // 先收集完整文件列表再排序，保证每次扫描同一目录的加载顺序都一样。
     // 目录之间保持传入顺序，所以"内置工具目录在前、用户工具目录在后"就等于让用户能覆盖内置工具。
     // 这个包只跑在 Bun 上，Bun 直接执行 TypeScript，所以 .ts 工具和 .js 一样认；.d.ts 只有类型、没有代码，跳过。
     for (const directory of directories.flat()) {
-        const cwd = directory instanceof URL ? fileURLToPath(directory) : String(directory)
+        const cwd = directory instanceof URL ? fileURLToPath(directory) : String(directory) // URL 和字符串都收，统一变成路径。
         const found = []
-        for await (const file of new Bun.Glob('**/*.{js,mjs,ts,mts}').scan({ cwd, absolute: true, onlyFiles: true })) if (!/\.d\.m?ts$/.test(file)) found.push(file)
-        files.push(...found.sort())
+        for await (const file of new Bun.Glob('**/*.{js,mjs,ts,mts}').scan({ cwd, absolute: true, onlyFiles: true })) if (!/\.d\.m?ts$/.test(file)) found.push(file) // 递归找工具文件，跳过纯类型声明。
+        files.push(...found.sort())                                                         // 排序，保证加载顺序稳定。
     }
 
     for (const file of files) {
         const url = pathToFileURL(file).href                                 // 绝对 file:// 地址；工具进程靠它自己重新加载工具文件（函数没法跨进程传）。
-        const module = await import(url)
+        const module = await import(url)                                     // 加载工具文件，拿到它的默认导出。
 
         for (const tool of [module.default].flat()) {                        // 一个文件可以导出一个工具，也可以导出一组工具。
             // scan 是工具文件进入系统的唯一入口，"什么算工具"只在这里判定一次。
             // 跳过而不是报错，工具目录里才能自由放共享常量、辅助函数和测试文件。
-            if (!tool?.name || typeof tool.execute !== 'function') continue
+            if (!tool?.name || typeof tool.execute !== 'function') continue  // 没有名字或没有执行函数的，不是工具。
 
             const { execute, toModelOutput, timeout, ...modelTool } = tool   // 执行相关的字段剥离出来，剩下的才给模型看。
 
@@ -137,20 +137,20 @@ const scan = async (...directories) => {
 const buffer = limit => {
     const head = []   // 开头那段，装满就不再变，够模型判断这是什么内容。
     const tail = []   // 结尾那段，滚动保留，结论和报错通常在这里。
-    let headSize = 0
-    let tailSize = 0
+    let headSize = 0  // head 已经攒了多少字符。
+    let tailSize = 0  // tail 当前占了多少字符。
     let dropped = 0   // 中间被丢掉多少字符，要如实告诉模型。
 
     return {
         push(chunk) {
-            if (headSize < limit * 0.7) { head.push(chunk); headSize += chunk.length; return }
-            tail.push(chunk)
+            if (headSize < limit * 0.7) { head.push(chunk); headSize += chunk.length; return } // 先装满开头那 70%。
+            tail.push(chunk)                                                                   // 之后都往结尾滚。
             tailSize += chunk.length
-            while (tailSize > limit * 0.3) { const gone = tail.shift(); tailSize -= gone.length; dropped += gone.length }
+            while (tailSize > limit * 0.3) { const gone = tail.shift(); tailSize -= gone.length; dropped += gone.length } // 结尾只留 30%，超了就从最旧的开始丢。
         },
         text: () => dropped
-            ? `${head.join('')}\n\n……[输出过长，中间省略 ${dropped} 个字符]……\n\n${tail.join('')}`
-            : head.join('') + tail.join(''),
+            ? `${head.join('')}\n\n……[输出过长，中间省略 ${dropped} 个字符]……\n\n${tail.join('')}` // 两头拼起来，中间如实标注丢了多少。
+            : head.join('') + tail.join(''),                                                     // 没丢过就直接拼。
     }
 }
 
@@ -158,11 +158,11 @@ const buffer = limit => {
 // --- 一个工具进程空出来了：先还池，再让排队的人去借 ---
 const release = child => {
     child.unref()                  // 空闲工具进程不能吊住事件循环，否则跑过一次工具的进程就再也退不出去。
-    pool.idle.push(child)
+    pool.idle.push(child)          // 放进空闲池，等下一次调用复用。
     if (pool.idle.length > pool.limit) { // 忙时允许多开，闲下来后仍只留默认数量。
-        const extra = pool.idle.shift()
+        const extra = pool.idle.shift()  // 多出来的进程。
         pool.live.delete(extra)
-        extra.kill()
+        extra.kill()                     // 杀掉，把内存还给系统。
     }
 }
 
@@ -170,7 +170,7 @@ const release = child => {
 // --- 收回本次调用启动的 MCP 服务进程 ---
 // SDK 的 close 发出正常退出信号，拒绝配合的服务仍需强制终止。完成和取消共用这一个出口。
 const stopChildren = call => {
-    for (const pid of call?.children ?? []) {
+    for (const pid of call?.children ?? []) {                 // children 是这次调用起的本地服务进程。
         try { process.kill(pid, 'SIGKILL') }
         catch (error) { if (error.code !== 'ESRCH') throw error } // 服务可能已经自行退出。
     }
@@ -181,8 +181,8 @@ const stopChildren = call => {
 const retire = child => {
     stopChildren(pool.busy.get(child)) // 主进程登记了服务 PID，执行进程崩溃时也能清理。
     if (!pool.live.delete(child)) return // 已经退役过了。主动杀掉时这里会走一遍，child.exited 之后还会再走一遍。
-    pool.busy.delete(child)
-    pool.idle = pool.idle.filter(one => one !== child)
+    pool.busy.delete(child)              // 不再记着它手上有哪次调用。
+    pool.idle = pool.idle.filter(one => one !== child) // 从空闲池里也摘掉。
 }
 
 
@@ -190,17 +190,17 @@ const retire = child => {
 // 用 stdin 而不是临时文件或 bun -e：不落盘、不用清理、没有命令行长度上限
 // （bun -e 在 8KB 到 32KB 之间就会 ENAMETOOLONG，而工具进程源码已经接近 8KB，没有余量）。
 const open = () => {
-    let ready
-    const waiting = new Promise(resolve => { ready = resolve })
+    let ready                                   // 握手完成时调用它。
+    const waiting = new Promise(resolve => { ready = resolve }) // 等工具进程报告"我起来了"。
 
-    const child = Bun.spawn([runtime, '-'], {
+    const child = Bun.spawn([runtime, '-'], {   // 起一个 bun 进程，源码从标准输入喂进去。
         stdin: 'pipe',
         stdout: 'inherit', // 工具的输出走 IPC，这里留给 bun 自己的启动报错，坏了能看见。
         stderr: 'inherit',
-        ipc(message) {
+        ipc(message) {   // 工具进程发回来的每条消息都在这里处理。
             if (message.ready) return ready(child) // 握手：工具进程起来了才派活。
 
-            const call = pool.busy.get(child)
+            const call = pool.busy.get(child)      // 这个进程当前在跑哪次调用。
             if (call?.id !== message.callId) return  // 上一次调用的迟到消息；这个工具进程已经换人了，丢掉。
 
             if (message.type === 'child') {
@@ -241,8 +241,8 @@ const open = () => {
 
 // --- 借一个工具进程：池里有空闲就直接用，没有就开一个新的 ---
 const borrow = () => {
-    const free = pool.idle.pop()
-    if (!free) return open()
+    const free = pool.idle.pop() // 从空闲池拿一个。
+    if (!free) return open()     // 没有空闲的就新开一个。
     free.ref()             // 借出期间要吊住事件循环，否则工具还没跑完进程就退了。
     return free
 }
@@ -252,21 +252,21 @@ const borrow = () => {
 const execute = ({ name, input, handlers, signal, onOutput, limit = Infinity, concurrency }) => {
     const handler = handlers?.[name] // 用工具名从地址表里找到它在哪个文件。
     if (!handler?.url && !handler?.builtin) throw new Error(`Tool ${name} was not found in handlers`) // 认 url / builtin 而不是认对象，'__proto__' 这种名字才不会蒙混过关。
-    const call = { id: String(++sequence), name, signal, onOutput, output: buffer(limit), done: false }
+    const call = { id: String(++sequence), name, signal, onOutput, output: buffer(limit), done: false } // 这次调用的全部状态。
     const queue = queueOf(signal, concurrency) // 这次调用属于哪一批；同一批共用同一个上限。
 
     return new Promise(resolve => {
-        const interrupted = one => ({ output: { type: 'error-text', value: `${one.output.text()}\n工具执行已中断` }, interrupted: true })
+        const interrupted = one => ({ output: { type: 'error-text', value: `${one.output.text()}\n工具执行已中断` }, interrupted: true }) // 被取消时把已产出的内容一起交回。
 
         // 取消：把这一轮的工具全部杀掉，触发即死，已产出的输出拼进结果还给模型。
         // 只杀 signal 相同的那些，另一台 Agent 的工具不会被连坐。
         // 用 resolve 而不是 reject —— 取消也是一条模型能读的工具结果，历史里不会留下没人应答的调用。
         const stop = () => {
-            for (const [child, running] of [...pool.busy]) {
+            for (const [child, running] of [...pool.busy]) {   // 池里正在跑的所有调用。
                 if (running.signal !== signal) continue // 不是这一轮的工具，让它继续跑。
-                retire(child)
+                retire(child)                           // 从池子里摘掉。
                 child.kill()                            // 工具此刻在跑什么都不重要，进程被杀就是杀，孙进程一起带走。
-                running.finish(interrupted(running))
+                running.finish(interrupted(running))    // 那次调用也收口。
             }
             call.finish(interrupted(call))              // 这次调用自己也要收口：它还排在队里、或已经借到进程，都算结束。
         }
@@ -278,18 +278,18 @@ const execute = ({ name, input, handlers, signal, onOutput, limit = Infinity, co
             clearTimeout(call.timer)                    // 超时看门狗跟着这次调用一起结束。
             signal?.removeEventListener('abort', stop)  // 一次调用只挂一个监听器，跑完就摘，不随调用次数累积。
             call.done2?.()                              // 告诉队列这次调用真的结束了，名额可以让给同批的下一个。
-            resolve(result)
+            resolve(result)                             // 把结果交给等待这次调用的上层。
         }
 
         // 真正开跑：占住一个进程，挂上看门狗，把活派给它。
         const start = child => {
             if (call.done) return release(child)        // 排队时就被取消了，拿到也不跑，直接把进程让回池子。
-            pool.busy.set(child, call)
+            pool.busy.set(child, call)                  // 记下这个进程现在归这次调用。
 
             // 只有工具自己声明了 timeout 才有看门狗。不设全局超时是有意的：
             // 阻塞型工具（等 IM 消息、盯文件变化）是这个包支持的正常用法，全局超时会把它们全废掉。
             if (handler.timeout) call.timer = setTimeout(() => {
-                retire(child)
+                retire(child)                           // 超时的进程不回池。
                 child.kill()                            // 挂死的工具只能杀；杀掉的工具进程不回池。
                 call.finish({ output: { type: 'error-text', value: `${call.output.text()}\n工具执行超时（${handler.timeout}ms）` }, error: 'timeout' })
             }, handler.timeout)
@@ -297,7 +297,7 @@ const execute = ({ name, input, handlers, signal, onOutput, limit = Infinity, co
             child.send({ callId: call.id, url: handler.url, mcp: handler.mcp, builtin: handler.builtin, skills: handler.skills, name, input, limit }) // MCP 连接只传数据，不能把执行函数移进主进程。
         }
 
-        signal?.addEventListener('abort', stop, { once: true })
+        signal?.addEventListener('abort', stop, { once: true }) // 取消信号一到就停。
         if (signal?.aborted) return stop()              // 进来之前就已经取消了，直接停。
 
         // 排队、并发上限、占住名额都由队列负责：这个任务要等整次调用结束才算完，
@@ -315,14 +315,14 @@ const execute = ({ name, input, handlers, signal, onOutput, limit = Infinity, co
 // MCP 的参数描述里只有名字、说明和是否必填，正好是一个对象 Schema 的全部内容。
 const promptSchema = parameters => jsonSchema({
     type: 'object',
-    properties: Object.fromEntries(parameters.map(one => [one.name, { type: 'string', ...(one.description ? { description: one.description } : {}) }])),
-    required: parameters.filter(one => one.required).map(one => one.name),
+    properties: Object.fromEntries(parameters.map(one => [one.name, { type: 'string', ...(one.description ? { description: one.description } : {}) }])), // 每个参数都当字符串。
+    required: parameters.filter(one => one.required).map(one => one.name), // 标了必填的才进 required。
 })
 
 // --- 服务端公开的资源写进工具描述，模型才知道有哪些地址可读 ---
 // 资源和工具描述一样是发现时固定的；服务端资源变了要重新扫一次。
 const resourceTool = resources => ({
-    description: `读取 MCP 服务端公开的资源，uri 从下面挑：\n${resources.map(one => `- ${one.uri}${one.template ? '（模板，占位符自行替换）' : ''}${one.description ? `：${one.description}` : ''}`).join('\n')}`,
+    description: `读取 MCP 服务端公开的资源，uri 从下面挑：\n${resources.map(one => `- ${one.uri}${one.template ? '（模板，占位符自行替换）' : ''}${one.description ? `：${one.description}` : ''}`).join('\n')}`, // 可用地址直接列给模型。
     inputSchema: jsonSchema({ type: 'object', properties: { uri: { type: 'string', description: '要读取的资源地址' } }, required: ['uri'] }),
 })
 
@@ -334,26 +334,26 @@ const mcp = async ({ transport, prefix = '', signal, timeout }) => {
     transport = structuredClone(transport) // 入口只接受连接数据；函数或客户端对象在派发前直接报错，避免 IPC 无法序列化后挂起。
     const source = { url: import.meta.url, timeout } // 打包后 import.meta.url 自动指向完整产物。
     const listed = await execute({ name: 'discover', input: {}, handlers: { discover: { ...source, mcp: { transport, kind: 'discover' } } }, signal }) // 发现也在可强杀进程中完成。
-    if (listed.interrupted) throw new DOMException('MCP discovery aborted', 'AbortError')
+    if (listed.interrupted) throw new DOMException('MCP discovery aborted', 'AbortError') // 发现被取消。
     if (listed.error) throw new Error(listed.output.value) // 发现失败必须通知调用方，不返回空集合伪装成功。
-    const discovered = listed.output.value
+    const discovered = listed.output.value                // 服务端公开的三种原语。
     const schema = Object.create(null) // 外部工具名不影响对象原型。
     const handlers = Object.create(null)
 
     for (const tool of discovered.tools) {
         const name = prefix + tool.name // 多个服务用不同前缀就不会撞名。
-        schema[name] = { description: tool.description, inputSchema: jsonSchema(tool.inputSchema) }
+        schema[name] = { description: tool.description, inputSchema: jsonSchema(tool.inputSchema) } // 远端工具直接变成一个本地工具。
         handlers[name] = { ...source, mcp: { transport, kind: 'tool', name: tool.name } } // 原始名字留给服务端。
     }
 
     for (const prompt of discovered.prompts) {
         const name = prefix + prompt.name // 提示词和工具共用一个命名空间，同名时后发现的覆盖先发现的。
-        schema[name] = { description: prompt.description ?? `MCP 提示词 ${prompt.name}`, inputSchema: promptSchema(prompt.arguments) }
+        schema[name] = { description: prompt.description ?? `MCP 提示词 ${prompt.name}`, inputSchema: promptSchema(prompt.arguments) } // 提示词也变成一个带参数的工具。
         handlers[name] = { ...source, mcp: { transport, kind: 'prompt', name: prompt.name } }
     }
 
     if (discovered.resources.length) { // 服务端没公开资源时不多一个用不上的工具。
-        const name = prefix + 'read_resource'
+        const name = prefix + 'read_resource' // 所有资源合并成一个读取工具，uri 当参数。
         schema[name] = resourceTool(discovered.resources)
         handlers[name] = { ...source, mcp: { transport, kind: 'resource' } }
     }
@@ -364,8 +364,8 @@ const mcp = async ({ transport, prefix = '', signal, timeout }) => {
 // --- 合并本地和远端工具集合 ---
 // 同名时后面的整项覆盖前面，描述和执行地址一起更新，不会各来自不同集合。
 const merge = (...sets) => ({
-    schema: Object.assign(Object.create(null), ...sets.map(set => set.schema ?? {})),
-    handlers: Object.assign(Object.create(null), ...sets.map(set => set.handlers ?? {})),
+    schema: Object.assign(Object.create(null), ...sets.map(set => set.schema ?? {})),     // 只取工具集合的 schema 部分。
+    handlers: Object.assign(Object.create(null), ...sets.map(set => set.handlers ?? {})), // 和 handlers 部分。
 })
 
 export default { scan, execute, mcp, merge }
