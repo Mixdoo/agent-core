@@ -119,4 +119,15 @@ describe('Agent 挂上技能', () => {
         const result = await Tool.execute({ name: 'skill', input: { skill: 'nope' }, handlers: skills.handlers })
         expect(result.output.value).toContain('找不到技能')
     })
+
+    test('技能名撞上原型链上的名字（constructor 等）时也当成"找不到"', async () => {
+        // 技能表是普通对象，skills['constructor'] 会取到继承来的函数而不是 undefined。
+        // 不挡住这条路，模型瞎写一个 constructor 就会拿到一段函数字符串，而不是"这个名字不存在"。
+        const skills = await Skill.scan(SKILLS)
+        for (const name of ['constructor', 'toString', 'hasOwnProperty', '__proto__']) {
+            const result = await Tool.execute({ name: 'skill', input: { skill: name }, handlers: skills.handlers })
+            expect(result.output.value).toContain('找不到技能') // 而不是返回一个函数。
+            expect(result.output.value).not.toContain('native code')
+        }
+    })
 })

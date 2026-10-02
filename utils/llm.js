@@ -146,10 +146,12 @@ const connect = ({ baseURL, apiKey, model, protocol, system, headers, cache, bod
 
 // --- 发一次请求：流式和非流式在这里分叉，但对外表现完全一致 ---
 // markAttempt 把本笔请求的限时信号交回给 chat，错误分类靠它区分"限时到点"和"用户取消"。
-const request = async ({ input, stream, requestTimeout, markAttempt, onLLMEvent }) => {
+// baseSignal 是调用方自己的取消信号，每轮重试都从它重新组合限时信号——
+// 不能在 input.abortSignal 上叠加：上一轮的限时定时器还在跑，叠加会让它在中途打断下一轮。
+const request = async ({ input, stream, requestTimeout, markAttempt, onLLMEvent, baseSignal }) => {
     const attempt = Number.isFinite(requestTimeout) && requestTimeout > 0 ? AbortSignal.timeout(requestTimeout) : null // 重试各自重新计时。
     markAttempt(attempt)
-    if (attempt) input.abortSignal = input.abortSignal ? AbortSignal.any([input.abortSignal, attempt]) : attempt
+    input.abortSignal = attempt ? (baseSignal ? AbortSignal.any([baseSignal, attempt]) : attempt) : baseSignal
 
     // 非流式：等待模型完整返回，供应商错误会直接抛出来。
     if (!stream) {
@@ -304,7 +306,7 @@ const chat = async ({
     const run = async text => {
         const { input, spec } = await build(text)
         let attempt = null // 本笔请求的限时信号；label 靠它区分"限时到点"和"用户取消"。
-        const once = () => request({ input, stream, requestTimeout, markAttempt: timeout => { attempt = timeout }, onLLMEvent }) // 流式和非流式在 request 里分叉，对外表现一致。
+        const once = () => request({ input, stream, requestTimeout, markAttempt: timeout => { attempt = timeout }, onLLMEvent, baseSignal: signal }) // 流式和非流式在 request 里分叉，对外表现一致。
 
         // 重试包在这里，而不是让每个调用方各自包一层：这样"发一次模型请求"在整个项目里只有一条路，
         // 主循环和上下文压缩自动走同一套重试、同一套退避、同一个 onRetry 通知。

@@ -186,6 +186,29 @@ describe('Tool 执行', () => {
         expect(exited).not.toBe('HUNG')
     })
 
+    test('工具进程握手完成前就死掉时，调用立刻失败而不是挂住', async () => {
+        // 进程能起来、但在发出 ready 之前就退出（runtime 不对、bun - 不支持、启动即 OOM）。
+        // 这种情况 pool.busy 里还没有这次调用，finish 拿不到它，必须由 borrow 一侧解除挂起。
+        const child = Bun.spawn(['bun', '-e', `
+            import Tool from '${new URL('../features/tool.js', import.meta.url).href}'
+            const tools = await Tool.scan('./tests/fixtures/tools')
+            // 假进程：能起、能收 stdin，但立刻 exited，从不发 ready。
+            Bun.spawn = () => ({
+                stdin: { write() {}, end() {} },
+                unref() {}, ref() {}, send() {}, kill() {},
+                get exited() { return Promise.resolve(1) },
+            })
+            const result = await Tool.execute({ name: 'echo', input: { value: 'x' }, handlers: tools.handlers })
+            console.log(result.error ? 'ERROR:' + result.error : 'NOERROR')
+        `], { cwd: process.cwd(), stdout: 'pipe', stderr: 'pipe' })
+
+        const exited = await Promise.race([child.exited.then(() => child.stdout.text()), Bun.sleep(8000).then(() => 'HUNG')])
+        if (exited === 'HUNG') child.kill()
+
+        expect(exited).not.toBe('HUNG') // 挂住的话这里失败。
+        expect(exited).toContain('ERROR')
+    })
+
     test('自带 toModelOutput 的工具返回循环引用时也不会毒化 history', async () => {
         const tools = await Tool.scan(CYCLIC_FORMAT)
         const result = await Tool.execute({ name: 'cyclicformat', input: {}, handlers: tools.handlers })

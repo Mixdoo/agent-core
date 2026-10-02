@@ -372,6 +372,31 @@ describe('单笔请求限时与错误分类', () => {
         expect(error.kind).toBe('aborted')
     })
 
+    test('重试时每笔请求各自重新计时，上一轮的限时不会打断下一轮', async () => {
+        // 第一次请求立刻失败（503），它的限时定时器（500ms）在重试开始后仍会到点。
+        // 第二轮约 1000ms 才开始：旧写法在旧信号上叠加，那个已到点的定时器会让第二轮一开场就被判超时。
+        // 正确写法每轮从 baseSignal 重新组合，第二轮拿到的是属于自己的完整限时。
+        let calls = 0
+        const server = Bun.serve({
+            port: 0,
+            async fetch() {
+                calls += 1
+                if (calls === 1) return Response.json({ error: { message: '负载满' } }, { status: 503 }) // 立刻失败，限时定时器随后到点。
+                await Bun.sleep(200)                                                                     // 第二轮很快成功。
+                return Response.json({ choices: [{ index: 0, message: { role: 'assistant', content: '成功' }, finish_reason: 'stop' }], usage: {} })
+            },
+        })
+        try {
+            const result = await LLM.chat({
+                baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'k', model: 'm',
+                messages: [{ role: 'user', content: 'hi' }], stream: false,
+                requestTimeout: 500, retryMaxElapsed: 20000,
+            })
+
+            expect(result.text).toBe('成功') // 第二轮没有被上一轮的旧定时器掐断。
+        } finally { server.stop(true) }
+    })
+
     for (const [status, kind] of [[401, 'auth'], [403, 'auth'], [429, 'limit'], [400, 'request'], [500, 'server']]) {
         test(`HTTP ${status} 归到 ${kind}`, async () => {
             const server = Bun.serve({ port: 0, fetch: () => Response.json({ error: { message: 'x' } }, { status }) })
