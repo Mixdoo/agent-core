@@ -45,29 +45,37 @@ const TOOL = 'skill'
 // 一个技能的正文有多大看作者，但描述太长会把系统提示词撑爆。Roo Code 的上限是 1024。
 const MAX_DESCRIPTION = 1024
 
+// 内置 skill 工具只收一个参数：要加载哪个技能。
+const SKILL_SCHEMA = jsonSchema({
+    type: 'object',
+    properties: { skill: { type: 'string', description: '要加载的技能名' } },
+    required: ['skill'],
+})
+
 
 // --- 一份 frontmatter 的最小解析：key: value，每行一个 ---
 // 不引入 YAML 库：技能作者写的基本就是几个单行字段，多出来的语法支持属于过度设计。
 // 但支持 YAML 的 | 和 >（长描述最常见的写法），把后续缩进行拼起来。
+// 返回 { meta, body }：meta 是 frontmatter 里的字段，body 是下面正文（加载技能时才用）。
 const frontmatter = raw => {
-    const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/.exec(raw)
+    const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/.exec(raw)   // 把文件切成"--- 包起来的头"和"正文"两段。
     if (!match) throw new Error('SKILL.md 缺少 frontmatter：文件开头要用 --- 包住 name 和 description')
 
-    const meta = {}
-    const lines = match[1].split(/\r?\n/)
+    const meta = {}                                                          // 头里的字段：name、description 等。
+    const lines = match[1].split(/\r?\n/)                                    // 头按行拆开。
     for (let index = 0; index < lines.length; index += 1) {
-        const pair = /^([A-Za-z][\w-]*):\s*(.*)$/.exec(lines[index])
-        if (!pair) continue
+        const pair = /^([A-Za-z][\w-]*):\s*(.*)$/.exec(lines[index])         // 只认 "键: 值" 这种单行写法。
+        if (!pair) continue                                                  // 认不出的行跳过（比如空行、注释）。
         const [, key, raw] = pair
-        if (raw === '|' || raw === '>') { // 长文本：吃掉后面所有缩进行。
+        if (raw === '|' || raw === '>') {                                    // 长文本：吃掉后面所有缩进行。
             const block = []
-            while (index + 1 < lines.length && /^\s+\S/.test(lines[index + 1])) block.push(lines[++index].trim())
-            meta[key] = block.join(raw === '>' ? ' ' : '\n')
+            while (index + 1 < lines.length && /^\s+\S/.test(lines[index + 1])) block.push(lines[++index].trim()) // 缩进更深的行都属于这段。
+            meta[key] = block.join(raw === '>' ? ' ' : '\n')                 // > 折行成空格，| 保留换行。
             continue
         }
-        meta[key] = raw.trim().replace(/^["']|["']$/g, '')
+        meta[key] = raw.trim().replace(/^["']|["']$/g, '')                   // 普通单行，去掉两头引号。
     }
-    return { meta, body: match[2].trim() }
+    return { meta, body: match[2].trim() }                                   // 正文去掉首尾空白。
 }
 
 
@@ -78,15 +86,15 @@ const frontmatter = raw => {
 //   Agent.skill.scan(builtinDir, userDir)                  多个目录，后面的覆盖前面的同名技能
 //   Agent.skill.scan(new URL('./skills', import.meta.url)) 直接给 URL，嵌进别人项目时用这个
 const scan = async (...directories) => {
-    const skills = new Map() // name → { name, description, path }，同名后扫到的覆盖先扫到的。
+    const skills = new Map() // name → { name, description, path, body }，同名后扫到的覆盖先扫到的。
 
-    for (const directory of directories.flat()) {
-        const cwd = directory instanceof URL ? fileURLToPath(directory) : String(directory)
+    for (const directory of directories.flat()) {                                     // 逐个目录扫，顺序就是覆盖顺序。
+        const cwd = directory instanceof URL ? fileURLToPath(directory) : String(directory) // URL 和字符串都收，统一变成路径。
 
         let files
         try {
             files = []
-            for await (const file of new Bun.Glob('**/SKILL.md').scan({ cwd, absolute: true, onlyFiles: true })) files.push(file)
+            for await (const file of new Bun.Glob('**/SKILL.md').scan({ cwd, absolute: true, onlyFiles: true })) files.push(file) // 每个技能文件夹里的那份 SKILL.md。
         } catch (error) {
             if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') continue // 技能目录还没建是正常状态（就是"没有技能"），不当错误。工具目录走的是另一条规则：写错路径要立刻发现。
             throw error
@@ -123,11 +131,7 @@ const scan = async (...directories) => {
     const schema = {
         [TOOL]: {
             description: '按名字加载一个技能的完整操作步骤。技能名从系统提示词的「可用技能」列表里选。',
-            inputSchema: jsonSchema({
-                type: 'object',
-                properties: { skill: { type: 'string', description: '要加载的技能名' } },
-                required: ['skill'],
-            }),
+            inputSchema: SKILL_SCHEMA,
         },
     }
 
