@@ -1,0 +1,21 @@
+# 依赖自动更新：每周检查一次，有新版本就开 PR。
+# CI 会自动跑测试，绿了你点合并就行；红了说明新版本有不兼容，PR 先放着。
+
+version: 2
+updates:
+  - package-ecosystem: bun        # 官方支持 bun.lock（Bun >= 1.1.39），PR 会同时更新 lockfile
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      ai-sdk:                     # AI SDK 一家的包一起升，免得版本互相对不上
+        patterns: ['ai', '@ai-sdk/*']
+      others:
+        patterns: ['*']
+        exclude-patterns: ['ai', '@ai-sdk/*']
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

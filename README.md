@@ -1,5 +1,8 @@
 ﻿# @kernel4632/agent-core
 
+[![CI](https://github.com/kernel4632/agent-core/actions/workflows/ci.yml/badge.svg)](https://github.com/kernel4632/agent-core/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/kernel4632/agent-core)](https://github.com/kernel4632/agent-core/releases/latest)
+
 一个轻量的 AI Agent 核心包。给它一个 LLM 地址和一堆工具文件，它就能自动循环"问模型 → 执行工具 → 再问模型"，直到任务完成。
 
 ---

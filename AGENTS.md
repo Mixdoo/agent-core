@@ -22,6 +22,8 @@
 
 推送顺序固定为：改版本号 → 跑测试 → 提交 → 推送。
 
+需要用命令改的话：`bun run bump patch`（或 `minor` / `major`），它只改 version 一处。
+
 ## 验证命令
 
 改完代码必须跑这两条，都通过才算完成：
@@ -31,15 +33,22 @@ bun test
 bun run build
 ```
 
+推到 main 之后，GitHub Actions 也会自动再跑一遍测试和构建（`.github/workflows/ci.yml`）。
+
 ## 发布新版
 
-改好 `version` 之后运行一条命令，会自动跑测试、构建打包、发到 GitHub Release：
+一条命令搞定，自动测 → 升版本号 → 提交 → 打标签 → 推送：
 
 ```bash
-bun run release
+bun run release patch     # 或 minor / major
 ```
+
+推送标签后，GitHub Actions（`.github/workflows/release.yml`）自动构建、打包、建 Release 并上传附件。
+本机不需要登录 gh，进度在 https://github.com/kernel4632/agent-core/actions 看。
 
 安装链接固定用 `releases/latest/download/agent-core.tgz`，所以**发新版不需要改 README**。
 带版本号的包 `kernel4632-agent-core-X.Y.Z.tgz` 也会一起传上去，需要锁版本时用它。
+
+依赖的新版本由 Dependabot 每周开 PR（`.github/dependabot.yml`），CI 绿了合并即可。
 
 npm 那边有账号后，可以改用 `bun run publish:npm` 发到 npm。
