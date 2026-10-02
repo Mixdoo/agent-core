@@ -49,11 +49,22 @@ const result = await Loop.run({
     onStep: (step) => { },                 // 一轮模型和工具都完成后
     onCompact: (event) => { },             // 压缩过程通知
  })
- // result = { reason: 'no-tool' | 'tool-stop' | 'step-limit', text: '最后一轮模型生成的文字' }
+ // result = { reason: 'no-tool' | 'tool-stop' | 'step-limit', text: '最后一轮模型生成的文字', steps: 模型轮数, usage: { inputTokens, outputTokens, totalTokens, cacheReadTokens, cacheWriteTokens } }
  */
 
 import History from '../utils/history.js'
 import LLM from '../utils/llm.js'
+
+// --- 把一次请求的用量加进合计 ---
+// 各供应商给的字段不一定齐全（有的不报缓存，有的连 total 都没有），缺的按 0 算，不让一个 undefined 把合计变成 NaN。
+const add = (total, usage = {}) => {
+    const details = usage.inputTokenDetails ?? {}
+    total.inputTokens += usage.inputTokens ?? 0
+    total.outputTokens += usage.outputTokens ?? 0
+    total.totalTokens += usage.totalTokens ?? (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0)
+    total.cacheReadTokens += details.cacheReadTokens ?? usage.cachedInputTokens ?? 0
+    total.cacheWriteTokens += details.cacheWriteTokens ?? 0
+}
 
 const run = async ({
     history, system, tools, llm, buildContext, compact, executeTool, sessionId, signal,                                 // 数据、LLM 参数、功能模块和取消信号
@@ -65,6 +76,7 @@ const run = async ({
     let noToolCount = 0        // 记录连续没有工具调用的模型回合。
     let steps = 0              // 一次 send 发给模型的轮数；重试属于同一轮，压缩不算任务轮次。
     let temporaryPrompt = null  // 工具提示只临时发送给模型，不写入 history。
+    const usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 } // 整次 send 的用量合计；算钱、看缓存命中都从这里读，不用自己在回调里累加。
 
     while (true) {
         // --- 每轮开始：先响应取消信号 ---
@@ -92,8 +104,9 @@ const run = async ({
         const request = { messages: temporaryPrompt ? [...context.messages, History.user({ content: temporaryPrompt })] : context.messages, tools } // 临时提示只挂在本次请求上。
         const result = await LLM.chat({ ...llm, ...request, signal, onLLMEvent, onLLMStart, onRetry })
         steps += 1            // 模型完整回答后才算这一轮，失败重试由 LLM.chat 自己处理。
+        add(usage, result.usage)
         await onLLMFinish?.(result) // 上层拿到完整 result，自行选择 usage 或其他字段。
-        const answer = { text: result.text, ...('output' in result ? { output: result.output } : {}) } // 最终对象和文字来自同一轮，不能从旧历史猜结果。
+        const answer = { text: result.text, ...('output' in result ? { output: result.output } : {}), steps, usage: { ...usage } } // 最终对象和文字来自同一轮，不能从旧历史猜结果。用量是到这一轮为止的合计。
         temporaryPrompt = null      // 提示已经用过，下一轮默认不再携带。
 
         // --- 处理无工具调用的情况 ---

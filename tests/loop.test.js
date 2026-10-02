@@ -1,4 +1,4 @@
-﻿/*
+/*
 盯住"驱动一台 Agent"这件事：send / stop / compact 三者抢跑时的状态机，以及主循环的出口。
 
 这个包的运行状态只有一份（agent.running）。send 和 compact 都要同步顶替它、把停旧任务
@@ -41,7 +41,7 @@ describe('Agent 的状态机', () => {
             const agent = Agent.create({ config: { ...config, baseURL: `http://127.0.0.1:${single.port}/v1` } })
             const result = await agent.send('打个招呼')
 
-            expect(result).toEqual({ reason: 'no-tool', text: '你好' })
+            expect(result).toMatchObject({ reason: 'no-tool', text: '你好' })
             expect(calls).toBe(1) // 没有可用工具时，不要让模型连续三轮尝试调用不存在的工具。
             expect(agent.history.at(-1).role).toBe('assistant')
             expect(agent.history.every(message => typeof message.id === 'string' && message.id)).toBe(true) // 模型产出的消息也要有 id，前端靠它定位每一条。
@@ -62,7 +62,7 @@ describe('Agent 的状态机', () => {
             const agent = Agent.create({ config: { ...config, baseURL: `http://127.0.0.1:${mock.port}/v1` }, tools })
             const result = await agent.send('检查一下')
 
-            expect(result).toEqual({ reason: 'no-tool', text: '暂时不用工具' })
+            expect(result).toMatchObject({ reason: 'no-tool', text: '暂时不用工具' })
             expect(calls).toBe(1) // 默认 noToolRounds=1：模型不调工具的那一轮就是最终回答，不要再追问。
         } finally { mock.stop(true) }
     })
@@ -367,8 +367,32 @@ describe('Loop', () => {
         try {
             const tools = await Agent.tool.scan(new URL('./fixtures/tools', import.meta.url))
             const agent = Agent.create({ config: { ...config, baseURL: `http://127.0.0.1:${server.port}/v1`, maxSteps: 1 }, tools })
-            expect(await agent.send('继续')).toEqual({ reason: 'step-limit', text: '等一下' })
+            expect(await agent.send('继续')).toMatchObject({ reason: 'step-limit', text: '等一下' })
             expect(calls).toBe(1) // 原来要等连续三次无工具调用，轮数设为 1 就只请求一次。
+        } finally { server.stop(true) }
+    })
+
+    test('send 的返回值带上整次运行的用量，多轮相加，缺字段按 0 算', async () => {
+        // 算钱、看缓存命中都靠这个，不该逼调用方自己在回调里一轮一轮累加。
+        let round = 0
+        const server = Bun.serve({
+            port: 0,
+            async fetch() {
+                round += 1
+                const usage = round === 1
+                    ? { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120, prompt_tokens_details: { cached_tokens: 90 } }
+                    : { prompt_tokens: 30, completion_tokens: 5 } // 第二轮故意没有 total，也没有缓存字段。
+                if (round === 1) return Response.json({ choices: [{ index: 0, message: { role: 'assistant', content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'echo', arguments: JSON.stringify({ value: 'x' }) } }] }, finish_reason: 'tool_calls' }], usage })
+                return Response.json({ choices: [{ index: 0, message: { role: 'assistant', content: '完成' }, finish_reason: 'stop' }], usage })
+            },
+        })
+        try {
+            const tools = await Agent.tool.scan(new URL('./fixtures/tools', import.meta.url))
+            const agent = Agent.create({ config: { ...config, baseURL: `http://127.0.0.1:${server.port}/v1` }, tools })
+            const answer = await agent.send('回显 x')
+
+            expect(answer.steps).toBe(2)
+            expect(answer.usage).toEqual({ inputTokens: 130, outputTokens: 25, totalTokens: 155, cacheReadTokens: 90, cacheWriteTokens: 0 }) // 第二轮没给 total 时按 input+output 补上。
         } finally { server.stop(true) }
     })
 

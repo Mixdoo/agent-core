@@ -128,7 +128,7 @@ describe('三种 toolMode 跑完整的 Agent 循环', () => {
             expect(requests[0].messages[0].content).toContain('<tool_call>')    // system 里教了格式。
             expect(requests[0].messages[0].content).toContain('echo')           // 也列了工具。
             expect(results[0].output).toEqual({ type: 'text', value: 'done:你好' }) // 工具真跑了。
-            expect(answer).toEqual({ reason: 'no-tool', text: '答案是 done:你好。' })
+            expect(answer).toMatchObject({ reason: 'no-tool', text: '答案是 done:你好。' })
 
             // 第二次请求里，上一轮的调用和结果是文字，没有 tool 角色——纯对话接口才收得下。
             expect(requests[1].messages.some(message => message.role === 'tool')).toBe(false)

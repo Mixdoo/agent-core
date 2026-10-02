@@ -548,6 +548,9 @@ const result = await agent.send({
 })
 
 // result.text → 最后一轮模型生成的文字
+// result.steps → 这次 send 一共请求了模型几轮
+// result.usage → 整次 send 的用量合计：{ inputTokens, outputTokens, totalTokens, cacheReadTokens, cacheWriteTokens }
+//                算钱、看缓存命中直接读这里；cacheReadTokens / inputTokens 就是缓存命中率
 // result.reason:
 //   'no-tool'    → 没注册工具时一次回答结束；有工具时连续 noToolRounds 轮（默认 1）没调用工具才结束
 //   'tool-stop'  → 某个工具返回了 stop: true
