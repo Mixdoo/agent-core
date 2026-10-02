@@ -48,130 +48,150 @@ Tools:`
 
 
 // --- 工具 schema 是异步取出来的（zod 要现算），同一个工具表只算一次 ---
-const cache = new WeakMap()
+const cache = new WeakMap() // 工具表 → 已经算好的说明书；同一份工具表不会被算第二遍。
 
+// 取出一个工具的 JSON Schema：zod 这类写法要现算，算出来的是 Promise，等它落地。
 const jsonSchemaOf = async schema => {
-    if (!schema) return undefined
-    const resolved = asSchema(schema).jsonSchema
-    return resolved && typeof resolved.then === 'function' ? await resolved : resolved
+    if (!schema) return undefined                                          // 工具没写参数描述，就当没有 schema。
+    const resolved = asSchema(schema).jsonSchema                           // asSchema 把各种写法的 schema 统一成 JSON Schema。
+    return resolved && typeof resolved.then === 'function' ? await resolved : resolved // 是 Promise 就等它，不是就直接用。
 }
 
 // 参数名 → 类型，用于把纯 XML 写法的字符串参数转回 number / boolean / object。
 const typeMap = schema => schema?.properties
-    ? Object.fromEntries(Object.entries(schema.properties).map(([name, one]) => [name, one?.type]))
-    : {}
+    ? Object.fromEntries(Object.entries(schema.properties).map(([name, one]) => [name, one?.type])) // 每个参数取它的 type。
+    : {}                                                                                            // 没有 properties 就没有可转的参数。
 
+// --- 把一张工具表写成给模型的说明书 ---
+// 返回 { names, params, instructions }：
+//   names        所有工具名，用来判断模型写的调用是不是真的存在
+//   params       每个工具的参数名和类型，XML 写法靠它把 "7" 转回数字 7
+//   instructions 要塞进 system 的那段文字
 const prepare = tools => {
-    if (!tools || !Object.keys(tools).length) return null
-    if (cache.has(tools)) return cache.get(tools)
+    if (!tools || !Object.keys(tools).length) return null // 没有工具就没有说明书，system 不用动。
+    if (cache.has(tools)) return cache.get(tools)         // 算过就直接用，同一轮里模型可能请求很多次。
 
     const built = (async () => {
-        const names = Object.keys(tools)
-        const params = {}
-        const lines = []
+        const names = Object.keys(tools)                                        // 工具表里的所有名字。
+        const params = {}                                                       // 工具名 → { 参数名: 类型 }。
+        const lines = []                                                        // 说明书里一个工具占一行。
         for (const name of names) {
             const tool = tools[name]
             let schema
             try { schema = await jsonSchemaOf(tool.inputSchema) } catch { schema = undefined } // 工具 schema 坏掉不该拖垮整台 Agent，缺 schema 就用空参数。
-            params[name] = typeMap(schema)
-            lines.push(`- ${name}: ${tool.description ?? ''}${schema ? `\n  arguments: ${JSON.stringify(schema)}` : ''}`)
+            params[name] = typeMap(schema)                                                     // 记下这个工具的参数类型表。
+            lines.push(`- ${name}: ${tool.description ?? ''}${schema ? `\n  arguments: ${JSON.stringify(schema)}` : ''}`) // 名字、说明、参数一起列出来。
         }
-        return { names, params, instructions: `${HEADER}\n${lines.join('\n')}` }
+        return { names, params, instructions: `${HEADER}\n${lines.join('\n')}` }               // 说明书 = 格式说明 + 每个工具一行。
     })()
 
-    cache.set(tools, built)
+    cache.set(tools, built) // 先存进缓存再返回：它是 Promise，多个调用方等的是同一份。
     return built
 }
 
 
+// 把工具名里的特殊字符转义，才能安全地拼进正则（工具名一般是字母数字，这里是保险）。
 const escape = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
-// 去掉 ```json 围栏，模型经常习惯性套一层。
+// 去掉 ```json 围栏，模型经常习惯性套一层。开头和结尾各去一次。
 const stripFence = raw => raw.trim().replace(/^```(?:json|JSON)?\s*/,'').replace(/\s*```$/,'').trim()
 
+// 把 XML 里读到的字符串参数转回它该有的类型：schema 说这个参数是 number，就转成数字。
+// 不转换的话，工具收到的 {"a": "1"} 和模型想表达的 {"a": 1} 对不上，工具可能算错。
 const coerce = (value, type) => {
-    if (type === 'number' || type === 'integer') { const n = Number(value); return Number.isNaN(n) ? value : n }
-    if (type === 'boolean') return value === 'true'
-    if (type === 'object' || type === 'array') { try { return JSON.parse(value) } catch { return value } }
-    return value
+    if (type === 'number' || type === 'integer') { const n = Number(value); return Number.isNaN(n) ? value : n } // 转不动就原样留着。
+    if (type === 'boolean') return value === 'true'                                                           // "true" → true。
+    if (type === 'object' || type === 'array') { try { return JSON.parse(value) } catch { return value } }    // 嵌套结构按 JSON 解析。
+    return value                                                                                              // 其余（string）原样返回。
 }
 
 // --- 一个 <tool_call> 块里的 JSON 体 ---
+// 模型写出来的 JSON 不一定标准，这里尽量把它读出来；实在读不出来就返回一条"无效调用"，
+// 让模型重写，而不是当成普通回答悄悄丢掉。
 const readJson = raw => {
-    const body = stripFence(raw)
-    if (!body) return null
+    const body = stripFence(raw)                                                                                  // 先去掉可能的 Markdown 围栏。
+    if (!body) return null                                                                                         // 空的块，不算调用。
 
     let obj
-    try { obj = JSON.parse(body) } catch {
-        try { obj = JSON.parse(body.replace(/,\s*([}\]])/g, '$1')) } // 尾逗号是最常见的坏法，先修一次。
-        catch { return { toolName: /"name"\s*:\s*"([^"]+)"/.exec(body)?.[1], input: {}, invalid: true, error: new Error('工具调用里的 JSON 解析失败') } }
+    try { obj = JSON.parse(body) } catch {                                                                        // 先按标准 JSON 解析。
+        try { obj = JSON.parse(body.replace(/,\s*([}\]])/g, '$1')) }                                              // 尾逗号是最常见的坏法，先修一次。
+        catch { return { toolName: /"name"\s*:\s*"([^"]+)"/.exec(body)?.[1], input: {}, invalid: true, error: new Error('工具调用里的 JSON 解析失败') } } // 实在读不出来，至少把名字抠出来，让模型知道是哪次调用坏了。
     }
-    if (Array.isArray(obj)) obj = obj[0]
+    if (Array.isArray(obj)) obj = obj[0] // 模型偶尔套一层数组，取第一个。
 
+    // 工具名可能在几个不同的位置：标准写法直接在顶层，OpenAI 风格套一层 function。
     const fn = obj?.function ?? obj?.tool ?? obj
     const name = fn?.name ?? obj?.tool_name ?? obj?.tool_call?.name
-    if (!name || typeof name !== 'string') return null
+    if (!name || typeof name !== 'string') return null // 读不出名字，就当这不是一次工具调用。
 
+    // 参数也在几个位置，按常见程度依次找。
     let args = fn?.arguments ?? fn?.parameters ?? fn?.input ?? fn?.args ?? fn?.arguments_json
     if (typeof args === 'string') {
         try { args = JSON.parse(args) } catch { return { toolName: name, input: {}, invalid: true, error: new Error('工具参数不是合法的 JSON 字符串') } } // OpenAI 风格里 arguments 常是字符串。
     }
     if (args === undefined) {
-        // 有的模型把参数平铺在同一层：{"name":"add","a":1,"b":2}。
+        // 有的模型把参数平铺在同一层：{"name":"add","a":1,"b":2}。把名字相关的字段剔掉，剩下的就是参数。
         const { name: _, function: __, tool: ___, tool_name: ____, type: _____, tool_call: ______, ...rest } = obj
         args = Object.keys(rest).length ? rest : {}
     }
-    return { toolName: name, input: args && typeof args === 'object' ? args : {} }
+    return { toolName: name, input: args && typeof args === 'object' ? args : {} } // 参数必须是对象，不是就当成空参数。
 }
 
 // --- Roo Code / Cline 风格：工具名做标签，参数做子标签 ---
-// 兼容这一套是因为很多本地小模型被喂过这种样本，会本能地这么写。
+// 兼容这一套是因为很多本地小模型被喂过这种样本，会本能地这么写。例如：
+//   <read_file><path>a.js</path></read_file>
+// 子标签里的值是字符串，靠 coerce 按 schema 转回原来的类型。
 const readXml = (inner, name, params = {}) => {
     const input = {}
     let found = false
-    for (const child of inner.matchAll(/<([a-zA-Z_][\w-]*)>([\s\S]*?)<\/\1>/g)) {
+    for (const child of inner.matchAll(/<([a-zA-Z_][\w-]*)>([\s\S]*?)<\/\1>/g)) {              // 逐个读出 <参数名>值</参数名>。
         found = true
-        input[child[1]] = coerce(child[2].trim(), params[child[1]])
+        input[child[1]] = coerce(child[2].trim(), params[child[1]])                            // 按 schema 转类型。
     }
-    if (found) return { toolName: name, input }
+    if (found) return { toolName: name, input }                                                // 标准写法：每个参数一个子标签。
 
-    const value = inner.trim()
-    if (!value) return { toolName: name, input: {} }
+    const value = inner.trim()                                                                 // 没有子标签，标签体本身就是参数值。
+    if (!value) return { toolName: name, input: {} }                                           // 空标签 = 没有参数的工具。
     const keys = Object.keys(params)
-    if (keys.length === 1) return { toolName: name, input: { [keys[0]]: coerce(value, params[keys[0]]) } }
-    return { toolName: name, input: {}, invalid: true, error: new Error('工具参数格式无法识别') }
+    if (keys.length === 1) return { toolName: name, input: { [keys[0]]: coerce(value, params[keys[0]]) } } // 只有一个参数时，把标签体直接当成它。
+    return { toolName: name, input: {}, invalid: true, error: new Error('工具参数格式无法识别') }            // 多个参数却没有子标签，认不出来。
 }
 
+// 一个位置是否落在已经认出来的调用范围内——防止同一段文字被两种写法重复认领。
 const overlaps = (ranges, index) => ranges.some(([start, end]) => index >= start && index < end)
 
 
 // --- 从一段模型输出里读回工具调用 ---
 // loose=true（文字模式）时额外认裸 JSON 代码块；native 兜底时只认显式标签，避免把讲解示例当成调用。
+// 返回 { text, calls }：text 是摘掉调用之后的说明文字，calls 是读出来的调用（按模型写下的顺序）。
 const parse = (text, spec, { loose = false } = {}) => {
-    const source = typeof text === 'string' ? text : ''
-    const calls = []
-    const ranges = []
+    const source = typeof text === 'string' ? text : ''                                        // 模型什么都没说时按空串处理。
+    const calls = []                                                                            // 认出来的调用，连它在原文里的位置一起记着，最后好按顺序排。
+    const ranges = []                                                                           // 已经被认领的文字范围，避免重复。
     const add = (call, start, end) => { calls.push({ call, start }); ranges.push([start, end]) }
 
     // 模型有时会自己编造工具结果。从这里往后全丢掉——把幻觉当上下文会让它以为工具真跑过了。
     const hallucinated = source.search(/<tool_result[\s>]/)
     const body = hallucinated >= 0 ? source.slice(0, hallucinated) : source
 
-    const blockRe = /<tool_call>\s*([\s\S]*?)(?:<\/tool_call>|$)/g // 也容忍没闭合：模型被截断时最后一块就是这样。
+    // 主格式：<tool_call>{...}</tool_call>。也容忍没闭合：模型被截断时最后一块就是这样。
+    const blockRe = /<tool_call>\s*([\s\S]*?)(?:<\/tool_call>|$)/g
     for (const match of body.matchAll(blockRe)) {
         const call = readJson(match[1])
         if (call) add(call, match.index, match.index + match[0].length)
     }
 
+    // Roo Code / Cline 风格：用每个已注册工具名当一个标签去匹配。
     for (const name of spec.names) {
         const tagRe = new RegExp(`<${escape(name)}>([\\s\\S]*?)<\\/${escape(name)}>`, 'g')
         for (const match of body.matchAll(tagRe)) {
-            if (overlaps(ranges, match.index)) continue
+            if (overlaps(ranges, match.index)) continue                                        // 已经在 <tool_call> 里认过了，跳过。
             const call = readXml(match[1], name, spec.params[name])
             if (call) add(call, match.index, match.index + match[0].length)
         }
     }
 
+    // 宽松模式（文字模式）再认一层裸 JSON 代码块，但只认已注册的工具名，避免把举例当成真调用。
     if (loose) {
         for (const match of body.matchAll(/```(?:json|JSON)?\s*([\s\S]*?)```/g)) {
             if (overlaps(ranges, match.index)) continue
@@ -180,25 +200,28 @@ const parse = (text, spec, { loose = false } = {}) => {
         }
     }
 
+    // 把认出来的调用从说明文字里删掉，剩下的才是模型真正想说的话。
     let cleaned = body
-    for (const [start, end] of [...ranges].sort((a, b) => b[0] - a[0])) cleaned = cleaned.slice(0, start) + cleaned.slice(end)
+    for (const [start, end] of [...ranges].sort((a, b) => b[0] - a[0])) cleaned = cleaned.slice(0, start) + cleaned.slice(end) // 从后往前删，位置才不会错位。
     return {
-        text: cleaned.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim(),
-        calls: calls.sort((a, b) => a.start - b.start).map(one => one.call), // 按模型写下的先后顺序执行，而不是按工具表顺序。
+        text: cleaned.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim(), // 删完之后收拾一下多余空行。
+        calls: calls.sort((a, b) => a.start - b.start).map(one => one.call),        // 按模型写下的先后顺序执行，而不是按工具表顺序。
     }
 }
 
 
 // --- 把工具输出块变成一段人/模型都能读的文字；媒体块原样保留（模型支持图就能继续看） ---
+// 工具的输出块有几种固定形状（见 tool-process.js 的 shape），这里一个个转成文字块。
 const outputBlocks = output => {
-    if (!output) return []
-    if (output.type === 'text' || output.type === 'error-text') return [{ type: 'text', text: output.value }]
-    if (output.type === 'json') return [{ type: 'text', text: JSON.stringify(output.value) }]
-    if (output.type === 'execution-denied') return [{ type: 'text', text: `execution denied: ${output.reason ?? ''}` }]
-    if (output.type === 'content') return output.value.flatMap(part => part.type === 'text' ? [{ type: 'text', text: part.text }] : part.type === 'file' ? [{ type: 'file', mediaType: part.mediaType, data: part.data }] : [])
-    return [{ type: 'text', text: JSON.stringify(output.value ?? output) }]
+    if (!output) return []                                                                                        // 没有输出就没有内容。
+    if (output.type === 'text' || output.type === 'error-text') return [{ type: 'text', text: output.value }]      // 普通文字和报错文字，原样就是给模型看的。
+    if (output.type === 'json') return [{ type: 'text', text: JSON.stringify(output.value) }]                     // 结构化结果转成 JSON 文字。
+    if (output.type === 'execution-denied') return [{ type: 'text', text: `execution denied: ${output.reason ?? ''}` }] // 用户拒绝了这次调用。
+    if (output.type === 'content') return output.value.flatMap(part => part.type === 'text' ? [{ type: 'text', text: part.text }] : part.type === 'file' ? [{ type: 'file', mediaType: part.mediaType, data: part.data }] : []) // 多模态：文字照抄，文件（图片等）留着，别的丢掉。
+    return [{ type: 'text', text: JSON.stringify(output.value ?? output) }]                                       // 兜底：整个序列化成文字。
 }
 
+// 把一次工具调用写回成模型当初写它的那种文字。
 const asToolCallText = part => `<tool_call>\n${JSON.stringify({ name: part.toolName, arguments: part.input ?? {} })}\n</tool_call>`
 
 // --- 出门前的降级：标准历史 → 纯对话接口认的 user / assistant 消息 ---
