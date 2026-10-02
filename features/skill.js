@@ -48,7 +48,7 @@ const MAX_DESCRIPTION = 1024
 // 内置 skill 工具只收一个参数：要加载哪个技能。
 const SKILL_SCHEMA = jsonSchema({
     type: 'object',
-    properties: { skill: { type: 'string', description: '要加载的技能名' } },
+    properties: { skill: { type: 'string', description: '要加载的技能名' } }, // 技能名从系统提示词的列表里挑。
     required: ['skill'],
 })
 

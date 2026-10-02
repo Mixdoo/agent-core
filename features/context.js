@@ -87,7 +87,7 @@ const build = ({ history, system = '', tools = {}, budget, capabilities = {}, me
     let summary = ''                                                     // 有总结时，总结文本折进 system，不占消息位置。
 
     // --- 有总结时分三段挑：最初目标 + 总结前的最近现场 + 总结之后的全部新回合 ---
-    if (summaryIndex >= 0) {
+    if (summaryIndex >= 0) {                                                                                    // 有过压缩，才开始"挑"；没压缩时用整段历史。
         summary = turns[summaryIndex][0].content                                                                // 总结本身不进 messages，它要折进 system。
         const before = turns.slice(0, summaryIndex)                                                             // 最新总结已经覆盖的范围，裁剪只在这里面挑。
         const covered = before.findLastIndex(turn => turn[0].compact === true)                                  // 上一条总结：比它更老的原文已被总结过两次，不再回头捡。
@@ -100,8 +100,8 @@ const build = ({ history, system = '', tools = {}, budget, capabilities = {}, me
 
         // 最近现场：从离总结最近的往回收，预算不够就丢更老的——
         // 这样"用户上一轮刚说的那句话"一定在，而不是只剩三天前的开场白。
-        const pool = before.slice(Math.max(covered + 1, summaryIndex - KEEP_BEFORE_SUMMARY)).filter(turn => !goal.includes(turn))
-        const recent = within([...pool].reverse(), room * RECENT_SHARE).reverse()
+        const pool = before.slice(Math.max(covered + 1, summaryIndex - KEEP_BEFORE_SUMMARY)).filter(turn => !goal.includes(turn)) // 上一条总结之后的、且没被目标选走的回合。
+        const recent = within([...pool].reverse(), room * RECENT_SHARE).reverse()                              // 从最近的往回收，再正回时间顺序。
 
         selected = [...goal, ...recent, ...turns.slice(summaryIndex + 1)]                                       // 时间顺序：最初目标 → 最近现场 → 总结后的新回合。
     }
@@ -120,9 +120,9 @@ const build = ({ history, system = '', tools = {}, budget, capabilities = {}, me
     // 而 countTokens 要把整段上下文重新分词一遍（2000 条历史约 120ms），每轮都白烧一次。
     let counted
     return {
-        messages,
-        get token() {
-            counted ??= countTokens(JSON.stringify({ messages, tools })) // 工具定义不属于 messages，但模型请求仍会携带它们，所以估算时一并计算。
+        messages,                                                            // 这次要发给模型的完整消息。
+        get token() {                                                        // 估出来的 token 数，第一次读的时候才算。
+            counted ??= countTokens(JSON.stringify({ messages, tools }))     // 工具定义不属于 messages，但模型请求仍会携带它们，所以估算时一并计算。
             return counted
         },
     }
