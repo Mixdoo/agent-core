@@ -1,24 +1,28 @@
 /*
-MCP 的连接与调用，只在工具子进程中使用。
-外部入口是 Agent.tool.mcp({ transport: { type: 'http', url }, prefix: 'search_' })。
+MCP：连上一个 MCP 服务，把它公开的东西变成和本地工具同一个形状的工具集合。
 
-服务端公开的三种原语都会被接上，而且都变成同一个形状（工具集合），上层不需要再学一套东西：
-  tools      → 每个远端工具变成一个本地工具；
-  prompts    → 每个提示词模板变成一个本地工具，模型调用它就等于按参数取回这段提示；
-  resources  → 服务端公开的资源合并成一个 read_resource 工具，参数是要读的 uri。
-于是"这个服务端能用什么"只取决于它公开了什么，模型能调用的东西始终是一张工具表。
+    const remote = await Agent.mcp({ transport: { type: 'http', url: 'http://localhost:3000/mcp' }, prefix: 'web_' })
+    const agent = Agent.create({ tools: Agent.tool.merge(await Agent.tool.scan('./tools'), remote) })
+    // ……用完之后
+    await remote.close()
 
-只问服务端声明支持的原语：resources / prompts 没声明就不去问，问了会被拒，还会让整次发现失败。
+连接只建一次，之后的每次调用都复用它，服务端可以保留会话状态。
+服务端公开的三种原语都会变成工具表里的条目，模型不需要区分来源：
+  tools      → 每个远端工具变成一个工具；
+  prompts    → 每个提示词模板变成一个工具，模型传参调用就取回这段提示；
+  resources  → 合并成一个 read_resource 工具，参数是要读的 uri，可用地址写在描述里。
+只问服务端声明支持的原语：没声明 resources / prompts 就不去问，问了会被拒，还会让整次连接失败。
 
-每次发现或调用都打开独立连接，并在结束后关闭。这样一个调用被杀不会切断另一个调用。
-连接配置必须能跨进程序列化；HTTP headers、stdio command / args / env 都是普通数据。
-不接收主进程的客户端对象、OAuth 回调或闭包。需要登录时先由调用方取得 token，再放进 headers。
-这条路径适合无会话状态的工具；跨工具共享服务端 session 的流程需要由服务端用业务 ID 保存状态。
-取消会终止本地执行进程，不能撤销远端已经完成的写入。
+执行不走工具子进程，按 MCP 自己的方式控制：
+  取消 → 把 signal 交给 SDK，这次请求立刻结束；远端已经做完的事撤不回来。
+  超时 → timeout（毫秒）交给 SDK，到点按失败返回。
+  关闭 → close() 断开连接；stdio 服务会收到终止信号。
+所以 Loop 拿到的结果和本地工具一样：正常是 { output }，失败是 { output, error }，取消是 { output, interrupted }。
 */
 
 import { createMCPClient } from '@ai-sdk/mcp' // 使用与本包 AI SDK 配套的 MCP 实现。
 import { Experimental_StdioMCPTransport } from '@ai-sdk/mcp/mcp-stdio' // 本地服务通过标准输入输出通信。
+import { jsonSchema } from 'ai'
 
 // 二进制内容按本包统一的 file 块交给模型；服务端没给类型时用通用二进制类型。
 const file = (mimeType, data) => ({ type: 'file', mediaType: mimeType ?? 'application/octet-stream', data: { type: 'data', data: data ?? '' } })
@@ -46,69 +50,88 @@ const pages = async (load, pick) => {
     }
 }
 
-// --- 发现工具或调用一个工具 ---
-// kind 决定这次连接要做哪件事，全部在子进程里完成；协议解析和媒体转换复用上游。
-const run = async ({ transport, kind = 'discover', name }, input, onProcess) => {
-    const connection = transport.type === 'stdio'                     // 本地服务走标准输入输出，远端走 HTTP / SSE。
-        ? new Experimental_StdioMCPTransport(transport)
-        : transport // HTTP / SSE 配置由 SDK 建立连接。
-    if (transport.type === 'stdio') {
-        // 本地服务起来之后，把它的进程号告诉主进程，取消时主进程靠它把服务一起杀掉。
-        const start = connection.start.bind(connection)
-        connection.start = async () => {
-            await start()
-            onProcess(connection.process.pid) // 固定版本 2.0.40 的 stdio transport 持有启动的进程；初始化未完成也要能强杀。
-        }
+// --- 提示词模板的参数声明变成一份 JSON Schema ---
+// MCP 的参数描述里只有名字、说明和是否必填，正好是一个对象 Schema 的全部内容。
+const promptSchema = parameters => jsonSchema({
+    type: 'object',
+    properties: Object.fromEntries(parameters.map(one => [one.name, { type: 'string', ...(one.description ? { description: one.description } : {}) }])), // 每个参数都当字符串。
+    required: parameters.filter(one => one.required).map(one => one.name), // 标了必填的才进 required。
+})
+
+// --- 服务端公开的资源写进工具描述，模型才知道有哪些地址可读 ---
+// 资源和工具描述一样是连接时固定的；服务端资源变了要重新连一次。
+const resourceTool = resources => ({
+    description: `读取 MCP 服务端公开的资源，uri 从下面挑：\n${resources.map(one => `- ${one.uri}${one.template ? '（模板，占位符自行替换）' : ''}${one.description ? `：${one.description}` : ''}`).join('\n')}`, // 可用地址直接列给模型。
+    inputSchema: jsonSchema({ type: 'object', properties: { uri: { type: 'string', description: '要读取的资源地址' } }, required: ['uri'] }),
+})
+
+
+// --- 执行一次：取消和超时都交给 SDK，结果变成和本地工具一样的形状 ---
+// 正常返回 { output }；服务端说失败、或调用抛错，返回 { output, error }；被取消返回 { output, interrupted }。
+const call = async (run, { signal, timeout }) => {
+    if (signal?.aborted) return { output: { type: 'error-text', value: '工具执行已中断' }, interrupted: true } // 进来之前就已经取消了。
+    try { return await run({ signal, ...(timeout ? { timeout } : {}) }) }
+    catch (error) {
+        if (signal?.aborted) return { output: { type: 'error-text', value: '工具执行已中断' }, interrupted: true } // 取消导致的失败按中断交回，模型知道这次没做完。
+        return { output: { type: 'error-text', value: `工具执行失败：${error?.message || String(error)}` }, error: error?.message || String(error) } // 连接断了、服务端报错，都是这个工具没成功。
     }
-    let client // 初始化失败也要关闭已经启动的 stdio transport。
-    try {
-        client = await createMCPClient({ transport: connection, maxRetries: 0 }) // 不重复重试可能有副作用的工具。
-        const offers = client.initializeResult.capabilities // 服务端声明的能力，只读一次，后面全部信任它。
-
-        // --- 发现：把服务端公开的三种原语读回来，跨进程只送普通数据 ---
-        if (kind === 'discover') {
-            const value = { tools: [], prompts: [], resources: [] } // 三种原语各收一份。
-            if (offers.tools) {
-                const tools = await client.tools() // SDK 自动读取所有分页，并建立标准工具定义。
-                value.tools = Object.entries(tools).map(([name, tool]) => ({ name, description: tool.description, inputSchema: tool.inputSchema.jsonSchema })) // 只留模型需要的那几项。
-            }
-            if (offers.prompts) {
-                const prompts = await pages(cursor => client.experimental_listPrompts({ params: cursor ? { cursor } : undefined }), page => page.prompts) // 翻完所有页。
-                value.prompts = prompts.map(one => ({ name: one.name, description: one.description, arguments: one.arguments ?? [] }))
-            }
-            if (offers.resources) {
-                const listed = await pages(cursor => client.listResources({ params: cursor ? { cursor } : undefined }), page => page.resources) // 列出的具体资源。
-                const templates = (await client.listResourceTemplates()).resourceTemplates                                                            // 资源模板也要列给模型。
-                value.resources = [
-                    ...listed.map(one => ({ uri: one.uri, name: one.name, description: one.description, mimeType: one.mimeType })),
-                    ...templates.map(one => ({ uri: one.uriTemplate, name: one.name, description: one.description, mimeType: one.mimeType, template: true })), // 模板的占位由模型自己填。
-                ]
-            }
-            return { output: { type: 'json', value } } // 发现结果就是一份纯数据，交给主进程。
-        }
-
-        // --- 读一个资源：地址由模型给出，这里不做白名单校验 ---
-        if (kind === 'resource') {
-            const read = await client.readResource({ uri: input.uri })
-            return { output: { type: 'content', value: read.contents.map(block) } } // 内容可能是文字也可能是图，逐块转换。
-        }
-
-        // --- 取一段提示词：模板参数就是工具参数，取回来的消息带上角色，模型看得出这是谁说的话 ---
-        if (kind === 'prompt') {
-            const got = await client.experimental_getPrompt({ name, arguments: input })
-            return { output: { type: 'content', value: got.messages.flatMap(one => [{ type: 'text', text: `${one.role}：` }, block(one.content)]) } } // 每条消息前面标上角色。
-        }
-
-        // --- 执行一个工具 ---
-        const tools = await client.tools()
-        const tool = tools[name] // 重连后按原始名字找工具，外部前缀不发给服务端。
-        if (!tool) throw new Error(`MCP tool not found: ${name}`) // 服务端工具变更属于外部错误。
-        const value = await tool.execute(input, { toolCallId: name, messages: [] }) // 真正的工具执行始终发生在子进程。
-        if (value.isError) return { output: { type: 'error-json', value } } // 服务端返回的工具失败也交给模型处理。
-        const output = await tool.toModelOutput({ output: value, input, toolCallId: name }) // 文字、图片等沿用 SDK 转换。
-        if (output.type === 'content' && value.structuredContent !== undefined) output.value.push({ type: 'text', text: JSON.stringify(value.structuredContent) }) // MCP 结构化结果不丢弃。
-        return { output }
-    } finally { await (client ?? connection).close?.() } // 正常和初始化失败都清理本地连接。
 }
 
-export const MCP = { run } // 子进程按固定入口调用；打包后同一入口仍然存在。
+// --- 一个远端工具：按原始名字调用，服务端说失败时也作为结果交给模型 ---
+const remoteTool = (client, name) => options => call(async request => {
+    const value = await client.callTool({ name, arguments: options.input ?? {}, options: request }) // 外部前缀不发给服务端。
+    if (value.isError) return { output: { type: 'error-json', value }, error: '服务端返回了工具失败' } // 服务端返回的工具失败也交给模型处理。
+    const parts = [...(value.content ?? []).map(block), ...(value.structuredContent !== undefined ? [{ type: 'text', text: JSON.stringify(value.structuredContent) }] : [])] // MCP 结构化结果不丢弃。
+    return { output: { type: 'content', value: parts } }
+}, options)
+
+// --- 一段提示词：模板参数就是工具参数，取回来的消息带上角色，模型看得出这是谁说的话 ---
+const remotePrompt = (client, name) => options => call(async request => {
+    const got = await client.experimental_getPrompt({ name, arguments: options.input ?? {}, options: request })
+    return { output: { type: 'content', value: got.messages.flatMap(one => [{ type: 'text', text: `${one.role}：` }, block(one.content)]) } } // 每条消息前面标上角色。
+}, options)
+
+// --- 读一个资源：地址由模型给出，这里不做白名单校验 ---
+const remoteResource = client => options => call(async request => {
+    const read = await client.readResource({ uri: options.input?.uri, options: request })
+    return { output: { type: 'content', value: read.contents.map(block) } } // 内容可能是文字也可能是图，逐块转换。
+}, options)
+
+
+// --- 连接一个 MCP 服务，返回和 Tool.scan 同一个形状的工具集合，外加 close ---
+// signal 可取消这次连接；timeout 是调用方主动选择的单次调用超时，未设置就不加上限。
+const connect = async ({ transport, prefix = '', signal, timeout }) => {
+    const connection = transport.type === 'stdio' ? new Experimental_StdioMCPTransport(transport) : transport // 本地服务走标准输入输出，远端由 SDK 按配置建立 HTTP / SSE 连接。
+    const client = await createMCPClient({ transport: connection, maxRetries: 0, initializationOptions: signal ? { signal } : undefined }) // 不重复重试可能有副作用的工具。
+    try {
+        const offers = client.initializeResult.capabilities // 服务端声明的能力，只读一次，后面全部信任它。
+        const schema = Object.create(null)                  // 外部工具名不影响对象原型。
+        const handlers = Object.create(null)
+        const add = (name, description, run) => { schema[prefix + name] = description; handlers[prefix + name] = { run: options => run({ ...options, timeout }) } } // 多个服务用不同前缀就不会撞名。
+
+        if (offers.tools) {
+            const listed = await client.tools()   // SDK 自动读取所有分页，并建立标准工具定义。
+            for (const [name, tool] of Object.entries(listed)) add(name, { description: tool.description, inputSchema: jsonSchema(tool.inputSchema.jsonSchema) }, remoteTool(client, name))
+        }
+        if (offers.prompts) {
+            const prompts = await pages(cursor => client.experimental_listPrompts({ params: cursor ? { cursor } : undefined }), page => page.prompts) // 翻完所有页。
+            for (const prompt of prompts) add(prompt.name, { description: prompt.description ?? `MCP 提示词 ${prompt.name}`, inputSchema: promptSchema(prompt.arguments ?? []) }, remotePrompt(client, prompt.name)) // 提示词和工具共用一个命名空间，同名时后发现的覆盖先发现的。
+        }
+        if (offers.resources) {
+            const listed = await pages(cursor => client.listResources({ params: cursor ? { cursor } : undefined }), page => page.resources) // 列出的具体资源。
+            const templates = (await client.listResourceTemplates()).resourceTemplates                                                            // 资源模板也要列给模型。
+            const resources = [
+                ...listed.map(one => ({ uri: one.uri, description: one.description })),
+                ...templates.map(one => ({ uri: one.uriTemplate, description: one.description, template: true })), // 模板的占位由模型自己填。
+            ]
+            if (resources.length) add('read_resource', resourceTool(resources), remoteResource(client)) // 服务端没公开资源时不多一个用不上的工具。
+        }
+
+        return { schema, handlers, close: () => client.close() } // 与 scan 相同的形状，多一个 close；Agent 无需区分工具来源。
+    } catch (error) {
+        await client.close() // 发现失败也要把已经建立的连接关掉，不留 stdio 服务。
+        throw error
+    }
+}
+
+export default { connect }

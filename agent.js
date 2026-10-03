@@ -114,6 +114,7 @@ import Context from './features/context.js'   // 负责把历史消息裁剪成�
 import Compact from './features/compact.js'   // 负责把上下文压缩成总结文本
 import Loop from './features/loop.js'         // 负责驱动"请求模型 → 执行工具"的主循环
 import Tool from './features/tool.js'         // 负责扫描和执行工具文件
+import MCP from './features/mcp.js'           // 负责连接 MCP 服务，把它公开的东西变成工具集合
 import Skill from './features/skill.js'       // 负责扫描技能目录并按需加载技能
 import LLM from './utils/llm.js'              // 底层模型请求封装，也暴露给调用方直接使用
 import TextTools from './utils/text-tools.js' // 纯对话模型的文字工具协议，直接用 LLM.chat 时也能自己调
@@ -313,7 +314,8 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
 const Agent = {
     version,          // 包版本，来自 package.json；排查问题时上层要能报出来
     create,           // 创建 Agent 实例
-    tool: Tool,       // 工具扫描和执行：Agent.tool.scan() / Agent.tool.execute()
+    tool: Tool,       // 工具扫描和执行：Agent.tool.scan() / Agent.tool.execute() / Agent.tool.merge()
+    mcp: MCP.connect, // 连接 MCP 服务：Agent.mcp({ transport, prefix })，返回工具集合和 close()
     skill: Skill,     // 技能扫描：Agent.skill.scan()；扫到技能才注入系统提示词、才挂内置 skill 工具
     history: History, // 造标准历史消息块：Agent.history.user() / assistant() / tool() / compact()
     context: Context, // 上下文构建：Agent.context.build()

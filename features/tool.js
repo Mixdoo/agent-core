@@ -1,11 +1,5 @@
 /*
-工具这个主体的全部操作都在这里：从目录里找出工具、把工具交给工具进程执行。
-
-MCP 服务也返回同样的工具集合，可以直接混用：
-    const remote = await Tool.mcp({ transport: { type: 'http', url: 'http://localhost:3000/mcp' }, prefix: 'web_' })
-    const all = Tool.merge(await Tool.scan('./tools'), remote)
-服务端的 tools、prompts、resources 都会变成这张工具表里的条目，上层不需要区分来源。
-发现和执行都在子进程里；每次 MCP 调用独立连接、结束即关闭。
+工具这个主体的全部操作都在这里：从目录里找出工具、执行工具、合并工具集合。
 
     // 积木 1：扫描工具目录，得到一份独立的工具集合
     const tools = await Tool.scan('./tools')
@@ -26,7 +20,14 @@ MCP 服务也返回同样的工具集合，可以直接混用：
     // result = { output, error }           工具抛错了，错误也作为一条结果交给模型
     // result = { output, interrupted }     被 signal 取消，已产出的内容一起还给模型
 
-工具跑在独立的 bun 子进程里（见 tool-process.js），所以工具碰不到 Agent 的任何状态，
+    // 积木 3：合并工具集合（本地工具、MCP 工具、技能工具）
+    const all = Tool.merge(tools, await Agent.mcp({ transport }))
+
+工具集合里的条目有两种执行方式，execute 一处分开：
+  本地工具文件 → 交给工具子进程（见 tool-process.js），排队、取消、超时都在这里管；
+  MCP 工具    → handler 自带 run，交给 features/mcp.js 在主进程里按 MCP 自己的方式取消和超时。
+
+本地工具跑在独立的 bun 子进程里，所以工具碰不到 Agent 的任何状态，
 死循环的工具也能被一刀杀掉——进程内的 await 永远做不到这一点。
 
 为什么是子进程而不是 Worker 线程：Worker 被 terminate 之后 Bun 不归还它占的约 22MB，
@@ -48,7 +49,6 @@ import { jsonSchema } from 'ai'
 import PQueue from 'p-queue' // 排队与并发上限交给它，这个包不再自己数名额、维护等待队列。
 import toolProcessSource from './tool-process.js' with { type: 'text' } // 工具进程源码以文本引入，打包成单文件时会被原样内联成字符串。
 import Notify from '../utils/notify.js' // 实时输出回调统一从这里调用，出错不影响工具执行。
-export { MCP } from './mcp.js' // 供子进程按当前模块地址导入，源码和单文件产物使用同一入口。
 
 // 工具进程要用一个"能跑脚本的 bun"来启动。宿主自己通常就是，用它比在 PATH 上碰运气可靠：
 // 不依赖环境变量，也不会和宿主用的 bun 版本不一致。
@@ -168,19 +168,9 @@ const release = child => {
 }
 
 
-// --- 收回本次调用启动的 MCP 服务进程 ---
-// SDK 的 close 发出正常退出信号，拒绝配合的服务仍需强制终止。完成和取消共用这一个出口。
-const stopChildren = call => {
-    for (const pid of call?.children ?? []) {                 // children 是这次调用起的本地服务进程。
-        try { process.kill(pid, 'SIGKILL') }
-        catch (error) { if (error.code !== 'ESRCH') throw error } // 服务可能已经自行退出。
-    }
-}
-
 // --- 一个工具进程废了（自己死掉、或被我们杀掉）：它不能再被借出去 ---
 // 借进程的动作由队列负责，这里只需要把它从池子里摘掉，让后来的人开新的。
 const retire = child => {
-    stopChildren(pool.busy.get(child)) // 主进程登记了服务 PID，执行进程崩溃时也能清理。
     if (!pool.live.delete(child)) return // 已经退役过了。主动杀掉时这里会走一遍，child.exited 之后还会再走一遍。
     pool.busy.delete(child)              // 不再记着它手上有哪次调用。
     pool.idle = pool.idle.filter(one => one !== child) // 从空闲池里也摘掉。
@@ -204,18 +194,12 @@ const open = () => {
             const call = pool.busy.get(child)      // 这个进程当前在跑哪次调用。
             if (call?.id !== message.callId) return  // 上一次调用的迟到消息；这个工具进程已经换人了，丢掉。
 
-            if (message.type === 'child') {
-                (call.children ??= new Set()).add(message.pid) // 本地 MCP 服务随这一调用一起取消。
-                return
-            }
-
             if (message.type === 'output') {
                 call.output.push(String(message.data))                                          // 攒着，中断时把已产出的内容一起还给模型。
                 Notify.tell(call.onOutput, { tool: call.name, stream: message.stream, data: message.data }) // 实时通知上层；不等它，它出错也不影响工具执行。
                 return
             }
 
-            stopChildren(call) // 每次调用独立连接，服务进程在成功或失败返回时都应结束。
             pool.busy.delete(child)                                                             // 这次干完了，
             release(child)                                                                      // 让给下一个人，或者还池。
             if (message.type === 'error') call.finish({ output: { type: 'error-text', value: `工具执行失败：${message.message}` }, error: message.message }) // 工具失败也是一条结果，模型需要知道。
@@ -252,10 +236,35 @@ const borrow = async () => {
 }
 
 
+// --- 截断一段文本：头尾都留，开头说明这是什么，结尾通常是结论或报错 ---
+const cut = (text, limit) => text.length <= limit ? text
+    : `${text.slice(0, Math.floor(limit * 0.7))}\n\n……[输出过长，中间省略 ${text.length - limit} 个字符。请缩小范围或分页重新获取]……\n\n${text.slice(-Math.floor(limit * 0.3))}` // 明确告诉模型被截了，它才知道该换个问法。
+
+// --- 截断：一次工具输出不能大到把整个会话撑死 ---
+// 不截断时实测：1MB 的工具返回值 = 31 万 token，超过大多数模型的整个上下文窗口，
+// 而且它会永久留在历史里——连压缩都救不回来，压缩本身就要把这坨东西发给模型去总结。
+// 但只截文本：图片这类媒体内容截一刀就彻底废了，截图工具的返回值本来就大，原样放行。
+// 本地工具和 MCP 工具都从 execute 出来，共用这一条规则。
+const clip = (output, limit) => {
+    if (!Number.isFinite(limit)) return output // 没设上限就原样返回。
+    if (output.type === 'content') return { ...output, value: output.value.map(part => part.type === 'text' ? { ...part, text: cut(part.text, limit) } : part) } // 多模态结果：文字块该截就截，媒体块一个字节不动。
+    const text = typeof output.value === 'string' ? output.value : JSON.stringify(output.value) // 先把输出变成一段文字。
+    return text.length <= limit ? output : { type: 'text', value: cut(text, limit) }            // 超了才截，并且明确告诉模型截过。
+}
+
+
 // --- 执行一个工具。handlers 必须由调用方明确传入，不存在默认工具表 ---
-const execute = ({ name, input, handlers, signal, onOutput, limit = Infinity, concurrency }) => {
-    const handler = handlers?.[name] // 用工具名从地址表里找到它在哪个文件。
-    if (!handler?.url && !handler?.builtin) throw new Error(`Tool ${name} was not found in handlers`) // 认 url / builtin 而不是认对象，'__proto__' 这种名字才不会蒙混过关。
+// MCP 工具的 handler 自带 run（见 features/mcp.js），直接交给它；本地工具交给工具进程。两边出来的结果都过一遍截断。
+const execute = async ({ name, input, handlers, signal, onOutput, limit = Infinity, concurrency }) => {
+    const handler = handlers?.[name] // 用工具名从地址表里找到它。
+    if (!handler?.run && !handler?.url && !handler?.builtin) throw new Error(`Tool ${name} was not found in handlers`) // 认 run / url / builtin 而不是认对象，'__proto__' 这种名字才不会蒙混过关。
+    const result = handler.run ? await handler.run({ input, signal }) : await local({ name, input, handler, signal, onOutput, limit, concurrency })
+    return { ...result, output: clip(result.output, limit) }
+}
+
+
+// --- 在工具进程里执行一个本地工具：排队、借进程、看门狗、取消 ---
+const local = ({ name, input, handler, signal, onOutput, limit, concurrency }) => {
     const call = { id: String(++sequence), name, signal, onOutput, output: buffer(limit), done: false } // 这次调用的全部状态。
     const queue = queueOf(signal, concurrency) // 这次调用属于哪一批；同一批共用同一个上限。
 
@@ -300,7 +309,7 @@ const execute = ({ name, input, handlers, signal, onOutput, limit = Infinity, co
 
             // 进程可能在借出后、发消息前这一刻退出；那时 send 会同步抛错。
             // 抛出去会让这次调用永远不结算（没有人接住这个拒绝），所以在这里就地收口。
-            try { child.send({ callId: call.id, url: handler.url, mcp: handler.mcp, builtin: handler.builtin, skills: handler.skills, name, input, limit }) } // MCP 连接只传数据，不能把执行函数移进主进程。
+            try { child.send({ callId: call.id, url: handler.url, builtin: handler.builtin, skills: handler.skills, name, input }) }
             catch (error) {
                 retire(child)
                 call.finish({ output: { type: 'error-text', value: `工具执行失败：无法派发到工具进程（${error.message}）` }, error: error.message })
@@ -325,56 +334,6 @@ const execute = ({ name, input, handlers, signal, onOutput, limit = Infinity, co
 }
 
 
-// --- 提示词模板的参数声明变成一份 JSON Schema ---
-// MCP 的参数描述里只有名字、说明和是否必填，正好是一个对象 Schema 的全部内容。
-const promptSchema = parameters => jsonSchema({
-    type: 'object',
-    properties: Object.fromEntries(parameters.map(one => [one.name, { type: 'string', ...(one.description ? { description: one.description } : {}) }])), // 每个参数都当字符串。
-    required: parameters.filter(one => one.required).map(one => one.name), // 标了必填的才进 required。
-})
-
-// --- 服务端公开的资源写进工具描述，模型才知道有哪些地址可读 ---
-// 资源和工具描述一样是发现时固定的；服务端资源变了要重新扫一次。
-const resourceTool = resources => ({
-    description: `读取 MCP 服务端公开的资源，uri 从下面挑：\n${resources.map(one => `- ${one.uri}${one.template ? '（模板，占位符自行替换）' : ''}${one.description ? `：${one.description}` : ''}`).join('\n')}`, // 可用地址直接列给模型。
-    inputSchema: jsonSchema({ type: 'object', properties: { uri: { type: 'string', description: '要读取的资源地址' } }, required: ['uri'] }),
-})
-
-// --- 从 MCP 服务发现工具 ---
-// const remote = await Agent.tool.mcp({ transport: { type: 'http', url: 'http://localhost:3000/mcp' }, prefix: 'web_' })
-// 服务端的 tools、prompts、resources 都会变成同一张工具表：工具直连，提示词按参数取回，资源按 uri 读取。
-// signal 可取消发现过程；timeout 是调用方主动选择的工具超时，未设置就不加上限。
-const mcp = async ({ transport, prefix = '', signal, timeout }) => {
-    transport = structuredClone(transport) // 入口只接受连接数据；函数或客户端对象在派发前直接报错，避免 IPC 无法序列化后挂起。
-    const source = { url: import.meta.url, timeout } // 打包后 import.meta.url 自动指向完整产物。
-    const listed = await execute({ name: 'discover', input: {}, handlers: { discover: { ...source, mcp: { transport, kind: 'discover' } } }, signal }) // 发现也在可强杀进程中完成。
-    if (listed.interrupted) throw new DOMException('MCP discovery aborted', 'AbortError') // 发现被取消。
-    if (listed.error) throw new Error(listed.output.value) // 发现失败必须通知调用方，不返回空集合伪装成功。
-    const discovered = listed.output.value                // 服务端公开的三种原语。
-    const schema = Object.create(null) // 外部工具名不影响对象原型。
-    const handlers = Object.create(null)
-
-    for (const tool of discovered.tools) {
-        const name = prefix + tool.name // 多个服务用不同前缀就不会撞名。
-        schema[name] = { description: tool.description, inputSchema: jsonSchema(tool.inputSchema) } // 远端工具直接变成一个本地工具。
-        handlers[name] = { ...source, mcp: { transport, kind: 'tool', name: tool.name } } // 原始名字留给服务端。
-    }
-
-    for (const prompt of discovered.prompts) {
-        const name = prefix + prompt.name // 提示词和工具共用一个命名空间，同名时后发现的覆盖先发现的。
-        schema[name] = { description: prompt.description ?? `MCP 提示词 ${prompt.name}`, inputSchema: promptSchema(prompt.arguments) } // 提示词也变成一个带参数的工具。
-        handlers[name] = { ...source, mcp: { transport, kind: 'prompt', name: prompt.name } }
-    }
-
-    if (discovered.resources.length) { // 服务端没公开资源时不多一个用不上的工具。
-        const name = prefix + 'read_resource' // 所有资源合并成一个读取工具，uri 当参数。
-        schema[name] = resourceTool(discovered.resources)
-        handlers[name] = { ...source, mcp: { transport, kind: 'resource' } }
-    }
-
-    return { schema, handlers } // 与 scan 完全相同的形状，Agent 无需区分工具来源。
-}
-
 // --- 合并本地和远端工具集合 ---
 // 同名时后面的整项覆盖前面，描述和执行地址一起更新，不会各来自不同集合。
 const merge = (...sets) => ({
@@ -382,4 +341,4 @@ const merge = (...sets) => ({
     handlers: Object.assign(Object.create(null), ...sets.map(set => set.handlers ?? {})), // 和 handlers 部分。
 })
 
-export default { scan, execute, mcp, merge }
+export default { scan, execute, merge }

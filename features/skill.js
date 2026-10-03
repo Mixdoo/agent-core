@@ -135,7 +135,7 @@ const scan = async (...directories) => {
         },
     }
 
-    // builtin 是第三种工具地址：前两种是本地文件（url）和 MCP（mcp），这个是包内置的一小段逻辑，跑在工具子进程里。
+    // builtin 是第三种工具地址：前两种是本地文件（url）和 MCP（run），这个是包内置的一小段逻辑，跑在工具子进程里。
     // 正文在扫描时已经读出来了，直接带过去，工具进程不用再读一遍文件、也不用再解析一遍 frontmatter。
     const handlers = { [TOOL]: { builtin: TOOL, skills: Object.fromEntries(list.map(skill => [skill.name, skill.body])) } }
 

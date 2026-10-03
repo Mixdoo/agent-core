@@ -677,20 +677,23 @@ Agent 当前的完整历史消息数组，可直接读写。
 
 ---
 
-### `Agent.tool`
+### `Agent.mcp`
 
 #### MCP 工具与本地工具混用
 
 ```js
-const remote = await Agent.tool.mcp({
+const remote = await Agent.mcp({
     transport: { type: 'http', url: 'http://localhost:3000/mcp', headers: {} },
-    prefix: 'web_', // 可选前缀，避免不同服务出现同名工具
+    prefix: 'web_',  // 可选前缀，避免不同服务出现同名工具
+    timeout: 30000,  // 可选，单次调用超时（毫秒）；不写就一直等
 })
 const local = await Agent.tool.scan('./tools')
 const agent = Agent.create({ config, tools: Agent.tool.merge(local, remote) })
+// ……不用了再关掉
+await remote.close()
 ```
 
-本地服务使用 `{ type: 'stdio', command: 'bun', args: ['/absolute/path/server.js'], env: {} }`；远端也支持 SDK 的 SSE 连接配置。连接参数只收可序列化的数据，不收函数或客户端对象。`signal` 可取消工具发现，`timeout` 可主动设置发现和执行的超时。
+本地服务使用 `{ type: 'stdio', command: 'bun', args: ['/absolute/path/server.js'], env: {} }`；远端也支持 SDK 的 SSE 连接配置。`signal` 可取消这次连接。
 
 服务端公开的三种原语都会变成同一张工具表里的条目，模型不需要区分来源：
 
@@ -702,7 +705,15 @@ const agent = Agent.create({ config, tools: Agent.tool.merge(local, remote) })
 
 服务端没有声明 `prompts` 或 `resources` 时不会去问，也不会多出用不上的工具。取回的提示词会带上 `user：` / `assistant：` 角色标签，便于模型判断这是谁说的话。
 
-发现和执行都在工具子进程中进行。每次独立连接，结束时关闭；取消不会切断另一次调用的连接。本地 stdio 服务的直接进程会随执行进程终止，远端已完成的副作用不能撤回。本实现不共享跨调用的 MCP session；需要保持状态的服务应使用业务 ID。`merge` 同名时以后面的集合为准，工具描述和执行配置一起替换。
+**连接只建一次。** `Agent.mcp` 连上之后，这份工具集合里的每次调用都复用同一个连接，服务端可以保留会话状态。用完调用 `close()` 断开；stdio 服务会随之退出。不调用 `close()` 的话，stdio 服务会一直开着。
+
+**取消和超时按 MCP 自己的方式。** MCP 调用不走工具子进程：取消时把 `signal` 交给 MCP 客户端，这次请求立刻结束并返回"已中断"，连接还能接着用；设了 `timeout` 时到点按失败返回。需要注意，客户端只停掉自己这一边，服务端可能仍在执行，**远端已经做完的事撤不回来**。
+
+`merge` 同名时以后面的集合为准，工具描述和执行方式一起替换。
+
+---
+
+### `Agent.tool`
 
 #### `Agent.tool.scan(directory)`
 
@@ -976,7 +987,7 @@ const agent = Agent.create({ config: { /* ... */ }, tools })
 
 **不管并发排队和限流。** 同一台 Agent 上后一次 `send` 会停掉前一次（这是有意设计的"最新指令优先"）。要让多个用户同时用，就为每个会话建一台 Agent；要限制总并发、总费用，由你的应用做。核心包没有全局任务队列。
 
-**不保证跨调用的 MCP 会话。** 每次 MCP 调用独立连接、结束即关，不共享 session。需要保持状态的服务端，要用业务 ID 自己存状态。
+**不替你管 MCP 连接的生命周期。** `Agent.mcp` 连上之后一直开着，什么时候 `close()` 由你决定；取消只停掉客户端这一边，远端已经做完的事撤不回来。
 
 **不做工具的安全检查。** 工具子进程和 Agent 拥有完全相同的权限：读写任意文件、执行任意命令、联网、读到父进程的全部环境变量。这是有意的——电脑任务 agent 的工具本来就得能干这些。**沙箱、白名单、危险命令拦截属于你的应用层**，核心包只提供 `onPermission` 这一个挂钩点。
 

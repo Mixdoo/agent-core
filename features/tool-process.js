@@ -7,13 +7,13 @@
     child.stdin.write(source); child.stdin.end()
 
 隔着进程的约定是几条消息，工具作者和调用方都不需要手写它们：
-    主线程 → 工具进程   { callId, url, name, input, limit }      执行哪个文件里的哪个工具，输出最多留多长
+    主线程 → 工具进程   { callId, url, name, input }             执行哪个文件里的哪个工具
     主线程 → 工具进程   { callId, builtin, name, input, skills } 执行包内置的动作（目前只有按需加载技能）
     工具进程 → 主线程   { type: 'ready' }                        我起来了，可以派活
-    工具进程 → 主线程   { callId, type: 'child', pid }           这次调用起了本地服务，取消时一起杀
     工具进程 → 主线程   { callId, type: 'output', stream, data } 工具产生了一段实时输出
     工具进程 → 主线程   { callId, type: 'done', output, stop }   跑完了，output 已经是模型能直接读的形态
     工具进程 → 主线程   { callId, type: 'error', message }       工具抛错了
+MCP 工具不走这里：它们在主进程里由 features/mcp.js 直接调用。
 
 它隔离的是生命周期，不是环境。工具在这里拥有和 Agent 完全相同的权限：
 读写任意文件、执行任意命令、联网、读到父进程的全部环境变量（包括 apiKey）。
@@ -115,7 +115,6 @@ Bun.spawn = (command, options = {}) => {
         },
     })
 }
-const relaySpawn = Bun.spawn // 本地工具需要自动转发输出，MCP 的协议管道则由客户端独占。
 
 
 // --- 劫持 console：工具里的 console.log 直接变成流式输出 ---
@@ -147,30 +146,11 @@ const BLOCK = new Set(['text', 'json', 'content', 'error-text', 'error-json', 'e
 const PART = new Set(['text', 'image', 'audio', 'video', 'file', 'file-data', 'file-url'])
 
 
-// --- 截断一段文本：头尾都留，开头说明这是什么，结尾通常是结论或报错 ---
-const cut = (text, limit) => text.length <= limit ? text
-    : `${text.slice(0, Math.floor(limit * 0.7))}\n\n……[输出过长，中间省略 ${text.length - limit} 个字符。请缩小范围或分页重新获取]……\n\n${text.slice(-Math.floor(limit * 0.3))}` // 明确告诉模型被截了，它才知道该换个问法。
-
-
-// --- 截断：一次工具输出不能大到把整个会话撑死 ---
-// 不截断时实测：1MB 的工具返回值 = 31 万 token，超过大多数模型的整个上下文窗口，
-// 而且它会永久留在历史里——连压缩都救不回来，压缩本身就要把这坨东西发给模型去总结。
-// 但只截文本：图片这类媒体内容截一刀就彻底废了，截图工具的返回值本来就大，原样放行。
-const clip = (output, limit) => {
-    if (!limit) return output // 没设上限就原样返回。
-
-    // 多模态结果：逐块处理，文字块该截就截，媒体块一个字节不动。
-    if (output.type === 'content') return { ...output, value: output.value.map(part => part.type === 'text' ? { ...part, text: cut(part.text, limit) } : part) }
-
-    const text = typeof output.value === 'string' ? output.value : JSON.stringify(output.value) // 先把输出变成一段文字。
-    return text.length <= limit ? output : { type: 'text', value: cut(text, limit) }            // 超了才截，并且明确告诉模型截过。
-}
-
-
 // --- 成形：在跨进程之前就把返回值变成模型能读的输出块 ---
 // 放在工具进程里而不是主线程，是因为这一步要执行工具作者写的 toModelOutput、要做 JSON 化、要校验块形状，
 // 三件事都可能抛错；抛在这里只是一条正常的工具失败，抛在主线程会让那次调用永远不结算。
-const shape = (tool, result, limit) => {
+// 输出太长时的截断不在这里：本地工具和 MCP 工具共用主线程里同一条截断规则（见 tool.js 的 clip）。
+const shape = (tool, result) => {
     const value = result?.output ?? result                              // 工具可以返回 { output } 对象，也可以直接返回值。
     const output = tool.toModelOutput ? tool.toModelOutput(value)       // 工具自带格式化函数时优先用它。
         : BLOCK.has(result?.output?.type) ? result.output               // 工具自己就给了成形的输出块——图片和多模态结果走的就是这条路。
@@ -185,7 +165,7 @@ const shape = (tool, result, limit) => {
 
     // 跨进程只传纯 JSON，自带格式化的那条路也一样要过这一关：
     // Date 变字符串、NaN 变 null、循环引用在这里变成一条正常的工具错误，不会写进 history 把 Agent 毒死。
-    return clip(JSON.parse(JSON.stringify(output)), limit)
+    return JSON.parse(JSON.stringify(output))
 }
 
 
@@ -212,17 +192,13 @@ process.on('message', async data => {
             return
         }
 
-        if (data.mcp) Bun.spawn = spawn                                        // MCP 客户端内部可能使用 Bun 的 spawn，不能把协议字节当普通日志读走。
         const module = await import(data.url)                                   // 工具进程是独立进程，工具文件在这里重新加载。
-        const tool = data.mcp
-            ? { execute: input => module.MCP.run(data.mcp, input ?? {}, pid => process.send({ callId: data.callId, type: 'child', pid })) } // 主进程持有本地服务 PID，取消时一起终止。
-            : [module.default].flat().find(one => one.name === data.name) // 本地文件仍按工具名定位。
+        const tool = [module.default].flat().find(one => one.name === data.name) // 按工具名找到文件里的那一个。
         const result = await collect(await tool.execute(data.input))            // 跑工具；生成器工具顺便把每个 yield 实时发出去。
-        process.send({ callId: data.callId, type: 'done', output: shape(tool, result, data.limit), stop: result?.stop === true }) // stop 是工具主动要求结束整个循环。
+        process.send({ callId: data.callId, type: 'done', output: shape(tool, result), stop: result?.stop === true }) // stop 是工具主动要求结束整个循环。
     } catch (error) {
         process.send({ callId: data.callId, type: 'error', message: error?.message || String(error) }) // 工具抛错、toModelOutput 抛错、输出块非法、JSON 化失败，对模型来说都是"这个工具没成功"。
     } finally {
-        Bun.spawn = relaySpawn                                                 // 进程归还池前恢复普通文件工具的输出转发。
         current = null                                                          // 交还身份：这之后再有输出就不属于任何一次调用了。
     }
 })

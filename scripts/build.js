@@ -44,9 +44,10 @@ try {
             const tools = await Agent.tool.scan(${JSON.stringify(join(root, 'tests', 'fixtures', 'tools'))})
             const output = await Agent.tool.execute({ name: 'echo', input: { value: 'build' }, handlers: tools.handlers })
             if (output.output.value !== 'done:build') throw new Error('工具子进程失败')
-            const remote = await Agent.tool.mcp({ transport: { type: 'stdio', command: process.execPath, args: [${JSON.stringify(join(root, 'tests', 'fixtures', 'mcp-server.js'))}] } })
+            const remote = await Agent.mcp({ transport: { type: 'stdio', command: process.execPath, args: [${JSON.stringify(join(root, 'tests', 'fixtures', 'mcp-server.js'))}] } })
             const reply = await Agent.tool.execute({ name: 'echo', input: { value: 'mcp-build' }, handlers: remote.handlers })
-            if (reply.output.value[0].text !== 'mcp-build') throw new Error('打包后的 MCP 子进程失败')
+            await remote.close()
+            if (reply.output.value[0].text !== 'mcp-build') throw new Error('打包后的 MCP 失败')
             const result = await Agent.llm.chat({ baseURL: ${JSON.stringify(`http://127.0.0.1:${server.port}/v1`)}, model: 'test', messages: [{ role: 'user', content: 'hi' }], stream: false })
             if (result.text !== 'ok') throw new Error('模型请求失败')
             const agent = Agent.create({ config: { baseURL: ${JSON.stringify(`http://127.0.0.1:${server.port}/v1`)}, model: 'test', stream: false,

@@ -91,11 +91,17 @@ export interface Callbacks {
     onCompact?: (event: any) => void | Promise<void>
 }
 
-// --- 工具集合：scan / mcp / merge 都返回这个形状 ---
+// --- 工具集合：scan / merge / Agent.mcp 都返回这个形状 ---
 export interface ToolSet {
     schema: Record<string, any>
     handlers: Record<string, any>
 }
+
+// Agent.mcp 返回的工具集合多一个 close：连接只建一次，用完由调用方关掉。
+export interface MCPToolSet extends ToolSet {
+    close: () => Promise<void>
+}
+export type MCPConnect = (options: { transport: Record<string, unknown>; prefix?: string; signal?: AbortSignal; timeout?: number }) => Promise<MCPToolSet>
 
 export interface SkillSet extends ToolSet {
     list: Array<{ name: string; description: string; path: string }>
@@ -114,7 +120,6 @@ export interface ToolModule {
         limit?: number
         concurrency?: number
     }) => Promise<{ output: any; stop?: boolean; error?: string; interrupted?: boolean }>
-    mcp: (options: { transport: Record<string, unknown>; prefix?: string; signal?: AbortSignal; timeout?: number }) => Promise<ToolSet>
     merge: (...sets: ToolSet[]) => ToolSet
 }
 
@@ -210,6 +215,7 @@ export interface Agent {
     version: string
     create: (options?: CreateOptions) => AgentInstance
     tool: ToolModule
+    mcp: MCPConnect
     skill: SkillModule
     history: HistoryModule
     context: ContextModule
