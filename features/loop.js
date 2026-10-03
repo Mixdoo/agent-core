@@ -23,8 +23,8 @@ const result = await Loop.run({
         compactThreshold: 0.8,     // 设置 maxTokens 后使用的压缩比例
         maxSteps: undefined,       // 不设上限；调用方主动传入正整数时才限制模型轮数
         stream: true,              // 主请求和压缩都流式输出
-        noToolPrompt: "继续使用工具", // 模型连续两轮不调工具时的临时提示
-        noToolRounds: 1,           // 连续多少轮不调工具就结束；Infinity 表示永不因此结束
+        noToolPrompt: "请继续使用工具", // 结束前一轮临时发给模型的提醒
+        noToolRounds: 3,           // 有工具时连续多少轮不调工具就结束；Infinity 表示永不因此结束
         retryMaxDelay: 60000,       // 重试退避上限（毫秒）。重试是 LLM.chat 自带的，压缩那次请求也走同一套。
     },
     // --- 功能模块（必填，平齐的功能模块作为参数传）---

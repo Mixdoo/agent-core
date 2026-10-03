@@ -48,12 +48,12 @@ describe('Agent 的状态机', () => {
         } finally { single.stop(true) }
     })
 
-    test('默认注册工具后，模型不调工具即结束，不再多问', async () => {
-        let calls = 0
+    test('注册了工具时，模型不调工具会被追问，第 2 轮带提醒，第 3 轮结束', async () => {
+        const bodies = []
         const mock = Bun.serve({
             port: 0,
-            async fetch() {
-                calls += 1
+            async fetch(request) {
+                bodies.push(await request.json())
                 return Response.json({ choices: [{ index: 0, message: { role: 'assistant', content: '暂时不用工具' }, finish_reason: 'stop' }], usage: {} })
             },
         })
@@ -63,7 +63,11 @@ describe('Agent 的状态机', () => {
             const result = await agent.send('检查一下')
 
             expect(result).toMatchObject({ reason: 'no-tool', text: '暂时不用工具' })
-            expect(calls).toBe(1) // 默认 noToolRounds=1：模型不调工具的那一轮就是最终回答，不要再追问。
+            expect(bodies).toHaveLength(3)                                                    // 默认 noToolRounds=3。
+            const last = request => JSON.stringify(request.messages.at(-1))
+            expect(last(bodies[1])).not.toContain('请继续使用工具')                             // 第 2 次请求还不提醒。
+            expect(last(bodies[2])).toContain('请继续使用工具')                                 // 结束前一轮带上提醒。
+            expect(JSON.stringify(agent.history)).not.toContain('请继续使用工具')              // 提醒只挂在请求上，不写进 history。
         } finally { mock.stop(true) }
     })
 
@@ -400,7 +404,7 @@ describe('Loop', () => {
         })
         try {
             const tools = await Agent.tool.scan(new URL('./fixtures/tools', import.meta.url))
-            const agent = Agent.create({ config: { ...config, baseURL: `http://127.0.0.1:${server.port}/v1` }, tools })
+            const agent = Agent.create({ config: { ...config, baseURL: `http://127.0.0.1:${server.port}/v1`, noToolRounds: 1 }, tools }) // 这里只数用量，答完就结束。
             const answer = await agent.send('回显 x')
 
             expect(answer.steps).toBe(2)

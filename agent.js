@@ -18,7 +18,7 @@ maxTokens?, compactThreshold, maxSteps?, maxToolOutput?, maxToolConcurrency?, re
 // capabilities: { image, audio, video, file, tools, structuredOutput, toolChoice, reasoning }
 // mediaFallback: 'error'（默认）或 'strip'；关闭某种媒体后，strip 会保留文字并丢掉媒体块。
 // requestTimeout: 单笔模型请求最多等多久（毫秒）；不设就不限时，卡住的请求会一直等。
-// noToolRounds: 连续多少轮不调工具就结束（默认 1，即模型不调工具就算答完）；调大可让模型多坚持几轮，设成 Infinity 就永不因不调工具结束。
+// noToolRounds: 有工具时连续多少轮不调工具就结束（默认 3，第 2 轮插入 noToolPrompt 提醒）；设成 Infinity 就永不因不调工具结束。
 // output: 结构化输出格式，如 Agent.output.object({ schema: Agent.schema.object({...}) })；返回值里读 output。
 //         写在配置顶层（它回答"要什么形状的结果"），底层会并进 provider 交给 AI SDK。
 // compact: 压缩单独用一套模型时写在这里，比如 { model: '便宜的小模型' }；也能换 baseURL / apiKey。
@@ -143,9 +143,10 @@ const buildCompact = config => buildLLM(config, config.compact)
 // capabilities 里媒体那几项的默认值由 History 拥有（mediaDefaults），这里只补上工具、结构化输出等 Agent 自己的开关。
 const DEFAULT_CAPABILITIES = { ...History.mediaDefaults, tools: true, structuredOutput: true, toolChoice: true, reasoning: false } // 陌生渠道默认只发通用能力，高级能力由调用方逐项打开。
 const DEFAULT_COMPACT_THRESHOLD = 0.8 // 设置 maxTokens 后，上下文到这个比例就压缩。
-// 有工具时连续几轮不调工具就结束一次 send。默认 1：模型不调工具就是在给最终回答。
-// 实测默认 3 时，模型答完还会被追问两轮，最后一轮常是"谢谢确认"甚至空字符串，把真正的答案盖掉，耗时也翻几倍。
-const DEFAULT_NO_TOOL_ROUNDS = 1
+// 有工具时，模型不调工具也不立刻结束：第 2 轮插一条临时提示推它一下，连续 3 轮都不调才结束。
+// 两种情况一轮就结束：没注册任何工具（普通聊天），或者结构化输出已经校验成功（任务已经交差）。
+const DEFAULT_NO_TOOL_ROUNDS = 3
+const DEFAULT_NO_TOOL_PROMPT = '[错误] 你刚才的响应中没有使用工具！请继续使用工具（这是一条系统提醒消息，请勿以对话形式回复）'
 
 // --- 开始一次运行：先停掉上一次，再做这一次的事 ---
 // send 和 compact 都走这里，所以"同一时间只跑一个任务"这条规则只写一次。
@@ -197,7 +198,7 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
             retryMaxDelay: undefined, // 不限制退避上限；调用方需要限制等待时主动设置毫秒数。
             retryMaxElapsed: undefined, // 不限制重试总时长；服务恢复前持续重试，调用方可主动设置毫秒数。
             requestTimeout: undefined, // 不限制单笔请求时长；调用方需要防卡死时主动设置毫秒数。
-            noToolPrompt: undefined, // 不主动催促模型；调用方需要无工具提醒时主动设置。
+            noToolPrompt: DEFAULT_NO_TOOL_PROMPT, // 连续不调工具时，结束前一轮临时发给模型的提醒；不写进 history。
             compact: undefined,     // 压缩想用另一套模型时写在这里（{ model, baseURL, apiKey, provider… }）；不写就和主模型共用。
             output: undefined,      // 要固定格式的结果时写在这里，如 Agent.output.object({ schema })；不写就返回普通文字。
             stream: true,           // 主循环和压缩请求都使用流式输出。
