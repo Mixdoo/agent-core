@@ -54,6 +54,7 @@ const result = await Loop.run({
 
 import History from '../utils/history.js'
 import LLM from '../utils/llm.js'
+import Notify from '../utils/notify.js'
 
 // --- 把一次请求的用量加进合计 ---
 // 各供应商给的字段不一定齐全（有的不报缓存，有的连 total 都没有），缺的按 0 算，不让一个 undefined 把合计变成 NaN。
@@ -70,7 +71,7 @@ const run = async ({
     history, system, tools, llm, buildContext, compact, executeTool, sessionId, signal,                                 // 数据、LLM 参数、功能模块和取消信号
     onStart, onLLMStart, onLLMFinish, onPermission, onLLMEvent, onRetry, onToolCall, onToolOutput, onToolResult, onStep, onCompact, // 全部回调，没传的自动跳过
 }) => {
-    await onStart?.()          // 外部需要时知道循环已经开始；没有回调就跳过。等它完成，回调抛错才能顺着 send() 冒出去，而不是变成没人接的拒绝。
+    await Notify.tell(onStart) // 外部需要时知道循环已经开始了。
     const noToolRounds = llm.noToolRounds       // 结束轮数由 Agent 填好再传进来，这里不再写第二份默认值。
     const compactThreshold = llm.compactThreshold // 压缩比例同理，来源只有 Agent 一处。
     let noToolCount = 0        // 记录连续没有工具调用的模型回合。
@@ -105,7 +106,7 @@ const run = async ({
         const result = await LLM.chat({ ...llm, ...request, signal, onLLMEvent, onLLMStart, onRetry })
         steps += 1            // 模型完整回答后才算这一轮，失败重试由 LLM.chat 自己处理。
         add(usage, result.usage)
-        await onLLMFinish?.(result) // 上层拿到完整 result，自行选择 usage 或其他字段。
+        await Notify.tell(onLLMFinish, result) // 上层拿到完整 result，自行选择 usage 或其他字段。
         const answer = { text: result.text, ...('output' in result ? { output: result.output } : {}), steps, usage: { ...usage } } // 最终对象和文字来自同一轮，不能从旧历史猜结果。用量是到这一轮为止的合计。
         temporaryPrompt = null      // 提示已经用过，下一轮默认不再携带。
 
@@ -115,7 +116,7 @@ const run = async ({
 
         if (!toolCalls.length) {
             history.push(...assistantMessages)                                  // 保存模型完整 assistant 消息。
-            await onStep?.({ step: steps, result, toolCalls, toolResults: [] })    // 让调用方在回答已经写入 history 后观察这一轮。
+            await Notify.tell(onStep, { step: steps, result, toolCalls, toolResults: [] }) // 让调用方在回答已经写入 history 后观察这一轮。
             if ('output' in result || !Object.keys(tools).length) return { reason: 'no-tool', ...answer } // 校验成功的最终对象直接返回，不再额外请求模型。
             if (steps >= llm.maxSteps) return { reason: 'step-limit', ...answer } // 上限返回本轮文字，工具轮不捏造对象。
             noToolCount += 1                                                    // 累计没有工具调用的轮次。
@@ -129,7 +130,7 @@ const run = async ({
         // Promise.all 让所有工具同时开跑，返回结果的顺序和 toolCalls 一致。
         // 流式输出通过 onToolOutput 带上 toolCallId 实时发出，上层靠 ID 区分是哪个工具的输出。
         const toolResults = await Promise.all(toolCalls.map(async call => {
-            await onToolCall?.(call) // 让上层知道即将执行哪个工具。
+            await Notify.tell(onToolCall, call) // 让上层知道即将执行哪个工具。
 
             // AI SDK 标记 invalid 的调用：参数没法解析，或模型点了一个不存在的工具。
             // 此时 call.input 是原始字符串而不是对象，真跑下去等于拿脏数据喂工具。告诉模型让它重来。
@@ -138,7 +139,7 @@ const run = async ({
             // 模型已经产生了完整工具调用。即使此刻被取消，也要给它补一条取消结果。
             if (signal?.aborted) return { call, output: { type: 'error-text', value: '工具执行已取消' }, stop: true }
 
-            const allowed = await onPermission?.({ sessionId, toolCallId: call.toolCallId, toolName: call.toolName, arguments: call.input, signal }) ?? true // 没有权限回调时按无人值守模式直接放行。
+            const allowed = await Notify.decide(onPermission, { sessionId, toolCallId: call.toolCallId, toolName: call.toolName, arguments: call.input, signal }, true) // 没有权限回调时按无人值守模式直接放行。
             if (!allowed) return { call, output: { type: 'execution-denied', reason: '工具执行被用户拒绝' } } // 拒绝也是一条结果，模型需要知道。
 
             let value
@@ -149,18 +150,17 @@ const run = async ({
                 // 工具失败属于工具结果，不能让一次工具失败打断整个 Agent 循环。
                 // 取消路径由 tool.js 用 resolve 处理，不会走到这里；这里接的是"工具名不在表里"这类调用错误。
                 const output = { type: 'error-text', value: `工具执行失败：${error.message}` } // 失败信息也交给模型，让它自己决定怎么补救。
-                await onToolResult?.({ ...call, error: error.message, output })
+                await Notify.tell(onToolResult, { ...call, error: error.message, output })
                 return { call, output }
             }
-            // 通知放在 try 外面：工具已经成功，回调自己出错只能顺着 send() 抛出去，不能把成功结果改写成"工具执行失败"。
-            await onToolResult?.({ ...call, result: value, output: value.output })                              // 通知上层这个工具已经执行完。
+            await Notify.tell(onToolResult, { ...call, result: value, output: value.output })                   // 通知上层这个工具已经执行完。
             return { call, output: value.output, stop: value?.stop === true || value?.interrupted === true }    // 工具主动停止或被中断都要结束循环。
         }))
 
         // --- 把本轮消息和工具结果写回历史 ---
         history.push(...assistantMessages) // AI SDK 的 tool 消息不用，工具结果由项目自己的执行器生成。
         for (const { call, output } of toolResults) history.push(History.tool({ toolCallId: call.toolCallId, toolName: call.toolName, content: output }))
-        await onStep?.({ step: steps, result, toolCalls, toolResults })             // 工具结果已写入 history，调用方可安全持久化这一轮。
+        await Notify.tell(onStep, { step: steps, result, toolCalls, toolResults })   // 工具结果已写入 history，调用方可安全持久化这一轮。
 
         // --- 判断是否停止循环 ---
         if (toolResults.some(result => result.stop)) {                                          // 任何一个工具要求停止，整个循环就结束。

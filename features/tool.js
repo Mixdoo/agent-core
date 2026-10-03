@@ -47,6 +47,7 @@ import { basename } from 'node:path'
 import { jsonSchema } from 'ai'
 import PQueue from 'p-queue' // 排队与并发上限交给它，这个包不再自己数名额、维护等待队列。
 import toolProcessSource from './tool-process.js' with { type: 'text' } // 工具进程源码以文本引入，打包成单文件时会被原样内联成字符串。
+import Notify from '../utils/notify.js' // 实时输出回调统一从这里调用，出错不影响工具执行。
 export { MCP } from './mcp.js' // 供子进程按当前模块地址导入，源码和单文件产物使用同一入口。
 
 // 工具进程要用一个"能跑脚本的 bun"来启动。宿主自己通常就是，用它比在 PATH 上碰运气可靠：
@@ -210,10 +211,7 @@ const open = () => {
 
             if (message.type === 'output') {
                 call.output.push(String(message.data))                                          // 攒着，中断时把已产出的内容一起还给模型。
-                // 实时通知是给界面用的，Loop 有意不等它。它自己抛错必须在这里拦住：
-                // 这是 IPC 回调，异常没人接住就是未捕获异常，会让宿主进程整个退出。
-                try { call.onOutput?.({ tool: call.name, stream: message.stream, data: message.data }) }
-                catch { /* 展示回调自己的错误不影响工具执行。 */ }
+                Notify.tell(call.onOutput, { tool: call.name, stream: message.stream, data: message.data }) // 实时通知上层；不等它，它出错也不影响工具执行。
                 return
             }
 

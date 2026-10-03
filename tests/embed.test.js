@@ -34,6 +34,37 @@ describe('可嵌入性', () => {
         for (const key of Object.keys(Agent.tool)) expect(has('ToolModule', key)).toBe(true)
     })
 
+    test('onPermission 收到的每个字段，README 和类型声明都写了', async () => {
+        // issue #5：运行时一直传 signal，README 也写了，只有 index.d.ts 漏了——TS 用户读 permission.signal 就编译失败。
+        // 这里抓一次真实传给回调的字段，逐个去两份文档里对照。
+        let received
+        const server = Bun.serve({
+            port: 0,
+            async fetch(request) {
+                const body = await request.json()
+                const answered = body.messages.some(message => message.role === 'tool')
+                const message = answered
+                    ? { role: 'assistant', content: '好' }
+                    : { role: 'assistant', content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'echo', arguments: '{"value":"x"}' } }] }
+                return Response.json({ choices: [{ index: 0, message, finish_reason: answered ? 'stop' : 'tool_calls' }], usage: {} })
+            },
+        })
+        try {
+            const tools = await Tool.scan(TOOLS)
+            const agent = Agent.create({ tools, config: { baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'k', model: 'm', stream: false }, callbacks: { onPermission: permission => { received = permission; return true } } })
+            await agent.send('跑一下')
+        } finally { server.stop(true) }
+
+        expect(received.signal).toBeInstanceOf(AbortSignal)
+        const declared = (await Bun.file(new URL('../index.d.ts', import.meta.url)).text()).match(/onPermission\?: \(permission: \{([^}]*)\}/)[1]
+        const readme = (await Bun.file(new URL('../README.md', import.meta.url)).text()).match(/\| `onPermission` \|[^|]*\| `\{([^}]*)\}`/)[1]
+        for (const key of Object.keys(received)) {
+            expect(declared).toContain(`${key}:`) // 类型声明里有这个字段。
+            expect(readme).toContain(key)         // README 的回调表里也有。
+        }
+        expect(declared).toContain('signal: AbortSignal')
+    })
+
     test('History 除了造消息块，还给出读历史的操作', () => {
         // 嵌入方拿到 history 之后要做的事不止"往里塞一条"：要渲染给用户看、要数聊了几轮。
         // 这两件事的知识（内容块有哪些形状、回合怎么划分）本来就在核心里，

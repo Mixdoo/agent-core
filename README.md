@@ -547,6 +547,8 @@ console.log(answer.text)
 | `onRetry` | 请求失败重试 | `{ attempt, error, delay }`（主请求和压缩请求共用） |
 | `onCompact` | 上下文压缩 | `compact-start` / AI SDK 事件 / `compact-finish` |
 
+除了 `onPermission`，所有回调都只是通知：回调自己抛错会被忽略，任务照常进行，工具结果也不会被改写。`onPermission` 的返回值决定放不放行，所以它抛错时这次 `send` 会失败，交给你的 `.catch()`。
+
 #### `agent.send(input)` / `agent.send(options)`
 
 只发送文字或内容块数组时直接传入；要覆盖配置、历史、工具或回调时传对象。如果上一次 `send` 还在运行，本次调用会先自动停止上一次任务，再启动新任务。

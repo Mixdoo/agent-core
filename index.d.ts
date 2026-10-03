@@ -82,7 +82,7 @@ export interface Callbacks {
     onLLMStart?: (request: { messages: unknown[]; tools: unknown }) => void | Promise<void>
     onLLMFinish?: (result: any) => void | Promise<void>
     onLLMEvent?: (event: any) => void | Promise<void>
-    onPermission?: (permission: { sessionId: string; toolCallId: string; toolName: string; arguments: any }) => boolean | Promise<boolean>
+    onPermission?: (permission: { sessionId: string; toolCallId: string; toolName: string; arguments: any; signal: AbortSignal }) => boolean | Promise<boolean>
     onRetry?: (info: { attempt: number; error: Error; delay: number }) => void
     onToolCall?: (call: { toolCallId: string; toolName: string; input: any }) => void | Promise<void>
     onToolOutput?: (output: { tool: string; stream: string; data: string; toolCallId: string; toolName: string }) => void

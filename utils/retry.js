@@ -19,6 +19,7 @@ const result = await Retry.run({
  */
 
 import pRetry from 'p-retry'
+import Notify from './notify.js' // 重试通知统一从这里调用，出错不影响重试。
 
 // "这个错误能不能重试"由抛错的人说了算：LLM.chat 抛的是 AI SDK 的原始 APICallError，
 // 它自己带着 isRetryable（429、408、5xx、连接失败都为真）。这里不再照着状态码重新判断一遍，
@@ -39,8 +40,7 @@ const run = async ({ operation, signal, onRetry, maxDelay = Infinity, maxElapsed
         maxRetryTime: maxElapsed,                 // 一直失败最多再试多久（毫秒）。
         shouldRetry: async ({ error, attemptNumber, retryDelay }) => {
             if (!isRetryable(error)) return false  // 不能重试的错误立刻收手，把原始错误交给上层。
-            // onRetry 是给 UI 的通知，坏掉不该顶替真正的模型错误——吞掉它，重试照常进行。
-            try { await onRetry?.({ attempt: attemptNumber, error, delay: retryDelay }) } catch {}
+            await Notify.tell(onRetry, { attempt: attemptNumber, error, delay: retryDelay }) // 让上层能显示"正在重试第几次"。
             return true
         },
     }

@@ -21,6 +21,7 @@ const content = await Compact.run({
 */
 
 import LLM from '../utils/llm.js'
+import Notify from '../utils/notify.js'
 
 // 压缩的指令。说清楚"留什么、丢什么"，模型才知道这份总结是拿来接着干活的，不是拿来复述的。
 const SUMMARIZE = `请把以上对话压缩成一段总结，供你自己后续继续工作时使用。
@@ -30,7 +31,7 @@ const SUMMARIZE = `请把以上对话压缩成一段总结，供你自己后续�
 
 // Compact 只负责把上下文变成总结文本，是否需要压缩由调用方决定。
 const run = async ({ messages, llm, stream = true, onCompact, onRetry, signal }) => {
-    await onCompact?.({ type: 'compact-start', messages })                                        // 告诉上层：压缩开始了。
+    await Notify.tell(onCompact, { type: 'compact-start', messages })                             // 告诉上层：压缩开始了。
 
     // 原来的 system 里折着上一次的总结（见 Context 的 brief）。直接丢掉它，第二次压缩就看不到第一次总结过的事实，
     // 跑得越久忘得越多。所以把它作为背景并进压缩专用的 system，而不是夹在对话中间。
@@ -57,7 +58,7 @@ const run = async ({ messages, llm, stream = true, onCompact, onRetry, signal })
 
     const content = result.text.trim()                                                            // 总结就是模型输出的文字。
     if (!content) throw new Error('压缩失败：模型返回空总结') // 空总结会导致 History.compact 校验失败，提前报错。
-    await onCompact?.({ type: 'compact-finish', content })                                        // 告诉上层：压缩完成，总结是这个。
+    await Notify.tell(onCompact, { type: 'compact-finish', content })                             // 告诉上层：压缩完成，总结是这个。
     return content                                                                                // 总结文本交回调用方（由它写进 history）。
 }
 

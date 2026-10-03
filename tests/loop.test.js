@@ -515,13 +515,38 @@ describe('Loop', () => {
         } finally { mock.stop(true) }
     })
 
-    test('onToolResult 回调抛错时，成功的工具结果不会被改写成"工具执行失败"', async () => {
-        // 回调是给界面用的。它自己出错时，错误顺着 send() 抛出去；
-        // 工具真实的成功结果不能被换成一句"工具执行失败：界面更新失败"，回调也不能被再调一次。
+    test('通知类回调（onToolResult 等）抛错不会打断任务，也不会改写工具结果', async () => {
+        // 规则只有一条，写在 utils/notify.js：只看返回值的 onPermission 之外，所有回调都只是通知。
+        // 界面回调坏了，任务照常完成；工具真实的成功结果原样进 history，回调也不会被再调一次。
         const history = [History.user({ content: '开始' })]
         let calls = 0
         let round = 0
 
+        const answer = await Loop.run({
+            history,
+            system: '',
+            tools: { echo: { description: 'echo', inputSchema: jsonSchema({ type: 'object', properties: {} }) } },
+            llm: { baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'k', model: 'm', stream: false, noToolRounds: 1 },
+            buildContext: Context.build,
+            compact: async () => '总结',
+            executeTool: async () => ({ output: { type: 'text', value: '真实输出' } }), // 工具本身成功。
+            onToolResult: () => { calls += 1; throw new Error('界面更新失败') },
+            onStep: () => { throw new Error('界面更新失败') },
+            onLLMFinish: result => {
+                round += 1
+                if (round === 1) result.toolCalls = [{ toolCallId: 'c1', toolName: 'echo', input: {} }]
+            },
+        })
+
+        expect(answer.reason).toBe('no-tool')                           // 任务照常完成。
+        expect(calls).toBe(1)                                          // 只通知一次。
+        expect(JSON.stringify(history)).toContain('真实输出')           // 成功结果原样写进 history。
+        expect(JSON.stringify(history)).not.toContain('工具执行失败')
+    })
+
+    test('onPermission 抛错会让这次 send 失败：它的返回值决定放不放行，不能猜', async () => {
+        const history = [History.user({ content: '开始' })]
+        let round = 0
         const error = await Loop.run({
             history,
             system: '',
@@ -529,17 +554,16 @@ describe('Loop', () => {
             llm: { baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'k', model: 'm', stream: false },
             buildContext: Context.build,
             compact: async () => '总结',
-            executeTool: async () => ({ output: { type: 'text', value: '真实输出' } }), // 工具本身成功。
-            onToolResult: () => { calls += 1; throw new Error('界面更新失败') },
+            executeTool: async () => ({ output: { type: 'text', value: '不该跑到这里' } }),
+            onPermission: () => { throw new Error('权限服务挂了') },
             onLLMFinish: result => {
                 round += 1
                 if (round === 1) result.toolCalls = [{ toolCallId: 'c1', toolName: 'echo', input: {} }]
             },
         }).catch(caught => caught)
 
-        expect(error.message).toBe('界面更新失败')  // 回调的错误如实交给调用方。
-        expect(calls).toBe(1)                       // 只通知一次，不会因为进了 catch 再通知一遍。
-        expect(JSON.stringify(history)).not.toContain('工具执行失败') // 没有把成功改写成失败。
+        expect(error.message).toBe('权限服务挂了')
+        expect(JSON.stringify(history)).not.toContain('不该跑到这里') // 没放行就没执行。
     })
 })
 

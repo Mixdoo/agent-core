@@ -372,26 +372,27 @@ describe('单笔请求限时与错误分类', () => {
         expect(error.kind).toBe('aborted')
     })
 
-    test('onLLMEvent 回调自己抛错时不当成网络抖动去无限重试', async () => {
-        // 流式里没带 isRetryable 的错误会被补成可重试；回调的 bug 也混在里面的话，
-        // 默认不限时的重试会让 send() 永远不结束。
+    test('onLLMEvent 回调自己抛错时请求照常完成，不重试也不失败', async () => {
+        // 流式事件回调是给界面的通知。以前它抛错会被当成网络抖动、补上可重试标记，
+        // 默认不限时的重试会让 send() 永远不结束。现在通知类回调出错一律忽略（utils/notify.js）。
         let calls = 0
         const server = Bun.serve({
             port: 0,
-            async fetch() {
+            async fetch(request) {
+                await request.json()
                 calls += 1
                 return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: '你好' } }] })}\n\ndata: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: {} })}\n\ndata: [DONE]\n\n`, { headers: { 'content-type': 'text/event-stream' } })
             },
         })
         try {
-            const error = await Promise.race([
-                LLM.chat({ baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'k', model: 'm', messages: [{ role: 'user', content: 'hi' }], stream: true, onLLMEvent: () => { throw new Error('界面挂了') } }).catch(caught => caught),
+            const result = await Promise.race([
+                LLM.chat({ baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'k', model: 'm', messages: [{ role: 'user', content: 'hi' }], stream: true, onLLMEvent: () => { throw new Error('界面挂了') } }),
                 Bun.sleep(5000).then(() => 'HUNG'),
             ])
 
-            expect(error).not.toBe('HUNG')
-            expect(error.message).toBe('界面挂了')
-            expect(calls).toBeLessThanOrEqual(1) // 没有重试（start 事件在连接前就发出，所以可能一次都没连上）。
+            expect(result).not.toBe('HUNG')
+            expect(result.text).toBe('你好') // 回答照常拿到。
+            expect(calls).toBe(1)            // 没有重试。
         } finally { server.stop(true) }
     })
 

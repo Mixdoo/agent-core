@@ -88,6 +88,7 @@ import { createGoogle } from '@ai-sdk/google'                         // 模型�
 import Retry from './retry.js'                                       // 主请求和压缩请求共用的退避重试。
 import History from './history.js'                                   // 在发给供应商前把旧媒体块统一成 AI SDK 当前形态。
 import TextTools from './text-tools.js'                              // 纯对话模型的文字工具协议：说明书、解析、降级。
+import Notify from './notify.js'                                     // 回调统一从这里调用，出错不影响请求。
 
 
 // --- 提示词缓存：每种协议要的东西不一样，这里集中回答 ---
@@ -174,8 +175,7 @@ const request = async ({ input, stream, requestTimeout, markAttempt, onLLMEvent,
 
     try {
         for await (const event of result.stream) {
-            // 不过滤事件，文字、思考、工具和错误都交给上层。回调自己的 bug 不是网络抖动，标成不可重试，否则会无限重试。
-            try { await onLLMEvent?.(event) } catch (error) { throw Object.assign(error instanceof Error ? error : new Error(String(error)), { isRetryable: false }) }
+            await Notify.tell(onLLMEvent, event) // 不过滤事件，文字、思考、工具和错误都交给上层。
             if (event.type === 'error') failure = event.error // AI SDK 只对"中断流的网络错误"抛异常，供应商自己报的错是一个事件，不接住就会被当成正常回答。
             if (event.type === 'text-delta') text.push(event.textDelta ?? event.text ?? event.delta ?? '') // 收集最终文字。
         }
@@ -317,7 +317,7 @@ const chat = async ({
         // 主循环和上下文压缩自动走同一套重试、同一套退避、同一个 onRetry 通知。
         const result = await Retry.run({
             operation: async () => {
-                await onLLMStart?.({ messages, tools }) // 每一次真实请求都通知一次；重试也是真实请求。
+                await Notify.tell(onLLMStart, { messages, tools }) // 每一次真实请求都通知一次；重试也是真实请求。
                 try { return await once() }
                 catch (error) { throw label(error, attempt) } // 分类只在这里做一次，流式和非流式共用同一个出口。
             },

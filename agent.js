@@ -92,10 +92,12 @@ const result = await Agent.llm.chat({ baseURL, apiKey, model, messages })
 // const { output } = await agent.send('计算总数')
 
 // callbacks 中可使用下面这些回调：
+// onPermission: ({ sessionId, toolCallId, toolName, arguments, signal }) => true | false，需要等待时可以返回 Promise。
+//               它是唯一一个看返回值的回调；它抛错时这次 send 失败。
+// 其余回调都只是通知：出错会被忽略，不影响任务（规则写在 utils/notify.js）。
 // onStart: () => {}，循环开始时调用，无返回值。
 // onLLMStart: ({ messages, tools }) => {}，每次实际请求模型前调用。
 // onLLMFinish: result => {}，模型请求完成时调用，result 是 LLM.chat 返回的完整结果。
-// onPermission: ({ sessionId, toolCallId, toolName, arguments }) => true | false，需要等待时可以返回 Promise。
 // onLLMEvent: event => {}，原样收到 AI SDK 流中的每个事件。
 // onRetry: info => {}，模型请求重试时调用，info 是重试信息。
 // onToolCall: call => {}，模型请求调用工具时调用，call 包含 toolCallId、toolName、input。

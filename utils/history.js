@@ -54,6 +54,13 @@ const contentParts = (content, name = 'content') => {
     return [{ type: 'text', text: text(content, name) }]                                // 一句纯文本，包成一个文字块。
 }
 
+// 工具参数可以是对象，也可以是 OpenAI 格式的 JSON 字符串。
+// 从库里恢复的会话可能带着没写完的字符串；读不出来就当没有参数，不让一条坏记录打死整个会话。
+const toolInput = raw => {
+    if (typeof raw !== 'string') return raw
+    try { return JSON.parse(raw) } catch { return {} }
+}
+
 // 创建用户历史块；Context.build() 最终会只取 role 和 content。
 // content 既可以是一段纯文本，也可以是 AI SDK 风格的内容块数组——图片和文件就走数组这条路
 // （AI SDK 的 UserContent 本来就是 string | Array<TextPart | ImagePart | FilePart>）。
@@ -72,7 +79,7 @@ const assistant = ({ id, content = null, toolCalls = [] }) => ({
             type: 'tool-call',                                  // 一次工具调用就是一个内容块。
             toolCallId: text(callId, 'toolCalls[].id'),         // 结果靠这个 id 找回它，不能为空。
             toolName: text(name, 'toolCalls[].name'),           // 调用的工具名。
-            input: input ?? (typeof rawArguments === 'string' ? (() => { try { return JSON.parse(text(rawArguments, 'toolCalls[].arguments')) } catch { return {} } })() : rawArguments), // 参数可以是对象，也可以是 JSON 字符串；解析失败时用空对象，不能让坏参数崩掉整个 History.assistant。
+            input: input ?? toolInput(rawArguments),            // 参数可以是对象，也可以是 JSON 字符串。
         })),
     ],
 })
@@ -175,7 +182,7 @@ const model = (message, { answered = new Set(), capabilities = DEFAULTS.capabili
             if (!prepared) return []                                       // 被摘掉的块（思考、没人应答的调用、不支持且选择丢掉的媒体）不占位置。
             return prepared.type === 'tool-result' ? [{ ...prepared, output: prepareOutput(prepared.output, options) }] : [prepared] // 工具结果里的媒体也要按同一套规则处理。
         })
-        : message.content
+        : message.content ?? []                                            // 外部还原的历史可能是 content:null（只调了工具没说话），当成空内容，由 Context 整条丢掉。
     return { role: message.role, content }                                 // 只留角色和内容，id、compact 这些内部字段不带出门。
 }
 
