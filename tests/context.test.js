@@ -6,7 +6,7 @@ Context 只读 history，从不修改它。这里所有测试都建立在同一�
 */
 
 import { expect, test, describe } from 'bun:test'
-import History from '../utils/history.js'
+import History from '../features/history.js'
 import Context from '../features/context.js'
 import { withTurns, pairing } from './helpers.js'
 

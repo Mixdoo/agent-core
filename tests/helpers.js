@@ -6,7 +6,7 @@
 共用文件一旦什么都装，改任何一处测试都得先读懂全部测试。
 */
 
-import History from '../utils/history.js'
+import History from '../features/history.js'
 
 // 专门放"坏"工具的目录：会循环引用、会自杀、会死循环。scan 直接收 URL，不用自己拼路径。
 export const BROKEN = new URL('./fixtures/broken', import.meta.url)

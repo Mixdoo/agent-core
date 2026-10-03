@@ -1,4 +1,4 @@
-﻿/*
+/*
 目标被调用形式（绝对不可修改）：
 const result = await Loop.run({
     // --- 数据（必填）---
@@ -18,7 +18,7 @@ const result = await Loop.run({
             headers: {},
             body: {},
         },
-        // 下面这些值由 Agent 组装好再传进来（见 agent.js 的默认值），Loop 直接使用，不再自己补默认。
+        // 下面这些值由 Agent 组装好再传进来（见 index.js 的默认值），Loop 直接使用，不再自己补默认。
         maxTokens: undefined,      // 不限制上下文；设置后才启用 token 估算和压缩
         compactThreshold: 0.8,     // 设置 maxTokens 后使用的压缩比例
         maxSteps: undefined,       // 不设上限；调用方主动传入正整数时才限制模型轮数
@@ -52,9 +52,9 @@ const result = await Loop.run({
  // result = { reason: 'no-tool' | 'tool-stop' | 'step-limit', text: '最后一轮模型生成的文字', steps: 模型轮数, usage: { inputTokens, outputTokens, totalTokens, cacheReadTokens, cacheWriteTokens } }
  */
 
-import History from '../utils/history.js'
-import LLM from '../utils/llm.js'
-import TextTools from '../utils/text-tools.js'
+import History from './history.js'
+import LLM from './llm.js'
+import TextTools from './text-tools.js'
 import Notify from '../utils/notify.js'
 
 // --- 把一次请求的用量加进合计 ---

@@ -8,7 +8,7 @@
 
 import { expect, test, describe } from 'bun:test'
 import Agent from '../index.js'
-import History from '../utils/history.js'
+import History from '../features/history.js'
 import Context from '../features/context.js'
 import Tool from '../features/tool.js'
 import { BROKEN, TOOLS, pairing } from './helpers.js'

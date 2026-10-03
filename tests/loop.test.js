@@ -9,7 +9,7 @@
 import { expect, test, describe, afterAll } from 'bun:test'
 import { jsonSchema } from 'ai'
 import Agent from '../index.js'
-import History from '../utils/history.js'
+import History from '../features/history.js'
 import Context from '../features/context.js'
 import Compact from '../features/compact.js'
 import Loop from '../features/loop.js'

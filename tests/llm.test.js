@@ -1,4 +1,4 @@
-﻿/*
+/*
 盯住这个项目和模型供应商之间唯一的边界。
 
 这个文件里的测试全都建立在一条契约上：LLM.chat 要么返回一份完整结果，
@@ -9,10 +9,10 @@
 import { expect, test, describe, afterAll } from 'bun:test'
 import Agent from '../index.js'
 import Tool from '../features/tool.js'
-import LLM from '../utils/llm.js'
+import LLM from '../features/llm.js'
 import Compact from '../features/compact.js'
 import Context from '../features/context.js'
-import History from '../utils/history.js'
+import History from '../features/history.js'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import { TOOLS, failingServer, echoServer } from './helpers.js'
 

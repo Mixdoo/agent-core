@@ -1,10 +1,10 @@
 import { expect, test, describe } from 'bun:test'
 import Agent from '../index.js'
-import History from '../utils/history.js'
+import History from '../features/history.js'
 import Context from '../features/context.js'
 import Retry from '../utils/retry.js'
 import Tool from '../features/tool.js'
-import LLM from '../utils/llm.js'
+import LLM from '../features/llm.js'
 import Compact from '../features/compact.js'
 import Loop from '../features/loop.js'
 

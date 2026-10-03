@@ -20,7 +20,7 @@ const content = await Compact.run({
 // onCompact compact-finish: { type, content }，压缩完成
 */
 
-import LLM from '../utils/llm.js'
+import LLM from './llm.js'
 import Notify from '../utils/notify.js'
 
 // 压缩的指令。说清楚"留什么、丢什么"，模型才知道这份总结是拿来接着干活的，不是拿来复述的。

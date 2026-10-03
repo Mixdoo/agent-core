@@ -30,7 +30,7 @@ build() 一进来就把平铺历史读成回合：工具结果按 toolCallId 回
 */
 
 import { countTokens } from 'gpt-tokenizer'
-import History from '../utils/history.js' // 「什么是一个回合」由 History 定义，这里只是它的使用者
+import History from './history.js' // 「什么是一个回合」由 History 定义，这里只是它的使用者
 
 // 开场留住用户最初说过的话（按用户回合数），总结前留住当前任务的最近现场（按回合数）。
 // 这两个数字是上限，真正能留多少还要看预算——光按条数留，一条巨大的消息就能让压缩永远收敛不了。

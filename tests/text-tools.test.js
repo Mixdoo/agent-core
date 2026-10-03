@@ -8,7 +8,7 @@
 
 import { expect, test, describe } from 'bun:test'
 import Agent from '../index.js'
-import TextTools from '../utils/text-tools.js'
+import TextTools from '../features/text-tools.js'
 import { TOOLS, pairing } from './helpers.js'
 import Context from '../features/context.js'
 

@@ -8,7 +8,7 @@ history 只增不删，一条形状非法的消息写进去就是永久的，之
 
 import { expect, test, describe } from 'bun:test'
 import Agent from '../index.js'
-import History from '../utils/history.js'
+import History from '../features/history.js'
 import Context from '../features/context.js'
 import Tool from '../features/tool.js'
 import { MEDIA } from './helpers.js'

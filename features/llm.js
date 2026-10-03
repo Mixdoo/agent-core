@@ -1,4 +1,4 @@
-﻿/*
+/*
 目标被调用形式（绝对不可修改）：
 const result = await LLM.chat({
     // --- 连接（必填）---
@@ -83,9 +83,9 @@ import { createOpenAI } from '@ai-sdk/openai'                         // 模型�
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'    // 默认的 OpenAI Chat 兼容连接。
 import { createAnthropic } from '@ai-sdk/anthropic'                   // 模型名写法中的 Anthropic 连接。
 import { createGoogle } from '@ai-sdk/google'                         // 模型名写法中的 Gemini 连接。
-import Retry from './retry.js'                                       // 主请求和压缩请求共用的退避重试。
+import Retry from '../utils/retry.js'                                       // 主请求和压缩请求共用的退避重试。
 import History from './history.js'                                   // 在发给供应商前把旧媒体块统一成 AI SDK 当前形态。
-import Notify from './notify.js'                                     // 回调统一从这里调用，出错不影响请求。
+import Notify from '../utils/notify.js'                                     // 回调统一从这里调用，出错不影响请求。
 
 
 // --- 提示词缓存：每种协议要的东西不一样，这里集中回答 ---

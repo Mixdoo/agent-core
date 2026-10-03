@@ -8,7 +8,7 @@
 
 import { expect, test, describe, afterAll } from 'bun:test'
 import Agent from '../index.js'
-import History from '../utils/history.js'
+import History from '../features/history.js'
 
 const recorded = []
 const server = Bun.serve({

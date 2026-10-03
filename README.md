@@ -129,22 +129,23 @@ bun main.js
 ```
 @kernel4632/agent-core
 │
-├── index.js              ← 入口，只导出 Agent
-├── agent.js              ← Agent.create() 的实现
+├── index.js              ← 唯一入口：create / send / stop / compact，把下面的功能组合起来
 │
-├── features/             ← 功能模块（每个只做一件事）
-│   ├── loop.js           ← 主循环：LLM → 工具 → LLM → ...
-│   ├── tool.js           ← 工具扫描 + 工具执行（主线程这一半）
-│   ├── tool-process.js   ← 工具真正跑起来的地方（子进程那一半）
-│   ├── context.js        ← 把历史消息裁剪成模型上下文
-│   ├── compact.js        ← 上下文太长时自动压缩总结
+├── features/             ← 功能：由入口或主循环组合起来用，每个文件一个主体
+│   ├── loop.js           ← 主循环：Context → TextTools → LLM → 工具 → ...
+│   ├── llm.js            ← 只负责和模型说话：四种协议、缓存、超时、错误分类
+│   ├── text-tools.js     ← 文字工具协议：让纯对话模型也能调用工具
+│   ├── history.js        ← 对话记录：造消息块、拆回合、渲染
+│   ├── context.js        ← 把历史消息裁剪成这一轮发给模型的上下文
+│   ├── compact.js        ← 上下文太长时写总结
+│   ├── tool.js           ← 本地工具：扫描、执行、合并工具集合（主线程这一半）
+│   ├── tool-process.js   ← 本地工具真正跑起来的地方（子进程那一半）
+│   ├── mcp.js            ← 连接 MCP 服务，把它公开的东西变成工具集合
 │   └── skill.js          ← 扫描技能目录，内置 skill 工具按需加载
 │
-└── utils/               ← 基础工具
-    ├── llm.js            ← 底层 LLM 请求（支持多种协议）
-    ├── text-tools.js     ← 文字工具协议：让纯对话模型也能调用工具
-    ├── history.js        ← 创建标准格式的历史消息块
-    └── retry.js          ← 失败自动重试（指数退避）
+└── utils/                ← 工具：被功能调用，不反过来依赖功能
+    ├── retry.js          ← 失败自动重试（指数退避）
+    └── notify.js         ← 所有回调的统一出口
 ```
 
 `tool.js` 和 `tool-process.js` 是同一件事的两半，所以放在一起：前者在主线程里找工具、管工具进程，
