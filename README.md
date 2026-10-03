@@ -783,6 +783,14 @@ const result = await Agent.llm.chat({
 // result.finishReason  → 停止原因
 ```
 
+`Agent.llm.chat` 只负责和模型说话，不处理文字工具协议（`toolMode` 是 Agent 的配置，由主循环负责）。直接调它、又要让纯对话模型用工具时，自己在请求前后各调一次：
+
+```js
+const spec = await Agent.textTools.prepare(tools.schema)                       // 把工具表写成说明书
+const reply = await Agent.llm.chat({ ...connection, messages: Agent.textTools.wrap(messages, spec) }) // 不带 tools 字段
+const result = Agent.textTools.read(reply, spec, { loose: true })             // result.toolCalls 就是读回来的调用
+```
+
 ---
 
 ### `Agent.context`

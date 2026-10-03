@@ -100,6 +100,23 @@ describe('出门降级：标准历史 → 纯对话消息', () => {
         const out = TextTools.downgrade([{ role: 'tool', content: [{ type: 'tool-result', toolCallId: 'c1', toolName: 'shot', output: { type: 'content', value: [{ type: 'text', text: '截图' }, { type: 'file', mediaType: 'image/png', data: 'AAAA' }] } }] }])
         expect(out[0].content.some(part => part.type === 'file' && part.mediaType === 'image/png')).toBe(true)
     })
+
+    test('wrap 把说明书接在已有 system 后面；没有 system 就新加一条', () => {
+        const spec = { names: [], params: {}, instructions: '说明书' }
+        expect(TextTools.wrap([{ role: 'system', content: '你是助手' }, { role: 'user', content: '你好' }], spec)[0]).toEqual({ role: 'system', content: '你是助手\n\n说明书' })
+        expect(TextTools.wrap([{ role: 'user', content: '你好' }], spec).map(one => one.role)).toEqual(['system', 'user'])
+    })
+
+    test('read 把文字里的调用改写成原生调用的形状；已有原生调用时原样返回', () => {
+        const spec = { names: ['add'], params: {}, instructions: '' }
+        const reply = { text: '<tool_call>{"name":"add","arguments":{"a":1}}</tool_call>', toolCalls: [], responseMessages: [{ role: 'assistant', content: [{ type: 'text', text: '原文' }] }] }
+        const read = TextTools.read(reply, spec)
+        expect(read.toolCalls[0]).toMatchObject({ type: 'tool-call', toolName: 'add', input: { a: 1 } })
+        expect(read.responseMessages.at(-1).content.some(part => part.type === 'tool-call')).toBe(true) // 写进 history 的也是标准块。
+
+        const native = { ...reply, toolCalls: [{ toolCallId: 'n1', toolName: 'add', input: {} }] }
+        expect(TextTools.read(native, spec)).toBe(native)
+    })
 })
 
 

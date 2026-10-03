@@ -2,16 +2,19 @@
 文字工具协议：让没有原生工具能力的模型（纯对话模型）也能使用工具。
 
 原生的工具调用是接口层的一个字段：请求里带 tools，响应里回 tool_calls。
-纯对话模型不认这个字段，它只输出文字。这个文件回答三件事：
+纯对话模型不认这个字段，它只输出文字。Loop 在问模型的前后各调一次这里：
 
-1. prepare(tools)  把工具说明写成一段能放进 system 的文字，模型从文字里学会怎么"调用"。
-2. parse(text, spec)  从模型输出的一段文字里，把工具调用读回来（读不回就是普通回答）。
-3. downgrade(messages)  把标准历史里的 tool-call / tool-result 内容块降级成文字，
-   因为纯对话接口不认 tool 角色，只认 user / assistant。
+    const spec = await TextTools.prepare(tools)                    // 把工具表写成说明书
+    const messages = TextTools.wrap(context.messages, spec)       // 说明书进 system，历史里的工具记录改写成文字
+    const result = TextTools.read(await LLM.chat({ messages }), spec, { loose: true }) // 从回复文字里读回工具调用
 
-历史本身永远是标准形状（assistant 的 tool-call 块 + tool 角色的 tool-result 块），
-这个文件只在"出门"和"进门"两个边界上做转换。所以同一个 Agent 中途换模型、
-换协议都不会破坏历史，Loop / Context / turns 也一行都不用改。
+auto 模式还要记住"哪个模型不认原生工具字段"，下次直接走文字：
+    TextTools.refused(error)   // 这个错误是不是接口拒收了工具字段
+    TextTools.remember(llm)    // 记住这个模型
+    TextTools.remembered(llm)  // 这个模型是不是已经记住了
+
+收进来、发出去的都是 AI SDK 的消息格式；history 本身永远是标准形状，
+这个文件只在"出门"和"进门"两个边界上做转换，所以同一个 Agent 中途换模型、换协议都不会破坏历史。
 
 格式（Roo Code / Cline 同样用带标签的文本，这里选 JSON 体是因为它能保住参数的原始类型，
 不用像纯 XML 那样把 number / object / array 再猜回来）：
@@ -25,7 +28,11 @@
 
 import { asSchema } from 'ai'
 import { nanoid } from 'nanoid'
-import History from './history.js'
+
+// AI SDK 消息的内容可以是一句纯文本，也可以是内容块数组；这里统一读成块数组。
+const parts = message => Array.isArray(message.content) ? message.content
+    : message.content == null ? []
+    : [{ type: 'text', text: message.content }]
 
 
 // --- 给模型的说明书：一句话说清格式，再列出每个工具的 JSON Schema ---
@@ -212,19 +219,20 @@ const parse = (text, spec, { loose = false } = {}) => {
 
 // --- 把工具输出块变成一段人/模型都能读的文字；媒体块原样保留（模型支持图就能继续看） ---
 // 工具的输出块有几种固定形状（见 tool-process.js 的 shape），这里一个个转成文字块。
+// 媒体块不在这里转换格式：LLM.chat 出门前会统一把旧 image / audio / video 块转成 file。
 const outputBlocks = output => {
     if (!output) return []                                                                                        // 没有输出就没有内容。
     if (output.type === 'text' || output.type === 'error-text') return [{ type: 'text', text: output.value }]      // 普通文字和报错文字，原样就是给模型看的。
     if (output.type === 'json') return [{ type: 'text', text: JSON.stringify(output.value) }]                     // 结构化结果转成 JSON 文字。
     if (output.type === 'execution-denied') return [{ type: 'text', text: `execution denied: ${output.reason ?? ''}` }] // 用户拒绝了这次调用。
-    if (output.type === 'content') return output.value.flatMap(part => part.type === 'text' ? [{ type: 'text', text: part.text }] : part.type === 'file' ? [{ type: 'file', mediaType: part.mediaType, data: part.data }] : []) // 多模态：文字照抄，文件（图片等）留着，别的丢掉。
+    if (output.type === 'content') return output.value.map(part => part.type === 'text' ? { type: 'text', text: part.text } : part) // 多模态：文字照抄，媒体块原样留着。
     return [{ type: 'text', text: JSON.stringify(output.value ?? output) }]                                       // 兜底：整个序列化成文字。
 }
 
 // 把一次工具调用写回成模型当初写它的那种文字。
 const asToolCallText = part => `<tool_call>\n${JSON.stringify({ name: part.toolName, arguments: part.input ?? {} })}\n</tool_call>`
 
-// --- 出门前的降级：标准历史 → 纯对话接口认的 user / assistant 消息 ---
+// --- 出门前的降级：标准消息 → 纯对话接口认的 user / assistant 消息 ---
 const downgrade = messages => {
     const out = []
     for (const message of messages) {
@@ -232,7 +240,7 @@ const downgrade = messages => {
 
         if (message.role === 'tool') {
             // 一条工具结果消息可能带着多个结果块，每个都写成一段 <tool_result> 文字，媒体块跟着保留。
-            const content = History.parts(message).flatMap(part => {
+            const content = parts(message).flatMap(part => {
                 const blocks = outputBlocks(part.output)
                 const text = blocks.filter(one => one.type === 'text').map(one => one.text).join('\n')
                 return [{ type: 'text', text: `<tool_result name="${part.toolName}">\n${text}\n</tool_result>` }, ...blocks.filter(one => one.type !== 'text')]
@@ -242,8 +250,8 @@ const downgrade = messages => {
         }
 
         if (message.role === 'assistant') {
-            // 标准历史里的工具调用块，在这里改写成模型当初写的那样一段文字。
-            const content = History.parts(message).flatMap(part => part.type === 'tool-call' ? [{ type: 'text', text: asToolCallText(part) }] : [part])
+            // 标准消息里的工具调用块，在这里改写成模型当初写的那样一段文字。
+            const content = parts(message).flatMap(part => part.type === 'tool-call' ? [{ type: 'text', text: asToolCallText(part) }] : [part])
             out.push({ ...message, content })
             continue
         }
@@ -255,13 +263,55 @@ const downgrade = messages => {
     return out.reduce((list, message) => {
         const previous = list.at(-1)
         if (!previous || previous.role !== message.role || message.role === 'system') { list.push(message); return list }
-        previous.content = [...History.parts(previous), ...History.parts(message)]
+        previous.content = [...parts(previous), ...parts(message)]
         return list
     }, [])
 }
 
 
-// --- 给调用方（LLM.chat）统一的 id，和原生工具调用的形状保持一致 ---
-const newCallId = () => `call_${nanoid(12)}`
+// --- 出门：说明书并进 system，工具记录改写成文字 ---
+// Context 给出的消息开头可能有一条 system；有就把说明书接在它后面，没有就新加一条。
+const wrap = (messages, spec) => {
+    const [first, ...rest] = downgrade(messages)
+    if (first?.role === 'system') return [{ ...first, content: [first.content, spec.instructions].filter(Boolean).join('\n\n') }, ...rest]
+    return [{ role: 'system', content: spec.instructions }, ...(first ? [first] : []), ...rest]
+}
 
-export default { prepare, parse, downgrade, newCallId }
+
+// --- 进门：从模型回复的文字里读回工具调用，改写成和原生调用完全一样的结果形状 ---
+// 历史里存的是标准 tool-call 块，Loop / Context / 下一轮无论走哪种协议都认得。
+// 回复里已经有原生调用就原样返回：auto 模式下模型支持原生工具时不走这条路。
+const read = (result, spec, options) => {
+    if (result.toolCalls?.length) return result
+    const parsed = parse(result.text, spec, options)
+    if (!parsed.calls.length) return result // 没读到调用就是普通回答，原样返回，不动它。
+
+    const toolCalls = parsed.calls.map(one => ({
+        type: 'tool-call',
+        toolCallId: `call_${nanoid(12)}`,              // 和原生工具调用的 id 形状一致。
+        toolName: one.toolName ?? 'invalid_tool_call', // 坏块读不出名字时也要有名字，否则历史块不合法。
+        input: one.input ?? {},
+        ...(one.invalid ? { invalid: true, error: one.error } : {}),
+    }))
+
+    // 只替换 assistant 里的文字块，思考等其他块原样保留。
+    const assistant = [...result.responseMessages].reverse().find(message => message.role === 'assistant')
+    const kept = assistant ? parts(assistant).filter(part => part.type !== 'text' && part.type !== 'tool-call') : []
+    const content = [...kept, ...(parsed.text ? [{ type: 'text', text: parsed.text }] : []), ...toolCalls.map(({ invalid, error, ...part }) => part)]
+    const responseMessages = [...result.responseMessages.filter(message => message !== assistant), { role: 'assistant', content }]
+
+    return { ...result, text: parsed.text, toolCalls, responseMessages, finishReason: 'tool-calls' }
+}
+
+
+// --- auto 模式：记住"这个模型不认原生工具字段"，同一模型之后直接走文字，不再撞墙 ---
+// 进程级记忆：同一个进程里所有 Agent 共用，条目是模型的标识字符串，很小。
+const refusing = new Set()
+const modelKey = ({ model, protocol, baseURL }) => typeof model === 'string' ? `${protocol}:${baseURL}:${model}` : `instance:${model.provider}:${model.modelId}`
+const remember = llm => refusing.add(modelKey(llm))
+const remembered = llm => refusing.has(modelKey(llm))
+
+// 这个错误是不是接口拒收了工具字段：4xx 是"请求本身被拒"；5xx 只有在错误信息明确提到工具时才算——部分网关对不认识的字段报 500。
+const refused = error => error?.kind === 'request' || (error?.kind === 'server' && /tool|function/i.test(`${error.message} ${error.responseBody ?? ''}`))
+
+export default { prepare, parse, downgrade, wrap, read, refused, remember, remembered }

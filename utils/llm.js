@@ -12,9 +12,7 @@ const result = await LLM.chat({
     // --- 工具（可选）---
     tools: tools.schema,           // Agent.tool.scan() 返回的工具名 → 描述对象
     toolChoice: "auto",             // 也可写在 provider 里；没传 tools 时不会出现在请求里
-    toolMode: "native",             // native（默认）：只用原生工具字段，system 零注入
-                                    // text：模拟工具——不发 tools，把工具说明注入 system，调用从文字里读
-                                    // auto：兼容降级——原生优先，接口拒收时才改用文字协议（那时才注入）
+                                    // 纯对话模型的文字工具协议不在这里：由 Loop 调 TextTools 在请求前后转换
 
     // --- 生成参数，全部可选（原样交给 AI SDK，这个文件不认识它们）---
     provider: {
@@ -87,7 +85,6 @@ import { createAnthropic } from '@ai-sdk/anthropic'                   // 模型�
 import { createGoogle } from '@ai-sdk/google'                         // 模型名写法中的 Gemini 连接。
 import Retry from './retry.js'                                       // 主请求和压缩请求共用的退避重试。
 import History from './history.js'                                   // 在发给供应商前把旧媒体块统一成 AI SDK 当前形态。
-import TextTools from './text-tools.js'                              // 纯对话模型的文字工具协议：说明书、解析、降级。
 import Notify from './notify.js'                                     // 回调统一从这里调用，出错不影响请求。
 
 
@@ -239,7 +236,6 @@ const chat = async ({
     messages,             // 要发给模型的完整消息，必填。
     tools,                // 工具描述表；没有工具就不下发。
     toolChoice = 'auto',  // 工具选择策略；provider 里可以覆盖。
-    toolMode = 'native',  // 默认零注入：只用原生工具字段。'text'（模拟工具）或 'auto'（兼容降级）才会把工具说明注入 system。
     stream = true,        // 是否流式；两条路最终返回同一种结果。
     cache = true,         // 提示词缓存；四协议默认开启，false 完全关闭，或传 { key, retention, body }。
     capabilities = {},    // 模型能力开关；关闭后对应的字段不下发。
@@ -286,92 +282,32 @@ const chat = async ({
     // maxRetries: 0 —— 重试在这个项目里只有 Retry 一个实现。交给 AI SDK 自己重试会导致
     // 一次 onLLMStart 对应服务端三次请求，而且原始错误会被包成 AI_RetryError，Retry 认不出来。
     // generation 是 provider 去掉 headers 和 body 之后的整份生成参数，原样展开，这里不逐个列字段。
-    // 工具走哪条路由 toolMode 决定：native 用接口字段，text 把工具写进 system、让模型用文字调用。
+    // 有工具就放进接口的 tools 字段；纯对话模型的文字协议由 Loop 在调用前处理好，这里不知道它的存在。
     const hasTools = Boolean(tools && sendTools && Object.keys(tools).length)
-    const memory = memoryKey({ model, protocol, baseURL })
-    const textOnly = hasTools && (toolMode === 'text' || (toolMode === 'auto' && noNativeTools.has(memory)))
 
-    const build = async text => {
-        const spec = text ? await TextTools.prepare(tools) : null
-        const baseSystem = spec ? [system, spec.instructions].filter(Boolean).join('\n\n') : system
-        const baseMessages = spec ? TextTools.downgrade(modelMessages) : modelMessages
-        // Anthropic 不自动缓存，必须在内容块上打 cache_control 断点，所以只有这一条协议要改写消息。
-        const requestMessages = cache && protocol === 'anthropic' && baseMessages.length ? [...baseMessages.slice(0, -1), markLast(baseMessages.at(-1))] : baseMessages
-        const requestSystem = cache && protocol === 'anthropic' && baseSystem ? mark({ role: 'system', content: baseSystem }) : baseSystem
-        const input = { ...generation, model: providerModel, system: requestSystem, messages: requestMessages, abortSignal: signal, maxRetries: 0 } // 生成参数可扩展，但不能覆盖 Agent 的上下文和重试控制。
-        if (typeof model !== 'string' && headers) input.headers = headers // 已创建的模型按 AI SDK 请求级参数发送额外请求头。
-        if (hasTools && !text) {
-            input.tools = tools
-            if (sendToolChoice) input.toolChoice = call.toolChoice ?? toolChoice // provider 是 AI SDK 参数的归属地；兼容开关可完全省略这个字段。
-        } else delete input.toolChoice // 没工具时单独发 toolChoice 会被部分服务拒收。
-        return { input, spec }
-    }
+    // Anthropic 不自动缓存，必须在内容块上打 cache_control 断点，所以只有这一条协议要改写消息。
+    const requestMessages = cache && protocol === 'anthropic' && modelMessages.length ? [...modelMessages.slice(0, -1), markLast(modelMessages.at(-1))] : modelMessages
+    const requestSystem = cache && protocol === 'anthropic' && system ? mark({ role: 'system', content: system }) : system
+    const input = { ...generation, model: providerModel, system: requestSystem, messages: requestMessages, abortSignal: signal, maxRetries: 0 } // 生成参数可扩展，但不能覆盖 Agent 的上下文和重试控制。
+    if (typeof model !== 'string' && headers) input.headers = headers // 已创建的模型按 AI SDK 请求级参数发送额外请求头。
+    if (hasTools) {
+        input.tools = tools
+        if (sendToolChoice) input.toolChoice = call.toolChoice ?? toolChoice // provider 是 AI SDK 参数的归属地；兼容开关可完全省略这个字段。
+    } else delete input.toolChoice // 没工具时单独发 toolChoice 会被部分服务拒收。
 
-    // --- 发一轮（含重试）；text 决定这一轮用不用文字工具协议 ---
-    const run = async text => {
-        const { input, spec } = await build(text)
-        let attempt = null // 本笔请求的限时信号；label 靠它区分"限时到点"和"用户取消"。
-        const once = () => request({ input, stream, requestTimeout, markAttempt: timeout => { attempt = timeout }, onLLMEvent, baseSignal: signal }) // 流式和非流式在 request 里分叉，对外表现一致。
+    let attempt = null // 本笔请求的限时信号；label 靠它区分"限时到点"和"用户取消"。
+    const once = () => request({ input, stream, requestTimeout, markAttempt: timeout => { attempt = timeout }, onLLMEvent, baseSignal: signal }) // 流式和非流式在 request 里分叉，对外表现一致。
 
-        // 重试包在这里，而不是让每个调用方各自包一层：这样"发一次模型请求"在整个项目里只有一条路，
-        // 主循环和上下文压缩自动走同一套重试、同一套退避、同一个 onRetry 通知。
-        const result = await Retry.run({
-            operation: async () => {
-                await Notify.tell(onLLMStart, { messages, tools }) // 每一次真实请求都通知一次；重试也是真实请求。
-                try { return await once() }
-                catch (error) { throw label(error, attempt) } // 分类只在这里做一次，流式和非流式共用同一个出口。
-            },
-            signal, onRetry, maxDelay: retryMaxDelay, maxElapsed: retryMaxElapsed,
-        })
-
-        // 文字模式：工具调用只可能在文字里。auto 下原生没给调用：模型可能把调用写成了文字，也读一遍。
-        if (text) return adopt(result, TextTools.parse(result.text, spec, { loose: true }))
-        if (toolMode === 'auto' && hasTools && !result.toolCalls?.length) {
-            const recovered = TextTools.parse(result.text, await TextTools.prepare(tools))
-            if (recovered.calls.length) return adopt(result, recovered)
-        }
-        return result
-    }
-
-    if (textOnly) return run(true)
-    try { return await run(false) }
-    catch (error) {
-        // auto：接口拒收工具字段时（不支持原生工具的纯对话模型），记住这个模型，改用文字协议再发一次。
-        if (toolMode !== 'auto' || !hasTools || signal?.aborted || !rejectsTools(error)) throw error
-        const result = await run(true)
-        noNativeTools.add(memory) // 文字协议真的跑通了才记住；上下文超长这类和工具无关的 400 换协议也会失败，不能把模型永久降级。
-        return result
-    }
-}
-
-
-// --- auto 模式记住"这个模型不支持原生工具"，同一模型后续请求直接走文字协议，不再撞墙 ---
-const noNativeTools = new Set()
-const memoryKey = ({ model, protocol, baseURL }) => typeof model === 'string' ? `${protocol}:${baseURL}:${model}` : `instance:${model.provider}:${model.modelId}`
-
-// 4xx 是"请求本身被拒"；5xx 只有在错误信息明确提到工具时才算——部分网关对不认识的字段报 500。
-const rejectsTools = error => error?.kind === 'request' || (error?.kind === 'server' && /tool|function/i.test(`${error.message} ${error.responseBody ?? ''}`))
-
-
-// --- 把文字里读回的工具调用，改写成和原生调用完全一样的结果形状 ---
-// 历史里存的是标准 tool-call 块，Loop / Context / 下一轮无论走哪种协议都认得。
-const adopt = (result, parsed) => {
-    if (!parsed.calls.length) return result // 没读到调用就是普通回答，原样返回，不动它。
-    const toolCalls = parsed.calls.map(one => ({
-        type: 'tool-call',
-        toolCallId: TextTools.newCallId(),
-        toolName: one.toolName ?? 'invalid_tool_call', // 坏块读不出名字时也要有名字，否则历史块不合法。
-        input: one.input ?? {},
-        ...(one.invalid ? { invalid: true, error: one.error } : {}),
-    }))
-
-    // 只替换 assistant 里的文字块，思考等其他块原样保留。
-    const assistant = [...result.responseMessages].reverse().find(message => message.role === 'assistant')
-    const kept = assistant ? (Array.isArray(assistant.content) ? assistant.content : []).filter(part => part.type !== 'text' && part.type !== 'tool-call') : []
-    const content = [...kept, ...(parsed.text ? [{ type: 'text', text: parsed.text }] : []), ...toolCalls.map(({ invalid, error, ...part }) => part)]
-    const responseMessages = [...result.responseMessages.filter(message => message !== assistant), { role: 'assistant', content }]
-
-    return { ...result, text: parsed.text, toolCalls, responseMessages, finishReason: toolCalls.length ? 'tool-calls' : result.finishReason }
+    // 重试包在这里，而不是让每个调用方各自包一层：这样"发一次模型请求"在整个项目里只有一条路，
+    // 主循环和上下文压缩自动走同一套重试、同一套退避、同一个 onRetry 通知。
+    return Retry.run({
+        operation: async () => {
+            await Notify.tell(onLLMStart, { messages, tools }) // 每一次真实请求都通知一次；重试也是真实请求。
+            try { return await once() }
+            catch (error) { throw label(error, attempt) } // 分类只在这里做一次，流式和非流式共用同一个出口。
+        },
+        signal, onRetry, maxDelay: retryMaxDelay, maxElapsed: retryMaxElapsed,
+    })
 }
 
 export default { chat }

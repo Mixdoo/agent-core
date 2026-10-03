@@ -116,6 +116,7 @@ import Loop from './features/loop.js'         // 负责驱动"请求模型 → �
 import Tool from './features/tool.js'         // 负责扫描和执行工具文件
 import Skill from './features/skill.js'       // 负责扫描技能目录并按需加载技能
 import LLM from './utils/llm.js'              // 底层模型请求封装，也暴露给调用方直接使用
+import TextTools from './utils/text-tools.js' // 纯对话模型的文字工具协议，直接用 LLM.chat 时也能自己调
 import History from './utils/history.js'      // 负责创建标准格式的历史消息块
 import { version } from './package.json'      // 版本号只在 package.json 里写一次，打包时会被内联进产物
 
@@ -318,6 +319,7 @@ const Agent = {
     context: Context, // 上下文构建：Agent.context.build()
     compact: Compact, // 生成压缩总结：Agent.compact.run()
     llm: LLM,         // 底层模型请求：Agent.llm.chat()
+    textTools: TextTools, // 文字工具协议：Agent.textTools.prepare() / wrap() / read()
     output: Output,   // Agent.output.object / array / json：上游结构化输出格式。
     schema: z,        // Agent.schema.object / string 等：包内同一份 Zod。
 }

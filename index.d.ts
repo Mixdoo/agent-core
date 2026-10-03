@@ -154,6 +154,21 @@ export interface CompactModule {
 export interface LLMModule {
     chat: (options: Record<string, any>) => Promise<any>
 }
+export interface TextToolsSpec {
+    names: string[]
+    params: Record<string, Record<string, string>>
+    instructions: string
+}
+export interface TextToolsModule {
+    prepare: (tools: Record<string, any>) => Promise<TextToolsSpec> | null
+    parse: (text: string, spec: TextToolsSpec, options?: { loose?: boolean }) => { text: string; calls: any[] }
+    downgrade: (messages: any[]) => any[]
+    wrap: (messages: any[], spec: TextToolsSpec) => any[]
+    read: (result: any, spec: TextToolsSpec, options?: { loose?: boolean }) => any
+    refused: (error: any) => boolean
+    remember: (llm: { model: any; protocol?: string; baseURL?: string }) => void
+    remembered: (llm: { model: any; protocol?: string; baseURL?: string }) => boolean
+}
 
 // --- Agent 实例 ---
 export interface SendOptions {
@@ -200,6 +215,7 @@ export interface Agent {
     context: ContextModule
     compact: CompactModule
     llm: LLMModule
+    textTools: TextToolsModule
     output: any // 包内 AI SDK 的 Output，原样再导出
     schema: any // 包内 Zod
 }

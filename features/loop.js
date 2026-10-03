@@ -54,6 +54,7 @@ const result = await Loop.run({
 
 import History from '../utils/history.js'
 import LLM from '../utils/llm.js'
+import TextTools from '../utils/text-tools.js'
 import Notify from '../utils/notify.js'
 
 // --- 把一次请求的用量加进合计 ---
@@ -65,6 +66,31 @@ const add = (total, usage = {}) => {
     total.totalTokens += usage.totalTokens ?? (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0)
     total.cacheReadTokens += details.cacheReadTokens ?? usage.cachedInputTokens ?? 0
     total.cacheWriteTokens += details.cacheWriteTokens ?? 0
+}
+
+
+// --- 问一次模型：工具走哪条路由 toolMode 决定 ---
+//   native（默认）：工具描述放在接口的 tools 字段里，system 一个字都不多。
+//   text：纯对话模型。工具说明写进 system，历史里的工具记录改写成文字，调用从回复文字里读回。
+//   auto：先试原生；接口拒收工具字段就记住这个模型、改用文字协议重发。原生模型把调用写成了文字，也读回来。
+const ask = async (request, llm) => {
+    const { tools, messages } = request
+    const textual = Object.keys(tools).length && (llm.toolMode === 'text' || (llm.toolMode === 'auto' && TextTools.remembered(llm)))
+    const spec = Object.keys(tools).length && llm.toolMode !== 'native' ? await TextTools.prepare(tools) : null // 只有可能用到文字协议时才写说明书。
+
+    // 文字协议：说明书和改写都在出门前做好，接口上不带 tools 字段。
+    const byText = async () => TextTools.read(await LLM.chat({ ...request, messages: TextTools.wrap(messages, spec), tools: undefined }), spec, { loose: true })
+
+    if (textual) return byText()
+    try {
+        const result = await LLM.chat(request)
+        return spec ? TextTools.read(result, spec) : result // auto 下原生没给调用时，模型可能把调用写成了文字。
+    } catch (error) {
+        if (llm.toolMode !== 'auto' || !spec || request.signal?.aborted || !TextTools.refused(error)) throw error
+        const result = await byText()
+        TextTools.remember(llm) // 文字协议真的跑通了才记住；上下文超长这类和工具无关的 400，换协议也会失败，不能把模型永久降级。
+        return result
+    }
 }
 
 const run = async ({
@@ -102,8 +128,8 @@ const run = async ({
         // --- 请求模型 ---
         // 重试不在这里：它是 LLM.chat 自带的，压缩那次请求走的是同一条路、同一套退避。
         if (signal?.aborted) throw new DOMException('Agent loop aborted', 'AbortError')
-        const request = { messages: temporaryPrompt ? [...context.messages, History.user({ content: temporaryPrompt })] : context.messages, tools } // 临时提示只挂在本次请求上。
-        const result = await LLM.chat({ ...llm, ...request, signal, onLLMEvent, onLLMStart, onRetry })
+        const request = { ...llm, messages: temporaryPrompt ? [...context.messages, History.user({ content: temporaryPrompt })] : context.messages, tools, signal, onLLMEvent, onLLMStart, onRetry } // 临时提示只挂在本次请求上。
+        const result = await ask(request, llm)
         steps += 1            // 模型完整回答后才算这一轮，失败重试由 LLM.chat 自己处理。
         add(usage, result.usage)
         await Notify.tell(onLLMFinish, result) // 上层拿到完整 result，自行选择 usage 或其他字段。
