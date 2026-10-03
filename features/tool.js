@@ -21,7 +21,8 @@
     // result = { output, interrupted }     被 signal 取消，已产出的内容一起还给模型
 
     // 积木 3：合并工具集合（本地工具、MCP 工具、技能工具）
-    const all = Tool.merge(tools, await Agent.mcp({ transport }))
+    // MCP 工具由 Agent 在 send 时自动并进来，一般不用手动 merge。
+    const all = Tool.merge(tools, agent.mcp.tools())
 
 工具集合里的条目有两种执行方式，execute 一处分开：
   本地工具文件 → 交给工具子进程（见 tool-process.js），排队、取消、超时都在这里管；

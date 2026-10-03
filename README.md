@@ -140,7 +140,7 @@ bun main.js
 │   ├── compact.js        ← 上下文太长时写总结
 │   ├── tool.js           ← 本地工具：扫描、执行、合并工具集合（主线程这一半）
 │   ├── tool-process.js   ← 本地工具真正跑起来的地方（子进程那一半）
-│   ├── mcp.js            ← 连接 MCP 服务，把它公开的东西变成工具集合
+│   ├── mcp.js            ← MCP：一组带状态的服务，启动即连、随时开关，把服务端公开的东西变成工具
 │   └── skill.js          ← 扫描技能目录，内置 skill 工具按需加载
 │
 └── utils/                ← 工具：被功能调用，不反过来依赖功能
@@ -678,39 +678,54 @@ Agent 当前的完整历史消息数组，可直接读写。
 
 ---
 
-### `Agent.mcp`
+### MCP
 
-#### MCP 工具与本地工具混用
+#### MCP 服务挂在一台 Agent 上，启动即连、随时开关
 
 ```js
-const remote = await Agent.mcp({
-    transport: { type: 'http', url: 'http://localhost:3000/mcp', headers: {} },
-    prefix: 'web_',  // 可选前缀，避免不同服务出现同名工具
-    timeout: 30000,  // 可选，单次调用超时（毫秒）；不写就一直等
+const agent = Agent.create({
+    config,
+    tools: await Agent.tool.scan('./tools'),   // 本地工具照旧
+    mcp: {
+        web:   { transport: { type: 'http', url: 'http://localhost:3000/mcp' }, prefix: 'web_' },
+        files: { transport: { type: 'stdio', command: 'bun', args: ['/abs/server.js'] }, enabled: false },
+    },
 })
-const local = await Agent.tool.scan('./tools')
-const agent = Agent.create({ config, tools: Agent.tool.merge(local, remote) })
-// ……不用了再关掉
-await remote.close()
+
+await agent.mcp.ready()          // 等启动时的首批连接全部有结果（成功或失败）
+agent.mcp.status()               // { web: { state: 'open', tools: 12 }, files: { state: 'closed' } }
+await agent.mcp.open('files')    // 连上 → { state: 'open', tools: 5 }；连不上 → { state: 'error', error }
+await agent.mcp.close('web')     // 关掉 → { state: 'closed' }
+await agent.mcp.closeAll()       // 全部关掉
 ```
 
-本地服务使用 `{ type: 'stdio', command: 'bun', args: ['/absolute/path/server.js'], env: {} }`；远端也支持 SDK 的 SSE 连接配置。`signal` 可取消这次连接。
+每个服务的状态只有四种：`closed`（没连或已关）、`connecting`（正在连）、`open`（已连，工具对模型可见）、`error`（连不上）。**任何操作都返回状态，不抛异常**：启动时连不上就停在 `error` 并带上原因，交给你的代码去解析；想重试就再 `open()` 一次。认不出的服务名同样返回 `{ state: 'error', error }`。
+
+**Agent 先启动，MCP 再连。** `Agent.create` 立刻返回，每个 `enabled`（默认 `true`）的服务在后台连接，不阻塞、不拖住 Agent。用 `agent.mcp.status()` 随时看状态，用 `await agent.mcp.ready()` 等首批连完。
+
+**开着才可见。** 每次 `send` 现拼工具表：「本地工具 + 当前开着的 MCP 工具 + 技能工具」。所以运行中开关某个服务，下一轮就生效——关掉的服务，它的工具模型看不到；打开又回来。
+
+开关和状态都在 `agent.mcp` 上：`status(name?)` / `open(name)` / `close(name)` / `closeAll()` / `ready()` / `tools()`。
+
+#### MCP 服务端公开的东西
 
 服务端公开的三种原语都会变成同一张工具表里的条目，模型不需要区分来源：
 
 | 服务端公开 | 变成什么 |
 |------------|----------|
-| tools | 每个远端工具一个本地工具，调用即执行 |
+| tools | 每个远端工具一个同名工具，调用即执行 |
 | prompts | 每个提示词模板一个工具，模型传参调用就取回这段提示 |
 | resources | 合并成一个 `read_resource` 工具，参数是要读的 `uri`；可用地址写在工具描述里 |
 
-服务端没有声明 `prompts` 或 `resources` 时不会去问，也不会多出用不上的工具。取回的提示词会带上 `user：` / `assistant：` 角色标签，便于模型判断这是谁说的话。
+服务端没有声明 `prompts` 或 `resources` 时不会去问，也不会多出用不上的工具。取回的提示词会带上 `user：` / `assistant：` 角色标签，便于模型判断这是谁说的话。`prefix` 避免不同服务出现同名工具。
 
-**连接只建一次。** `Agent.mcp` 连上之后，这份工具集合里的每次调用都复用同一个连接，服务端可以保留会话状态。用完调用 `close()` 断开；stdio 服务会随之退出。不调用 `close()` 的话，stdio 服务会一直开着。
+连接参数只收可序列化的数据（`transport`、`prefix`、`timeout`、`enabled`、`signal`）。本地服务用 `{ type: 'stdio', command: 'bun', args: ['/absolute/path/server.js'], env: {} }`；远端也支持 SDK 的 SSE 连接配置。
+
+#### 取消、超时和关闭
 
 **取消和超时按 MCP 自己的方式。** MCP 调用不走工具子进程：取消时把 `signal` 交给 MCP 客户端，这次请求立刻结束并返回"已中断"，连接还能接着用；设了 `timeout` 时到点按失败返回。需要注意，客户端只停掉自己这一边，服务端可能仍在执行，**远端已经做完的事撤不回来**。
 
-`merge` 同名时以后面的集合为准，工具描述和执行方式一起替换。
+**关闭是你的事。** 连接一直开着，直到你 `close(name)` 或 `closeAll()`；`agent.stop()` 只管当前任务，不动 MCP。stdio 服务在关闭时收到终止信号。一直不关的话，stdio 服务会保持运行。
 
 ---
 
@@ -988,7 +1003,7 @@ const agent = Agent.create({ config: { /* ... */ }, tools })
 
 **不管并发排队和限流。** 同一台 Agent 上后一次 `send` 会停掉前一次（这是有意设计的"最新指令优先"）。要让多个用户同时用，就为每个会话建一台 Agent；要限制总并发、总费用，由你的应用做。核心包没有全局任务队列。
 
-**不替你管 MCP 连接的生命周期。** `Agent.mcp` 连上之后一直开着，什么时候 `close()` 由你决定；取消只停掉客户端这一边，远端已经做完的事撤不回来。
+**不替你管 MCP 连接的关闭时机。** 连接一直开着，直到你调用 `agent.mcp.close(name)` 或 `closeAll()`；取消只停掉客户端这一边，远端已经做完的事撤不回来。
 
 **不做工具的安全检查。** 工具子进程和 Agent 拥有完全相同的权限：读写任意文件、执行任意命令、联网、读到父进程的全部环境变量。这是有意的——电脑任务 agent 的工具本来就得能干这些。**沙箱、白名单、危险命令拦截属于你的应用层**，核心包只提供 `onPermission` 这一个挂钩点。
 

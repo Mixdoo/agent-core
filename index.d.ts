@@ -91,17 +91,37 @@ export interface Callbacks {
     onCompact?: (event: any) => void | Promise<void>
 }
 
-// --- 工具集合：scan / merge / Agent.mcp 都返回这个形状 ---
+// --- 工具集合：scan / merge / agent.mcp.tools() 都返回这个形状 ---
 export interface ToolSet {
     schema: Record<string, any>
     handlers: Record<string, any>
 }
 
-// Agent.mcp 返回的工具集合多一个 close：连接只建一次，用完由调用方关掉。
-export interface MCPToolSet extends ToolSet {
-    close: () => Promise<void>
+// --- MCP：一组带状态的服务，挂在 Agent 实例上 ---
+export type McpState = 'closed' | 'connecting' | 'open' | 'error'
+export interface McpStatus {
+    state: McpState
+    error?: string
+    tools?: number
 }
-export type MCPConnect = (options: { transport: Record<string, unknown>; prefix?: string; signal?: AbortSignal; timeout?: number }) => Promise<MCPToolSet>
+export interface McpConfig {
+    transport: Record<string, unknown>
+    prefix?: string
+    timeout?: number
+    enabled?: boolean
+    signal?: AbortSignal
+}
+export interface McpManager {
+    status: {
+        (): Record<string, McpStatus>
+        (name: string): McpStatus
+    }
+    open: (name: string) => Promise<McpStatus>
+    close: (name: string) => Promise<McpStatus>
+    closeAll: () => Promise<void>
+    ready: () => Promise<Record<string, McpStatus>>
+    tools: () => ToolSet
+}
 
 export interface SkillSet extends ToolSet {
     list: Array<{ name: string; description: string; path: string }>
@@ -193,6 +213,7 @@ export interface AgentInstance {
     tools: ToolSet
     skills: SkillSet | null
     callbacks: Callbacks
+    mcp: McpManager
     running: { controller: AbortController; task: Promise<Answer> } | null
     send: {
         (input: string | any[], options?: Omit<SendOptions, 'input'>): Promise<Answer>
@@ -209,13 +230,13 @@ export interface CreateOptions {
     tools?: ToolSet
     skills?: SkillSet | null
     callbacks?: Callbacks
+    mcp?: Record<string, McpConfig>
 }
 
 export interface Agent {
     version: string
     create: (options?: CreateOptions) => AgentInstance
     tool: ToolModule
-    mcp: MCPConnect
     skill: SkillModule
     history: HistoryModule
     context: ContextModule

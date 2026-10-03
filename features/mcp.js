@@ -1,12 +1,32 @@
 /*
-MCP：连上一个 MCP 服务，把它公开的东西变成和本地工具同一个形状的工具集合。
+MCP：连上一个 MCP 服务，把它公开的东西变成和本地工具同一个形状的工具集合；再往上给 Agent 一组
+带状态的槽位，启动即连、随时开关。
 
-    const remote = await Agent.mcp({ transport: { type: 'http', url: 'http://localhost:3000/mcp' }, prefix: 'web_' })
-    const agent = Agent.create({ tools: Agent.tool.merge(await Agent.tool.scan('./tools'), remote) })
-    // ……用完之后
-    await remote.close()
+对调用方：
 
-连接只建一次，之后的每次调用都复用它，服务端可以保留会话状态。
+    const agent = Agent.create({
+        config, tools,
+        mcp: {
+            web:   { transport: { type: 'http', url: 'http://localhost:3000/mcp' }, prefix: 'web_' },
+            files: { transport: { type: 'stdio', command: 'bun', args: ['/abs/server.js'] }, enabled: false },
+        },
+    })
+    await agent.mcp.ready()          // 等启动时的首批连接全部有结果
+    agent.mcp.status()               // { web: { state: 'open', tools: 12 }, files: { state: 'closed' } }
+    await agent.mcp.open('files')    // 连上，返回 { state: 'open', tools: 5 }；连不上返回 { state: 'error', error }
+    await agent.mcp.close('web')     // 关掉，返回 { state: 'closed' }
+    await agent.mcp.closeAll()
+
+每个服务是一个槽位，状态只有四种：
+  closed      没连，或已关闭；
+  connecting  正在连；
+  open        已连，它的工具对模型可见；
+  error       连不上，错误写进状态交给上层，不抛异常。
+连不上的服务停在 error，不会拖住 Agent；再次 open() 就是重试。
+
+Agent 启动时先把自身建好并返回，再让每个 enabled 的服务后台连接（默认 enabled 为 true）。
+send 的时候才把"本地工具 + 当前开着的 MCP 工具 + 技能工具"合成一张表，所以开关随时生效。
+
 服务端公开的三种原语都会变成工具表里的条目，模型不需要区分来源：
   tools      → 每个远端工具变成一个工具；
   prompts    → 每个提示词模板变成一个工具，模型传参调用就取回这段提示；
@@ -98,8 +118,9 @@ const remoteResource = client => options => call(async request => {
 }, options)
 
 
-// --- 连接一个 MCP 服务，返回和 Tool.scan 同一个形状的工具集合，外加 close ---
-// signal 可取消这次连接；timeout 是调用方主动选择的单次调用超时，未设置就不加上限。
+// --- 连一个 MCP 服务，返回和 Tool.scan 同一个形状的工具集合，外加 close ---
+// signal 可取消这次握手；timeout 是调用方主动选择的单次调用超时，未设置就不加上限。
+// 连不上时抛异常，由上面的 manager 收进槽位的 error 状态。
 const connect = async ({ transport, prefix = '', signal, timeout }) => {
     const connection = transport.type === 'stdio' ? new Experimental_StdioMCPTransport(transport) : transport // 本地服务走标准输入输出，远端由 SDK 按配置建立 HTTP / SSE 连接。
     const client = await createMCPClient({ transport: connection, maxRetries: 0, initializationOptions: signal ? { signal } : undefined }) // 不重复重试可能有副作用的工具。
@@ -134,4 +155,83 @@ const connect = async ({ transport, prefix = '', signal, timeout }) => {
     }
 }
 
-export default { connect }
+
+// --- 一组 MCP 服务：每个是一个带状态的槽位，挂在 Agent 上，随时可开关 ---
+const manager = (defs = {}) => {
+    const slots = new Map()   // 服务名 → 槽位。
+
+    // 一个槽位对外的样子：状态 + 错误（有的话）+ 工具数（开着才有）。
+    const looks = slot => ({ state: slot.state, ...(slot.error ? { error: slot.error } : {}), ...(slot.state === 'open' ? { tools: Object.keys(slot.schema).length } : {}) })
+
+    // 认不出的名字也返回状态，不抛异常。
+    const unknown = name => ({ state: 'error', error: `未知的 MCP 服务 "${name}"` })
+
+    // 连上一个槽位：已经开着直接返回；正在连就等同一个 Promise；否则开始连。
+    const raise = slot => {
+        if (slot.state === 'open') return Promise.resolve(looks(slot))
+        if (slot.pending) return slot.pending
+        slot.state = 'connecting'
+        slot.error = null
+        slot.abort = new AbortController() // 握手中途 close 时用它取消。
+        slot.pending = connect({ transport: slot.def.transport, prefix: slot.def.prefix ?? '', timeout: slot.def.timeout, signal: slot.def.signal ?? slot.abort.signal })
+            .then(connection => {
+                slot.connection = connection
+                slot.schema = connection.schema
+                slot.handlers = connection.handlers
+                slot.state = 'open'
+            })
+            .catch(error => {
+                if (slot.abort.signal.aborted) slot.state = 'closed'                        // 是我们自己取消的，不算错误。
+                else { slot.state = 'error'; slot.error = error?.message || String(error) } // 连不上：停在 error，交给上层。
+            })
+            .then(() => { slot.pending = null; return looks(slot) })
+        return slot.pending
+    }
+
+    // 关掉一个槽位：握手中的先取消，已连的按 MCP 的方式关闭。
+    const lower = async slot => {
+        slot.abort?.abort()
+        if (slot.pending) await slot.pending.catch(() => {})
+        try { await slot.connection?.close() } catch { /* 服务可能已经自行退出。 */ }
+        slot.connection = null
+        slot.schema = Object.create(null)
+        slot.handlers = Object.create(null)
+        slot.state = 'closed'
+        slot.error = null
+        return looks(slot)
+    }
+
+    // 组装所有开着的服务，得到当前可用的 MCP 工具表。
+    const tools = () => {
+        const schema = Object.create(null)
+        const handlers = Object.create(null)
+        for (const slot of slots.values()) if (slot.state === 'open') {
+            Object.assign(schema, slot.schema)       // 前缀已经在各槽位里加好了，这里直接合。
+            Object.assign(handlers, slot.handlers)
+        }
+        return { schema, handlers }
+    }
+
+    // 建槽位；enabled 的立刻后台连接，结果用 status()/ready() 看。
+    for (const [name, def] of Object.entries(defs)) {
+        const slot = { name, def: def ?? {}, state: 'closed', error: null, schema: Object.create(null), handlers: Object.create(null), connection: null, pending: null, abort: null }
+        slots.set(name, slot)
+        if (slot.def.enabled !== false) raise(slot)
+    }
+
+    const status = name => name === undefined
+        ? Object.fromEntries([...slots].map(([one, slot]) => [one, looks(slot)])) // 不带参数：全部服务的状态。
+        : (slots.has(name) ? looks(slots.get(name)) : unknown(name))              // 带名字：这一个服务的状态。
+
+    return {
+        name: 'mcp',                                                                   // 便于上层认出这是 MCP 管理器。
+        status,
+        open: name => (slots.has(name) ? raise(slots.get(name)) : Promise.resolve(unknown(name))),   // 重试或打开某个服务。
+        close: name => (slots.has(name) ? lower(slots.get(name)) : Promise.resolve(unknown(name))),  // 关掉某个服务。
+        closeAll: () => Promise.all([...slots.values()].map(lower)).then(() => undefined),           // 全部关掉。
+        ready: () => Promise.all([...slots.values()].map(slot => slot.pending).filter(Boolean)).then(() => status()), // 等启动首批连接结束。
+        tools,                                                                          // 当前开着的服务合并出的工具表。
+    }
+}
+
+export default { connect, manager }

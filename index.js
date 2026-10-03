@@ -183,7 +183,7 @@ const start = (agent, work, outside) => {
 
 
 // 创建一台独立 Agent：传入的对象会成为这台机器公开、可继续修改的内部状态。
-const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}, handlers: {} }, skills = null, callbacks = {} } = {}) => {
+const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}, handlers: {} }, skills = null, callbacks = {}, mcp = {} } = {}) => {
     const agent = {
         id,       // Agent 的身份只用于区分实例和权限等待。
         history,  // 直接保存外部传入的数组，外部可以和 Agent 共同修改它。
@@ -217,6 +217,7 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
         tools,                       // Agent.tool.scan() 的返回值：{ schema, handlers }，后续 send 可以整份替换。
         skills: skills ?? null,      // Agent.skill.scan() 的返回值；没传就是 null，system 和工具表都不受影响。
         callbacks: { ...callbacks }, // 回调逐项保存，后续 send 只覆盖传入的回调。
+        mcp: MCP.manager(mcp),       // MCP 服务组：启动即后台连接，随时可开关；开着的服务，工具在 send 时并进来。
         running: null,               // null 表示空闲；运行对象保存当前停止控制器和任务。
     }
 
@@ -260,7 +261,11 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
             // 没扫到（或没传）时这两行都是空操作，system 一个字节都不多，工具表也不动——默认零注入。
             const active = agent.config.capabilities.tools === false || !agent.skills?.list?.length ? null : agent.skills
             const system = active ? [agent.config.system, active.prompt].filter(Boolean).join('\n\n') : agent.config.system
-            const tools = active ? Tool.merge(agent.tools, active) : agent.tools // 内置技能工具和用户工具共用一张表，同名时技能工具优先。
+            // 工具表在这里现拼：本地工具 + 当前开着的 MCP 工具 + 技能工具（技能工具最后，同名时它优先）。
+            // MCP 这边每次 send 都读一次，所以运行中开关某个服务，下一轮就生效。
+            const pieces = [agent.tools, agent.mcp.tools()]
+            if (active) pieces.push(active)
+            const tools = Tool.merge(...pieces)
 
             return Loop.run({
                 history: agent.history,           // Loop 直接使用这份公开数组，执行结果也会继续写入这里。
@@ -292,7 +297,7 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = { schema: {}
     // 手动压缩：先停掉当前任务，再立即压缩当前上下文。
     // 和 send 走同一个 start，所以两者抢跑时，后来的那个一定看得见先来的并把它停掉。
     agent.compact = ({ onCompact = agent.callbacks.onCompact, onRetry = agent.callbacks.onRetry, ...options } = {}) => start(agent, async signal => {
-        const context = Context.build({ history: agent.history, system: agent.config.system, tools: agent.tools.schema, capabilities: agent.config.capabilities, mediaFallback: agent.config.mediaFallback }) // 取出现在要发给模型的上下文。
+        const context = Context.build({ history: agent.history, system: agent.config.system, tools: Tool.merge(agent.tools, agent.mcp.tools()).schema, capabilities: agent.config.capabilities, mediaFallback: agent.config.mediaFallback }) // 取出现在要发给模型的上下文，工具表和 send 保持一致。
         const compactLLM = buildCompact(agent.config)    // 与 send 里的自动压缩用同一个来源，手动压缩不会偷偷换成主模型。
         const content = await Compact.run({
             ...options,
@@ -317,7 +322,6 @@ const Agent = {
     version,          // 包版本，来自 package.json；排查问题时上层要能报出来
     create,           // 创建 Agent 实例
     tool: Tool,       // 工具扫描和执行：Agent.tool.scan() / Agent.tool.execute() / Agent.tool.merge()
-    mcp: MCP.connect, // 连接 MCP 服务：Agent.mcp({ transport, prefix })，返回工具集合和 close()
     skill: Skill,     // 技能扫描：Agent.skill.scan()；扫到技能才注入系统提示词、才挂内置 skill 工具
     history: History, // 造标准历史消息块：Agent.history.user() / assistant() / tool() / compact()
     context: Context, // 上下文构建：Agent.context.build()
