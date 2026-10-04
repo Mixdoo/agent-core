@@ -194,12 +194,15 @@ const adopt = (input) => {
 
 // --- 一行拿到工具集合：每个参数可以是目录、内存工具或已有集合，按顺序合并 ---
 //   await Tool.from('./tools', mcpClient.tools(), { skill })
+//   await Tool.from(['./builtin', './user'])      // 一组目录
 // 字符串和 URL 当目录扫描，其余交给 adopt；Promise 会先等它。同名时后面的覆盖前面的。
 const from = async (...sources) => {
     const sets = []
     for (const source of sources) {
         const value = await source
-        sets.push(typeof value === 'string' || value instanceof URL ? await scan(value) : adopt(value))
+        // 数组：全是路径就当成一组目录分别扫，否则当成一个工具数组交给 adopt（它本来也收数组）。
+        if (Array.isArray(value)) sets.push(...await Promise.all(value.every(one => typeof one === 'string' || one instanceof URL) ? value.map(one => scan(one)) : [adopt(value)]))
+        else sets.push(typeof value === 'string' || value instanceof URL ? await scan(value) : adopt(value))
     }
     return merge(...sets)
 }
@@ -313,7 +316,7 @@ const cut = (text, limit) => {
 const clip = (output, limit) => {
     if (!Number.isFinite(limit)) return output
     if (output.type === 'content') return { ...output, value: output.value.map(part => part.type === 'text' ? { ...part, text: cut(part.text, limit) } : part) }
-    const text = typeof output.value === 'string' ? output.value : JSON.stringify(output.value)
+    const text = typeof output.value === 'string' ? output.value : JSON.stringify(output.value) ?? String(output.value) // 无 value 的 json 块（JSON.stringify 返回 undefined）按空串处理，别让 .length 抛错。
     return text.length <= limit ? output : { type: 'text', value: cut(text, limit) }
 }
 
@@ -346,13 +349,21 @@ const inProcess = async ({ name, input, handler, signal, onOutput, limit }) => {
     try {
         if (signal?.aborted) return interrupted // 进来之前就已经取消了。
 
-        // 执行签名和 AI SDK 一致：execute(input, { abortSignal, ... })。同时给 signal 一个别名，
-        // 兼容按我们早期文档写成 execute(input, { signal }) 的工具。@ai-sdk/mcp 读的是 abortSignal。
-        // Promise.resolve 包一层：AI SDK 允许 execute 同步返回，不加这层同步值会被当成没有 .catch 而误判失败。
-        const run = Promise.resolve(handler.execute(input, { signal: stop, abortSignal: stop }))
-        void run.catch(() => {}) // 先结算（取消/超时）后，工具迟到失败别变成未处理的拒绝。
+        // 跑工具：签名和 AI SDK 一致（execute(input, { abortSignal, ... })），并顺带给 signal 一个别名，
+        // 兼容按我们早期文档写成 execute(input, { signal }) 的工具（@ai-sdk/mcp 读的是 abortSignal）。
+        // 生成器工具（async *execute）和文件工具一样：每个 yield 实时发出去，全部片段一起作为返回值。
+        const task = (async () => {
+            const result = await handler.execute(input, { signal: stop, abortSignal: stop }) // 同步返回值也能被 await 接住。
+            if (result && typeof result[Symbol.asyncIterator] === 'function') {
+                const chunks = []
+                for await (const chunk of result) { chunks.push(chunk); Notify.tell(onOutput, { toolName: name, stream: 'result', data: chunk }) } // 逐段实时送达。
+                return chunks
+            }
+            return result
+        })()
+        void task.catch(() => {}) // 先结算（取消/超时）后，工具迟到失败别变成未处理的拒绝。
 
-        const racers = [run]
+        const racers = [task]
         if (handler.timeout) racers.push(new Promise((_, reject) => { timer = setTimeout(() => { reject(new Error(`工具执行超时（${handler.timeout}ms）`)); controller.abort() }, handler.timeout) }))
         if (signal) racers.push(new Promise(resolve => { onAbort = () => resolve(INTERRUPTED); signal.addEventListener('abort', onAbort, { once: true }) }))
 

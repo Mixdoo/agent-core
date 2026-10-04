@@ -123,6 +123,13 @@ describe('内存工具执行', () => {
         const result = await pending
         expect(result.interrupted).toBe(true) // stop()/下一次 send() 因此不会被永久卡住。
     })
+
+    test('内存生成器工具：每个 yield 实时发出，全部片段作为结果', async () => {
+        const seen = []
+        const result = await run({ gen: { execute: async function* () { yield 'a'; yield 'b' } } }, 'gen', {}, { onOutput: output => seen.push(output.data) })
+        expect(result.output).toEqual({ type: 'json', value: ['a', 'b'] }) // 和文件工具一样，片段收齐当返回值。
+        expect(seen).toEqual(['a', 'b'])                                   // 逐段实时送达上层。
+    })
 })
 
 describe('Tool.from 一行拼装', () => {
@@ -138,6 +145,13 @@ describe('Tool.from 一行拼装', () => {
         const tools = await Tool.from(Promise.resolve({ a: { execute: async () => 'a' } }), null)
         expect(Object.keys(tools.schema)).toEqual(['a'])
         expect(Object.keys((await Tool.from(null)).schema)).toEqual([])
+    })
+
+    test('收一组目录（字符串数组），也收工具数组', async () => {
+        const dirs = await Tool.from([TOOLS, TOOLS]) // 全是路径 → 当成一组目录分别扫。
+        expect(dirs.schema.echo).toBeDefined()
+        const list = await Tool.from([{ name: 'x', execute: async () => 1 }]) // 工具数组 → 交给 adopt。
+        expect(list.schema.x).toBeDefined()
     })
 })
 

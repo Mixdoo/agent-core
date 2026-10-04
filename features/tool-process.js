@@ -3,7 +3,7 @@
 本文件不是普通模块，调用方不要 import 它——它没有任何导出，靠被 features/tool.js 当文本内联进一个新的 bun 进程才生效：
 
     import source from './tool-process.js' with { type: 'text' }   // tool.js 的写法
-    const child = Bun.spawn(['bun', '-'], { stdin: 'pipe', ipc: handle })
+    const child = Bun.spawn([runtime, '-'], { stdin: 'pipe', ipc: handle })   // runtime 多为 process.execPath
     child.stdin.write(source); child.stdin.end()
 
 隔着进程的约定是几条消息，工具作者和调用方都不需要手写它们：

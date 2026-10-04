@@ -600,3 +600,31 @@ describe('压缩', () => {
         } finally { mock.stop(true) }
     })
 })
+
+describe('取消在工具边界', () => {
+    test('工具刚跑完就取消时，抛的是带 kind 的取消错误，不是栈溢出', async () => {
+        // 回归：曾经把取消助手写成调用自身，任何"运行中取消"都会抛 RangeError。
+        const mock = Bun.serve({
+            port: 0,
+            async fetch() {
+                return Response.json({ choices: [{ index: 0, message: { role: 'assistant', content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'echo', arguments: '{}' } }] }, finish_reason: 'tool_calls' }], usage: {} })
+            },
+        })
+        const controller = new AbortController()
+        try {
+            const error = await Loop.run({
+                history: [History.user({ content: '跑' })],
+                system: '',
+                tools: { echo: { description: 'e', inputSchema: jsonSchema({ type: 'object', properties: {} }) } },
+                llm: { baseURL: `http://127.0.0.1:${mock.port}/v1`, apiKey: 'k', model: 'm', stream: false, noToolRounds: 1 },
+                buildContext: Context.build,
+                compact: async () => '总结',
+                executeTool: async () => { controller.abort(); return { output: { type: 'text', value: 'x' } } }, // 工具一跑完就取消。
+                signal: controller.signal,
+            }).catch(caught => caught)
+            expect(error).toBeInstanceOf(Error)
+            expect(error).not.toBeInstanceOf(RangeError) // 不是栈溢出。
+            expect(error.kind).toBe('aborted')           // 和模型取消错误一样带 kind。
+        } finally { mock.stop(true) }
+    })
+})

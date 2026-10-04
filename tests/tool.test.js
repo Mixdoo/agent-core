@@ -78,6 +78,12 @@ describe('Tool 执行', () => {
         expect(result.output.value.length).toBeLessThan(200) // 不是把 500 字原样返回。
     })
 
+    test('json 块没有 value 时，截断不抛错', async () => {
+        const tools = Tool.adopt([{ name: 'j', execute: async () => ({ output: { type: 'json' } }) }])
+        const result = await Tool.execute({ name: 'j', input: {}, handlers: tools.handlers, limit: 100 })
+        expect(result.output.type).toBe('json') // 无 value 的 json 块按空串量长度，不崩。
+    })
+
     test('工具返回循环引用时变成一条工具错误，而不是毒死 history', async () => {
         const tools = await Tool.scan(BROKEN)
         const result = await Tool.execute({ name: 'cyclic', input: {}, handlers: tools.handlers })

@@ -13,7 +13,8 @@ provider: { temperature, topP, topK, maxOutputTokens, stopSequences, seed, toolC
 // 3. system：人给这台 Agent 的身份。它不属于模型参数，是这个包要往上下文里放的东西。
 
 // 4. Agent 的策略：这个包自己的旋钮，和模型无关。
-maxTokens?, compactThreshold, maxSteps?, maxToolOutput?, maxToolConcurrency?, retryMaxDelay?, retryMaxElapsed?, noToolPrompt?, requestTimeout?, noToolRounds?, stream, cache, toolMode, capabilities, mediaFallback, compact?, output?
+// 带默认值（不写就用这个）：maxTokens, compactThreshold, noToolPrompt, noToolRounds, stream, cache, toolMode, capabilities, mediaFallback
+// 默认关、填了才生效（不填就是不限制）：maxSteps?, maxToolOutput?, maxToolConcurrency?, retryMaxDelay?, retryMaxElapsed?, requestTimeout?, compact?, output?
 // toolMode: 'native'（默认）只用原生工具，system 一个字节都不动；接不支持原生工具的模型时主动开 'text' 或 'auto'。
 //            'text' 是「模拟工具」开关：不发 tools，把工具说明注入 system，调用从文字里读。
 //            'auto' 是兼容开关：原生优先，被拒收时才降级注入 system（因此不是默认值）。
@@ -25,7 +26,7 @@ maxTokens?, compactThreshold, maxSteps?, maxToolOutput?, maxToolConcurrency?, re
 //         写在配置顶层（它回答"要什么形状的结果"），底层会并进 provider 交给 AI SDK。
 // compact: 压缩单独用一套模型时写在这里，比如 { model: '便宜的小模型' }；也能换 baseURL / apiKey。
 //              不写就和主模型共用；自动压缩和手动 compact() 都用它。
-// 带 ? 的策略默认不限制；只有调用方主动填写才会启用对应保护。例外是 maxTokens：默认 128000，自动压缩默认开着，避免上下文被撑爆；设 Infinity 关闭。
+// 带 ? 的策略默认不限制，填了才生效；不带 ? 的有默认值（含 maxTokens 默认 128000，自动压缩默认开着，设 Infinity 关闭）。
 maxTokens 和 provider.maxOutputTokens 名字像但是两回事：前者是这个包的上下文预算（超了就压缩），
 后者是"这次最多生成多少 token"。改其中一个不会影响另一个。
 

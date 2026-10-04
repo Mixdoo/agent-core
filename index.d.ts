@@ -101,8 +101,8 @@ export interface ToolLike {
     name?: string           // 数组形式时必填；record 形式时从键名取
     description?: string
     inputSchema?: any       // 裸 JSON Schema / zod / AI SDK jsonSchema() 三种都认
-    execute: (input: any, options?: { signal?: AbortSignal; abortSignal?: AbortSignal }) => Promise<any>
-    toModelOutput?: (options: { output: any; input?: any; toolCallId?: string }) => any
+    execute: (input: any, options?: { signal?: AbortSignal; abortSignal?: AbortSignal }) => any | Promise<any>
+    toModelOutput?: (options: { output: any; input?: any }) => any
     timeout?: number
     [key: string]: any
 }
@@ -203,7 +203,7 @@ export interface AgentInstance {
         (options: SendOptions & { input: string | any[] }): Promise<Answer>
     }
     stop: () => Promise<{ ok: boolean }>
-    compact: (options?: { onCompact?: Callbacks['onCompact']; onRetry?: Callbacks['onRetry'] }) => Promise<string>
+    compact: (options?: { onCompact?: Callbacks['onCompact']; onRetry?: Callbacks['onRetry']; signal?: AbortSignal }) => Promise<string>
 }
 
 export interface CreateOptions {

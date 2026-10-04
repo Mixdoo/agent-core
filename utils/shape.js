@@ -11,7 +11,7 @@
     4. 字符串 → 文字块；其余结构化值 → JSON 块。
 形状不对时抛错，让这次调用变成一条正常的工具失败，而不是把非法块写进历史把会话毒死。
 
-toModelOutput 的调用签名和 AI SDK 一致：toModelOutput({ output, input, toolCallId })。这样从 @ai-sdk/mcp
+toModelOutput 的调用签名和 AI SDK 一致：toModelOutput({ output, input })。这样从 @ai-sdk/mcp
 等客户端拿来的工具不用做任何包装，它们自带的 toModelOutput 直接生效。
 */
 

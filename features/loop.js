@@ -58,7 +58,7 @@ import TextTools from './text-tools.js'
 import Notify from '../utils/notify.js'
 import { createMeter, modelKey } from '../utils/tokens.js'
 
-const aborted = () => Object.assign(aborted(), { kind: 'aborted' }) // 取消错误也带 kind，调用方能和模型错误一样按 error.kind 分支。
+const aborted = () => Object.assign(new DOMException('Agent loop aborted', 'AbortError'), { kind: 'aborted' }) // 取消错误也带 kind，调用方能和模型错误一样按 error.kind 分支。
 
 // --- 把一次请求的用量加进合计 ---
 // 各供应商给的字段不一定齐全（有的不报缓存，有的连 total 都没有），缺的按 0 算，不让一个 undefined 把合计变成 NaN。

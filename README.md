@@ -119,10 +119,10 @@ flowchart TD
 bun add https://github.com/kernel4632/agent-core/releases/latest/download/agent-core.tgz
 ```
 
-想锁死某个版本（比如 `0.10.3`），把链接里的 `latest/download` 换成 `download/v0.10.3`：
+想锁死某个版本（比如 `0.23.1`），把链接里的 `latest/download` 换成 `download/v0.23.1`：
 
 ```bash
-bun add https://github.com/kernel4632/agent-core/releases/download/v0.10.3/agent-core.tgz
+bun add https://github.com/kernel4632/agent-core/releases/download/v0.23.1/agent-core.tgz
 ```
 
 以后升级到最新版，再运行一次第一条命令就行。
@@ -430,7 +430,7 @@ export default {
 }
 ```
 
-接收流式输出：
+文件工具和内存工具都支持 `async *execute`（`Agent.tool.adopt` 接纳的内存工具也一样）。接收流式输出：
 
 ```js
 const agent = Agent.create({
@@ -914,7 +914,7 @@ Agent.tool.scan(builtinDir, userDir)                      // 多个目录，后�
 
 ```js
 const tools = await Agent.tool.scan('./tools')
-// tools.schema   → 给模型看的工具描述，传给 agent config 或 Loop.run
+// tools.schema   → 给模型看的工具描述，传给 create/send 的 tools（或 Loop.run 的 tools）
 // tools.handlers → 执行器用的处理表，Tool.execute 需要它
 ```
 
@@ -945,6 +945,8 @@ Agent.tool.adopt(await mcpClient.tools())                                       
 > 从 0.21 升级：去掉了 `gpt-tokenizer`，上下文 token 改用**自校准估算**（字符数 × 每字符 token 比，比例由真实 `usage` 学到，跟着模型走）；`maxTokens` 默认变为 `128000`，**自动压缩默认开启**（想关掉设 `maxTokens: Infinity`）。产物从 ~3.9 MB 降到 ~1.3 MB。
 >
 > 从 0.22 升级：内存工具声明的 `timeout` 现在真的生效；新增 `capabilities.usage`（关掉流式请求里的 `include_usage`）；`compactThreshold`、字符串型 `maxTokens` 等非法配置现在会在 `send` 入口报错。
+>
+> 从 0.23 升级：内存工具（`Agent.tool.adopt`）现在也支持 `async *execute` 流式输出，和文件工具一致；`Tool.from` 接受一组目录（字符串数组）；取消错误统一带 `error.kind === 'aborted'`。
 
 #### `Agent.tool.execute(options)`
 
@@ -955,11 +957,13 @@ const result = await Agent.tool.execute({
     name: 'add',
     input: { a: 1, b: 2 },
     handlers: tools.handlers,
-    signal: abortController.signal,   // 可选
-    onOutput: output => {},           // 可选，接收流式输出
-    limit: 32000,                     // 可选，输出字符上限，超出从中间截断；不传则不截断
+    signal: abortController.signal,   // 可选：取消信号
+    onOutput: output => {},           // 可选：接收工具流式输出（文件工具的 stdout/生成器 yield，内存工具的生成器 yield）
+    limit: 32000,                     // 可选：输出字符上限，超出从中间截断；不传则不截断
+    concurrency: 8,                   // 可选：同一批（同一个 signal）最多同时跑几个文件工具，超出的排队
 })
-// result.output → 工具输出，格式为 { type: 'text'|'json', value: ... }
+// result.output → 工具输出块，type 是 'text' | 'json' | 'content' | 'error-text' | 'error-json' | 'execution-denied'
+// result 还带：stop:true（工具要求结束循环）/ error（工具失败）/ interrupted:true（被取消）
 ```
 
 ---
@@ -1118,6 +1122,8 @@ const agent = Agent.create({ config: { /* ... */ }, tools })
 | `Agent.llm` | `.chat()` |
 | `Agent.textTools` | 文字工具协议：`.prepare()` / `.wrap()` / `.read()`，直接调 `llm.chat` 时用 |
 | `Agent.output` / `Agent.schema` | 结构化输出的 Output 与 Zod，包内同一份，无需另装 |
+
+`Agent.history` 和 `Agent.textTools` 还导出一些底层方法（`stored` / `model` / `parts` / `answeredCalls`，以及文字协议的 `parse` / `downgrade` / `refused` / `remember` / `remembered`），完整列表见 `index.d.ts`。
 
 `Agent.history` 是嵌入时最常用的那个：把 IM 消息转成 user 块、往历史里塞一条系统通知、从数据库恢复会话，都要靠它造出格式正确的消息。
 
