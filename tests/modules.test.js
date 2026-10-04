@@ -152,7 +152,7 @@ describe('Loop and Agent', () => {
             history, system: '', tools: {}, llm: { baseURL: modelURL, apiKey: 'test', model: 'test-model' },
             buildContext: Context.build, compact: Compact.run, executeTool: async () => ({}),
         })
-        expect(result.reason).toBe('no-tool')
+        expect(result.reason).toBe('finished')
         expect(history.some(message => message.role === 'assistant')).toBe(true)
     })
 

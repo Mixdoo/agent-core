@@ -41,17 +41,17 @@ export interface Config {
     mediaFallback?: 'error' | 'strip'
     provider?: Record<string, any>
     maxToolOutput?: number
-    maxTokens?: number
+    contextBudget?: number
     compactThreshold?: number
-    compact?: Partial<Config>
+    compactModel?: Partial<Config>
     output?: any
     maxSteps?: number
     maxToolConcurrency?: number
     retryMaxDelay?: number
     retryMaxElapsed?: number
     requestTimeout?: number
-    noToolPrompt?: string
-    noToolRounds?: number
+    idlePrompt?: string
+    idleRounds?: number
     [key: string]: any
 }
 
@@ -64,7 +64,7 @@ export interface Usage {
     cacheWriteTokens: number
 }
 
-export type Reason = 'no-tool' | 'tool-stop' | 'step-limit'
+export type Reason = 'finished' | 'no-tool' | 'tool-stop' | 'step-limit'
 
 export interface Answer {
     reason: Reason
@@ -80,7 +80,7 @@ export interface Callbacks {
     onLLMStart?: (request: { messages: unknown[]; tools: unknown }) => void | Promise<void>
     onLLMFinish?: (result: any) => void | Promise<void>
     onLLMEvent?: (event: any) => void | Promise<void>
-    onPermission?: (permission: { sessionId: string; toolCallId: string; toolName: string; arguments: any; signal: AbortSignal }) => boolean | Promise<boolean>
+    onPermission?: (permission: { sessionId: string; toolCallId: string; toolName: string; input: any; signal: AbortSignal }) => boolean | Promise<boolean>
     onRetry?: (info: { attempt: number; error: Error; delay: number }) => void
     onToolCall?: (call: { toolCallId: string; toolName: string; input: any; type?: string; title?: string; providerExecuted?: boolean; providerMetadata?: Record<string, any> }) => void | Promise<void>
     onToolOutput?: (output: { toolName: string; stream: string; data: string; toolCallId: string }) => void

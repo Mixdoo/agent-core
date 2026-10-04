@@ -41,7 +41,7 @@ describe('Agent 的状态机', () => {
             const agent = Agent.create({ config: { ...config, baseURL: `http://127.0.0.1:${single.port}/v1` } })
             const result = await agent.send('打个招呼')
 
-            expect(result).toMatchObject({ reason: 'no-tool', text: '你好' })
+            expect(result).toMatchObject({ reason: 'finished', text: '你好' })
             expect(calls).toBe(1) // 没有可用工具时，不要让模型连续三轮尝试调用不存在的工具。
             expect(agent.history.at(-1).role).toBe('assistant')
             expect(agent.history.every(message => typeof message.id === 'string' && message.id)).toBe(true) // 模型产出的消息也要有 id，前端靠它定位每一条。
@@ -63,7 +63,7 @@ describe('Agent 的状态机', () => {
             const result = await agent.send('检查一下')
 
             expect(result).toMatchObject({ reason: 'no-tool', text: '暂时不用工具' })
-            expect(bodies).toHaveLength(3)                                                    // 默认 noToolRounds=3。
+            expect(bodies).toHaveLength(3)                                                    // 默认 idleRounds=3。
             const last = request => JSON.stringify(request.messages.at(-1))
             expect(last(bodies[1])).not.toContain('请继续使用工具')                             // 第 2 次请求还不提醒。
             expect(last(bodies[2])).toContain('请继续使用工具')                                 // 结束前一轮带上提醒。
@@ -141,7 +141,7 @@ describe('压缩这条路径', () => {
                 history: [History.user({ content: '之前的工作' })],
                 config: {
                     ...config, baseURL: `http://127.0.0.1:${big.port}/v1`, model: 'big-model',
-                    compact: { baseURL: `http://127.0.0.1:${small.port}/v1`, model: 'small-model' },
+                    compactModel: { baseURL: `http://127.0.0.1:${small.port}/v1`, model: 'small-model' },
                 },
             })
 
@@ -163,8 +163,8 @@ describe('压缩这条路径', () => {
                 history: [History.user({ content: '很久以前的工作记录'.repeat(50) })],
                 config: {
                     ...config, baseURL: `http://127.0.0.1:${big.port}/v1`, model: 'big-model',
-                    maxTokens: 20, compactThreshold: 0.5, noToolRounds: 1,
-                    compact: { baseURL: `http://127.0.0.1:${small.port}/v1`, model: 'small-model' },
+                    contextBudget: 20, compactThreshold: 0.5, idleRounds: 1,
+                    compactModel: { baseURL: `http://127.0.0.1:${small.port}/v1`, model: 'small-model' },
                 },
             })
 
@@ -223,7 +223,7 @@ describe('压缩这条路径', () => {
             async fetch(request) { await request.json(); return Response.json({ choices: [{ index: 0, message: { role: 'assistant', content: '这是一段总结' }, finish_reason: 'stop' }], usage: {} }) },
         })
 
-        const agent = Agent.create({ config: { baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'k', model: 'm', stream: false, maxTokens: 600, compactThreshold: 0.8 } })
+        const agent = Agent.create({ config: { baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'k', model: 'm', stream: false, contextBudget: 600, compactThreshold: 0.8 } })
         const seeded = Array.from({ length: 40 }, (_, i) => ({ role: 'user', content: `第 ${i} 轮的一些内容，凑长度用的文本`.repeat(3) }))
         agent.history.push(...seeded)
 
@@ -272,7 +272,7 @@ describe('压缩这条路径', () => {
             async fetch(request) { await request.json(); calls += 1; return Response.json({ choices: [{ index: 0, message: { role: 'assistant', content: '一段总结' }, finish_reason: 'stop' }], usage: {} }) },
         })
 
-        const agent = Agent.create({ config: { ...config, baseURL: `http://127.0.0.1:${compacting.port}/v1`, maxTokens: 20, compactThreshold: 0.8 } })
+        const agent = Agent.create({ config: { ...config, baseURL: `http://127.0.0.1:${compacting.port}/v1`, contextBudget: 20, compactThreshold: 0.8 } })
         await agent.send({ input: '你好' }).catch(() => {})
 
         expect(calls).toBeLessThan(20) // 修之前这里 3 秒能跑出 5500 次真实模型请求。
@@ -311,8 +311,8 @@ describe('Loop', () => {
     })
 
     test('不合法的无工具结束轮数在请求模型前就报错', async () => {
-        const agent = Agent.create({ config: { ...config, noToolRounds: 0 } })
-        await expect(agent.send('你好')).rejects.toThrow('noToolRounds must be a positive integer or Infinity')
+        const agent = Agent.create({ config: { ...config, idleRounds: 0 } })
+        await expect(agent.send('你好')).rejects.toThrow('idleRounds must be a positive integer or Infinity')
     })
 
     test('按次传入的非法轮数上限同样在入口被拦住', async () => {
@@ -321,7 +321,7 @@ describe('Loop', () => {
     })
 
     test('无工具结束轮数可调，调大就多问几轮', async () => {
-        const count = async noToolRounds => {
+        const count = async idleRounds => {
             let calls = 0
             const mock = Bun.serve({
                 port: 0,
@@ -332,7 +332,7 @@ describe('Loop', () => {
             })
             try {
                 const tools = await Agent.tool.scan(new URL('./fixtures/tools', import.meta.url))
-                const agent = Agent.create({ config: { ...config, baseURL: `http://127.0.0.1:${mock.port}/v1`, noToolRounds }, tools })
+                const agent = Agent.create({ config: { ...config, baseURL: `http://127.0.0.1:${mock.port}/v1`, idleRounds }, tools })
                 const result = await agent.send('检查一下')
                 return { calls, reason: result.reason }
             } finally { mock.stop(true) }
@@ -404,7 +404,7 @@ describe('Loop', () => {
         })
         try {
             const tools = await Agent.tool.scan(new URL('./fixtures/tools', import.meta.url))
-            const agent = Agent.create({ config: { ...config, baseURL: `http://127.0.0.1:${server.port}/v1`, noToolRounds: 1 }, tools }) // 这里只数用量，答完就结束。
+            const agent = Agent.create({ config: { ...config, baseURL: `http://127.0.0.1:${server.port}/v1`, idleRounds: 1 }, tools }) // 这里只数用量，答完就结束。
             const answer = await agent.send('回显 x')
 
             expect(answer.steps).toBe(2)
@@ -448,7 +448,7 @@ describe('Loop', () => {
             history,
             system: '',
             tools: { ghost: { description: '不存在', inputSchema: jsonSchema({ type: 'object', properties: {} }) } },
-            llm: { baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'k', model: 'm', stream: false, noToolRounds: 1 },
+            llm: { baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'k', model: 'm', stream: false, idleRounds: 1 },
             buildContext: Context.build,
             compact: async () => '总结',
             executeTool: async () => { throw new Error('Tool ghost was not found in handlers') }, // 模拟找得到描述、找不到执行地址。
@@ -508,7 +508,7 @@ describe('Loop', () => {
         })
         try {
             const tools = await Agent.tool.scan(new URL('./fixtures/tools', import.meta.url))
-            const agent = Agent.create({ tools, config: { ...config, baseURL: `http://127.0.0.1:${mock.port}/v1`, noToolRounds: 1 } })
+            const agent = Agent.create({ tools, config: { ...config, baseURL: `http://127.0.0.1:${mock.port}/v1`, idleRounds: 1 } })
             await agent.send('执行')
 
             expect(sent).toHaveLength(2) // 第一轮调工具，第二轮带着工具历史收尾。
@@ -530,7 +530,7 @@ describe('Loop', () => {
             history,
             system: '',
             tools: { echo: { description: 'echo', inputSchema: jsonSchema({ type: 'object', properties: {} }) } },
-            llm: { baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'k', model: 'm', stream: false, noToolRounds: 1 },
+            llm: { baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'k', model: 'm', stream: false, idleRounds: 1 },
             buildContext: Context.build,
             compact: async () => '总结',
             executeTool: async () => ({ output: { type: 'text', value: '真实输出' } }), // 工具本身成功。

@@ -13,20 +13,20 @@ provider: { temperature, topP, topK, maxOutputTokens, stopSequences, seed, toolC
 // 3. system：人给这台 Agent 的身份。它不属于模型参数，是这个包要往上下文里放的东西。
 
 // 4. Agent 的策略：这个包自己的旋钮，和模型无关。
-maxTokens?, compactThreshold, maxSteps?, maxToolOutput?, maxToolConcurrency?, retryMaxDelay?, retryMaxElapsed?, noToolPrompt?, requestTimeout?, noToolRounds?, stream, cache, toolMode, capabilities, mediaFallback, compact?, output?
+contextBudget?, compactThreshold, maxSteps?, maxToolOutput?, maxToolConcurrency?, retryMaxDelay?, retryMaxElapsed?, idlePrompt?, requestTimeout?, idleRounds?, stream, cache, toolMode, capabilities, mediaFallback, compactModel?, output?
 // toolMode: 'native'（默认）只用原生工具，system 一个字节都不动；接不支持原生工具的模型时主动开 'text' 或 'auto'。
 //            'text' 是「模拟工具」开关：不发 tools，把工具说明注入 system，调用从文字里读。
 //            'auto' 是兼容开关：原生优先，被拒收时才降级注入 system（因此不是默认值）。
 // capabilities: { image, audio, video, file, tools, structuredOutput, toolChoice, reasoning }
 // mediaFallback: 'error'（默认）或 'strip'；关闭某种媒体后，strip 会保留文字并丢掉媒体块。
 // requestTimeout: 单笔模型请求最多等多久（毫秒）；不设就不限时，卡住的请求会一直等。
-// noToolRounds: 有工具时连续多少轮不调工具就结束（默认 3，第 2 轮插入 noToolPrompt 提醒）；设成 Infinity 就永不因不调工具结束。
+// idleRounds: 有工具时连续多少轮不调工具就结束（默认 3，第 2 轮插入 idlePrompt 提醒）；设成 Infinity 就永不因不调工具结束。
 // output: 结构化输出格式，如 Agent.output.object({ schema: Agent.schema.object({...}) })；返回值里读 output。
 //         写在配置顶层（它回答"要什么形状的结果"），底层会并进 provider 交给 AI SDK。
-// compact: 压缩单独用一套模型时写在这里，比如 { model: '便宜的小模型' }；也能换 baseURL / apiKey。
-//          不写就和主模型共用；自动压缩和手动 compact() 都用它。
+// compactModel: 压缩单独用一套模型时写在这里，比如 { model: '便宜的小模型' }；也能换 baseURL / apiKey。
+//              不写就和主模型共用；自动压缩和手动 compact() 都用它。
 // 带 ? 的策略默认不限制；只有调用方主动填写才会启用对应保护。
-maxTokens 和 provider.maxOutputTokens 名字像但是两回事：前者是这个包的上下文预算（超了就压缩），
+contextBudget 和 provider.maxOutputTokens 名字像但是两回事：前者是这个包的上下文预算（超了就压缩），
 后者是"这次最多生成多少 token"。改其中一个不会影响另一个。
 
 // 工具的来源可以任意搭配，一行拼装交给 Tool.from：
@@ -132,14 +132,14 @@ const buildLLM = (config, overrides = {}) => {
 
 
 // --- 压缩用的模型配置 ---
-const buildCompact = config => buildLLM(config, config.compact)
+const buildCompact = config => buildLLM(config, config.compactModel)
 
 
 // --- 默认值只有这一处 ---
 const DEFAULT_CAPABILITIES = { ...History.mediaDefaults, tools: true, structuredOutput: true, toolChoice: true, reasoning: false }
 const DEFAULT_COMPACT_THRESHOLD = 0.8
-const DEFAULT_NO_TOOL_ROUNDS = 3
-const DEFAULT_NO_TOOL_PROMPT = '[错误] 你刚才的响应中没有使用工具！请继续使用工具（这是一条系统提醒消息，请勿以对话形式回复）'
+const DEFAULT_IDLE_ROUNDS = 3
+const DEFAULT_IDLE_PROMPT = '[错误] 你刚才的响应中没有使用工具！请继续使用工具（这是一条系统提醒消息，请勿以对话形式回复）'
 
 // --- 开始一次运行：先停掉上一次，再做这一次的事 ---
 const start = (agent, work, outside) => {
@@ -181,13 +181,13 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = null, callba
             mediaFallback: 'error',
             maxToolOutput: undefined,
             maxToolConcurrency: undefined,
-            maxTokens: undefined,
+            contextBudget: undefined,
             maxSteps: undefined,
             retryMaxDelay: undefined,
             retryMaxElapsed: undefined,
             requestTimeout: undefined,
-            noToolPrompt: DEFAULT_NO_TOOL_PROMPT,
-            compact: undefined,
+            idlePrompt: DEFAULT_IDLE_PROMPT,
+            compactModel: undefined,
             output: undefined,
             stream: true,
             toolMode: 'native',
@@ -196,7 +196,7 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = null, callba
             provider: { ...config.provider },
             capabilities: { ...DEFAULT_CAPABILITIES, ...config.capabilities },
             compactThreshold: config.compactThreshold ?? DEFAULT_COMPACT_THRESHOLD,
-            noToolRounds: config.noToolRounds ?? DEFAULT_NO_TOOL_ROUNDS,
+            idleRounds: config.idleRounds ?? DEFAULT_IDLE_ROUNDS,
         },
         tools: Tool.adopt(tools),    // 统一归一化：数组、record、{ schema,handlers }、null 都认。
         callbacks: { ...callbacks },
@@ -215,8 +215,8 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = null, callba
             empty ? new TypeError('input must be a non-empty string or a non-empty content array')
             : badConfig ? new TypeError('config must be an object')
             : !positive(limits.maxSteps) ? new RangeError('maxSteps must be a positive integer')
-            : !positive(limits.maxTokens) ? new RangeError('maxTokens must be a positive integer') // 字符串 '1000' 会让压缩永远不触发，当场拦下。
-            : !positive(limits.noToolRounds, false) ? new RangeError('noToolRounds must be a positive integer or Infinity')
+            : !positive(limits.contextBudget) ? new RangeError('contextBudget must be a positive integer') // 字符串 '1000' 会让压缩永远不触发，当场拦下。
+            : !positive(limits.idleRounds, false) ? new RangeError('idleRounds must be a positive integer or Infinity')
             : !positive(limits.maxToolConcurrency, false) ? new RangeError('maxToolConcurrency must be a positive integer or Infinity')
             : !['native', 'text', 'auto'].includes(limits.toolMode) ? new TypeError("toolMode must be 'native', 'text' or 'auto'") // 拼错的 toolMode 会被默默当成 native，不如直接报错。
             : null

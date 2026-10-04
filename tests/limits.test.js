@@ -136,7 +136,7 @@ describe('常驻加固', () => {
     })
 
     test('默认不加上下文和工具输出上限，调用方可以主动设置', () => {
-        expect(Agent.create().config.maxTokens).toBeUndefined()
+        expect(Agent.create().config.contextBudget).toBeUndefined()
         expect(Agent.create().config.maxToolOutput).toBeUndefined()
     })
 

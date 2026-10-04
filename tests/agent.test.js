@@ -103,7 +103,7 @@ describe('Agent 入口', () => {
         await expect(badConfig).rejects.toThrow('config must be an object')
         await expect(badSignal).rejects.toThrow('signal must be an AbortSignal')
         await expect(agent.send({ input: 'x', config: { maxToolConcurrency: 0 } })).rejects.toThrow('maxToolConcurrency')
-        await expect(agent.send({ input: 'x', config: { noToolRounds: 0 } })).rejects.toThrow('noToolRounds')
+        await expect(agent.send({ input: 'x', config: { idleRounds: 0 } })).rejects.toThrow('idleRounds')
     })
 
     test('maxToolConcurrency 设成 Infinity 是合法的', async () => {
@@ -134,7 +134,7 @@ describe('Agent 入口', () => {
 
         expect(agent.config.maxToolOutput).toBe(2000)   // 这次改的。
         expect(agent.config.provider.temperature).toBe(0.1) // 没提的继续留着。
-        expect(agent.config.maxTokens).toBeUndefined() // 默认不设置上下文限制。
+        expect(agent.config.contextBudget).toBeUndefined() // 默认不设置上下文限制。
     })
 
     test('历史是外部传进来的那份数组，Agent 往里追加而不是替换', async () => {
