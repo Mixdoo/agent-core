@@ -140,6 +140,10 @@ const scan = async (...directories) => {
 const adopt = (input) => {
     if (!input) return { schema: Object.create(null), handlers: Object.create(null) }
 
+    // 目录只有 scan 会扫，adopt 不扫。传错了当场说清楚，而不是悄悄得到一份空工具表。
+    if (typeof input === 'string' || input instanceof URL) throw new TypeError(`Tool.adopt 不接受路径；要扫描目录用 await Tool.from(${JSON.stringify(String(input))}) 或 Tool.scan(...)`)
+    if (Array.isArray(input) && input.some(one => typeof one === 'string' || one instanceof URL)) throw new TypeError('Tool.adopt 的工具数组里不能放路径；要扫描多个目录用 await Tool.from(dir1, dir2) 或 Tool.scan(dir1, dir2)')
+
     // 已经是归一化集合：有 schema 和 handlers 两个自有属性
     if (!Array.isArray(input) && typeof input === 'object' && 'schema' in input && 'handlers' in input) return input
 
@@ -166,6 +170,19 @@ const adopt = (input) => {
     }
 
     return { schema, handlers }
+}
+
+
+// --- 一行拿到工具集合：每个参数可以是目录、内存工具或已有集合，按顺序合并 ---
+//   await Tool.from('./tools', mcpClient.tools(), { skill })
+// 字符串和 URL 当目录扫描，其余交给 adopt；Promise 会先等它。同名时后面的覆盖前面的。
+const from = async (...sources) => {
+    const sets = []
+    for (const source of sources) {
+        const value = await source
+        sets.push(typeof value === 'string' || value instanceof URL ? await scan(value) : adopt(value))
+    }
+    return merge(...sets)
 }
 
 
@@ -365,4 +382,4 @@ const merge = (...sets) => ({
     handlers: Object.assign(Object.create(null), ...sets.map(set => set.handlers ?? {})),
 })
 
-export default { scan, adopt, execute, merge }
+export default { from, scan, adopt, execute, merge }

@@ -31,8 +31,7 @@ describe('可嵌入性', () => {
         for (const key of Object.keys(agent)) expect(has('AgentInstance', key)).toBe(true)                          // 实例上的每个字段都有声明。
         for (const key of Object.keys(agent.config)) expect(has('Config', key)).toBe(true)                          // 每个配置项都有声明。
         for (const key of Object.keys(Agent.history)) expect(has('HistoryModule', key)).toBe(true)
-        for (const key of Object.keys(Agent.tool)) expect(has('ToolModule', key)).toBe(true)
-    })
+        for (const key of Object.keys(Agent.tool)) expect(has('ToolModule', key)).toBe(true)    })
 
     test('onPermission 收到的每个字段，README 和类型声明都写了', async () => {
         // issue #5：运行时一直传 signal，README 也写了，只有 index.d.ts 漏了——TS 用户读 permission.signal 就编译失败。

@@ -29,21 +29,17 @@ maxTokens?, compactThreshold, maxSteps?, maxToolOutput?, maxToolConcurrency?, re
 maxTokens 和 provider.maxOutputTokens 名字像但是两回事：前者是这个包的上下文预算（超了就压缩），
 后者是"这次最多生成多少 token"。改其中一个不会影响另一个。
 
-// 工具有两种来源，最终都是同一种形状 { schema, handlers }：
+// 工具的来源可以任意搭配，一行拼装交给 Tool.from：
 //
-// 1. 文件工具目录（工具跑在子进程里，崩了不影响 Agent）：
-const tools = await Agent.tool.scan("./tools")
+//     const tools = await Agent.tool.from(
+//         "./tools",              // 目录：里面的文件工具跑在子进程里，崩了不影响 Agent
+//         mcpClient.tools(),      // 内存工具：AI SDK / MCP 客户端给的工具对象，主进程直接调
+//         { skill },              // record：自定义函数；也可以传数组 [{ name, ... }, ...]
+//     )
 //
-// 2. 内存工具对象（主进程直接调，适合 MCP 客户端或自定义函数）：
-//    数组：[{ name, description, inputSchema, execute }, ...]
-//    record：{ echo: { description, inputSchema, execute } }（AI SDK tool() / MCP client.tools() 的形状）
-//    已经是 { schema, handlers } 的，原样通过
-const tools = Tool.adopt(mcpClient.tools())
-//
-// 两种来源可以合并：
-const all = Tool.merge(fileBased, inMemory)
-//
-// create 和 send 的 tools 参数接受上面所有形状，内部自动归一化。
+// from 的参数可以是任意多个：目录（字符串 / URL）、工具对象数组、record、已装好的集合，或它们的 Promise。
+// 只有一个来源时，也可以直接 await Agent.tool.scan("./tools") 或 Agent.tool.adopt(objects)。
+// create 收已经装好的工具（同步，不扫目录）；send 收任意形状，目录会在发送时现扫。
 
 // 创建一个独立 Agent。参数会成为 Agent 的公开内部状态。
 const agent = Agent.create({
@@ -56,7 +52,7 @@ const agent = Agent.create({
         system: "你是一个编程助手。",
         provider: { temperature: 0.3 },   // 要改模型参数就写在这里，不写就用模型自己的默认值
     },
-    tools,        // scan() / adopt() 的返回值，也可以直接传数组或 record，会自动归一化
+    tools,        // from(...) / scan(...) / adopt(...) 的返回值
     callbacks: {},
 })
 
@@ -224,10 +220,10 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = null, callba
             : null
         if (invalid) return Promise.reject(invalid)
 
-        return start(agent, signal => {
+        return start(agent, async signal => {
             if ('history' in options) agent.history = options.history
             if ('config' in options) agent.config = { ...agent.config, ...options.config, provider: 'provider' in options.config ? { ...options.config.provider } : agent.config.provider, capabilities: 'capabilities' in options.config ? { ...agent.config.capabilities, ...options.config.capabilities } : agent.config.capabilities }
-            if ('tools' in options) agent.tools = Tool.adopt(options.tools)  // send 时传来的也自动归一化。
+            if ('tools' in options) agent.tools = await Tool.from(options.tools) // send 是异步的，传来的目录会现扫；create 是同步的，只收已经装好的工具。
             if ('callbacks' in options) agent.callbacks = { ...agent.callbacks, ...options.callbacks }
             const callbacks = { ...agent.callbacks }
 
@@ -284,7 +280,7 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = null, callba
 const Agent = {
     version,
     create,
-    tool: Tool,       // scan / adopt / execute / merge
+    tool: Tool,       // from / scan / adopt / execute / merge
     history: History,
     context: Context,
     compact: Compact,

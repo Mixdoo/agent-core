@@ -89,6 +89,22 @@ describe('内存工具执行', () => {
     })
 })
 
+describe('Tool.from 一行拼装', () => {
+    test('目录、record、数组、已装好的集合混着传，按顺序合并', async () => {
+        const scanned = await Tool.scan(TOOLS)
+        const tools = await Tool.from(TOOLS, scanned, { echo }, [{ name: 'extra', execute: async () => 1 }])
+        expect(Object.keys(tools.schema).sort()).toEqual(['echo', 'extra', 'noschema', 'partialschema', 'stream'])
+        expect(tools.handlers.echo.execute).toBeDefined() // 后传的 record 覆盖了目录里的 echo。
+        expect(tools.handlers.echo.url).toBeUndefined()
+    })
+
+    test('接受 Promise，也接受 null', async () => {
+        const tools = await Tool.from(Promise.resolve({ a: { execute: async () => 'a' } }), null)
+        expect(Object.keys(tools.schema)).toEqual(['a'])
+        expect(Object.keys((await Tool.from(null)).schema)).toEqual([])
+    })
+})
+
 describe('Agent 自动归一化', () => {
     const model = () => {
         const server = Bun.serve({
@@ -123,5 +139,25 @@ describe('Agent 自动归一化', () => {
         const agent = Agent.create({ tools: [{ name: 'echo', ...echo }] })
         expect(typeof agent.tools.handlers.echo.execute).toBe('function')
         expect(Object.keys(Agent.create().tools.schema)).toEqual([])
+    })
+
+    test('send 收目录字符串时现扫生效；create 收目录会明确报错而不是静默空表', async () => {
+        const server = Bun.serve({
+            port: 0,
+            async fetch(request) {
+                const body = await request.json()
+                const answered = body.messages.some(message => message.role === 'tool')
+                const message = answered
+                    ? { role: 'assistant', content: '好' }
+                    : { role: 'assistant', content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'echo', arguments: '{"value":"v"}' } }] }
+                return Response.json({ choices: [{ index: 0, message, finish_reason: answered ? 'stop' : 'tool_calls' }], usage: {} })
+            },
+        })
+        try {
+            const agent = Agent.create({ config: { baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'k', model: 'm', stream: false } })
+            await agent.send({ input: '跑', tools: './tests/fixtures/tools' }) // 相对进程当前目录；目录在这一刻才扫描。
+            expect(agent.tools.schema.echo).toBeDefined()
+            expect(() => Agent.create({ tools: './tools' })).toThrow(/Tool.from/)
+        } finally { server.stop(true) }
     })
 })

@@ -679,6 +679,21 @@ Agent 当前的完整历史消息数组，可直接读写。
 
 ### `Agent.tool`
 
+#### `Agent.tool.from(...sources)`
+
+一行拼装工具集合。每个参数可以是目录、内存工具对象、数组、record、已经装好的集合，或它们的 Promise；同名时后面的覆盖前面的。
+
+```js
+const tools = await Agent.tool.from(
+    './tools',                 // 目录：文件工具跑在子进程里
+    mcpClient.tools(),         // 内存工具：MCP / AI SDK 给的工具对象，主进程直接调
+    { skill: skillTool },      // record：自定义函数；也可以传 [{ name, ... }, ...]
+)
+const agent = Agent.create({ config, tools })
+```
+
+`create` 收已经装好的工具（同步，不扫目录）；`send` 收任意形状，目录会在发送的那一刻现扫。只有一个来源时也可以直接用下面的 `scan` / `adopt`。
+
 #### `Agent.tool.scan(directory)`
 
 扫描目录（含子目录）里所有 `.js` / `.mjs` / `.ts` / `.mts` 文件，把其中形状对得上的注册成工具，其余文件跳过。Bun 直接执行 TypeScript，所以工具可以直接写成 `.ts`；只有类型、没有代码的 `.d.ts` 会被跳过。
@@ -709,9 +724,9 @@ Agent.tool.adopt({ add: { description: '加法', inputSchema: {...}, execute } }
 Agent.tool.adopt(await mcpClient.tools())                                        // MCP 客户端的工具直接传
 ```
 
-`inputSchema` 可以是裸 JSON Schema、zod，或 AI SDK 的 `jsonSchema()`。`execute(input, { signal })` 会收到取消信号。`create` 和 `send` 的 `tools` 会自动调用 `adopt`，所以通常不用手动调。
+`inputSchema` 可以是裸 JSON Schema、zod，或 AI SDK 的 `jsonSchema()`。`execute(input, { signal })` 会收到取消信号。
 
-文件工具和内存工具可以合并：`Agent.tool.merge(await Agent.tool.scan('./tools'), Agent.tool.adopt(mcpTools))`。
+文件工具和内存工具可以合并：`Agent.tool.merge(await Agent.tool.scan('./tools'), Agent.tool.adopt(mcpTools))`，或者直接用 `Agent.tool.from('./tools', mcpTools)`（见上）。
 
 **MCP 结果的转换由你来做。** 核心不认识 MCP。MCP 工具返回的 `{ content: [...] }` 默认会作为 JSON 交给模型；想让模型看到原样的文字和图片，给工具加一个 `toModelOutput`：
 
@@ -889,7 +904,7 @@ const agent = Agent.create({ config: { /* ... */ }, tools })
 |---|---|
 | `Agent.version` | 包版本，排查问题时报得出来 |
 | `Agent.create(...)` | 创建 Agent 实例 |
-| `Agent.tool` | `.scan()` / `.adopt()` / `.execute()` / `.merge()` |
+| `Agent.tool` | `.from()` / `.scan()` / `.adopt()` / `.execute()` / `.merge()` |
 | `Agent.history` | `.user()` / `.assistant()` / `.tool()` / `.compact()` 造消息块；`.turns()` / `.render()` 读历史 |
 | `Agent.context` | `.build()` |
 | `Agent.compact` | `.run()` |
