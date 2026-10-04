@@ -144,7 +144,7 @@ describe('三种 toolMode 跑完整的 Agent 循环', () => {
         try {
             const tools = await Agent.tool.scan(TOOLS)
             const results = []
-            const agent = Agent.create({ config: { baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'k', model: 'm', stream: false, toolMode: 'text', idleRounds: 1 }, tools, callbacks: { onToolResult: one => results.push(one) } }) // 这里测协议，不测追问，答完就结束。
+            const agent = Agent.create({ config: { baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'k', model: 'm', stream: false, toolMode: 'text', noToolRounds: 1 }, tools, callbacks: { onToolResult: one => results.push(one) } }) // 这里测协议，不测追问，答完就结束。
             const answer = await agent.send('回显你好')
 
             expect(requests.every(body => !('tools' in body))).toBe(true)
@@ -169,7 +169,7 @@ describe('三种 toolMode 跑完整的 Agent 循环', () => {
         const { server, requests } = plainChatModel()
         try {
             const tools = await Agent.tool.scan(TOOLS)
-            const agent = Agent.create({ config: { baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'k', model: 'plain-auto', stream: false, toolMode: 'auto', idleRounds: 1 }, tools }) // 兼容降级是主动打开的开关，不是默认行为。
+            const agent = Agent.create({ config: { baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'k', model: 'plain-auto', stream: false, toolMode: 'auto', noToolRounds: 1 }, tools }) // 兼容降级是主动打开的开关，不是默认行为。
             const answer = await agent.send('回显你好')
 
             expect(answer.text).toBe('答案是 done:你好。')

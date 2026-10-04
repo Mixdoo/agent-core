@@ -41,17 +41,17 @@ export interface Config {
     mediaFallback?: 'error' | 'strip'
     provider?: Record<string, any>
     maxToolOutput?: number
-    contextBudget?: number
+    maxTokens?: number
     compactThreshold?: number
-    compactModel?: Partial<Config>
+    compact?: Partial<Config>
     output?: any
     maxSteps?: number
     maxToolConcurrency?: number
     retryMaxDelay?: number
     retryMaxElapsed?: number
     requestTimeout?: number
-    idlePrompt?: string
-    idleRounds?: number
+    noToolPrompt?: string
+    noToolRounds?: number
     [key: string]: any
 }
 

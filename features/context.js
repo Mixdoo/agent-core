@@ -68,7 +68,7 @@ const within = (turns, budget) => {
 // --- 把最新总结折进 system，而不是当成一条消息塞进对话里 ---
 // 裸的 role:'user' 总结会被模型读成"用户塞给我一张表"，于是它从头重做整个任务：
 // 真实中转站上实测 gpt-oss-120b 有 5/6 概率退回第一步，而且因为它一直在调工具，
-// Loop 的两个出口（tool-stop / 连续 idleRounds 轮不调工具）全都够不着，send() 永不返回、钱一直烧。
+// Loop 的两个出口（tool-stop / 连续 noToolRounds 轮不调工具）全都够不着，send() 永不返回、钱一直烧。
 // 同一段总结换成下面这个身份说明，同样的模型 6/6 能正确接着往下做。
 const brief = (system, summary) => summary
     ? `${system}\n\n【你此前工作的压缩记录】\n下面是你自己之前已经完成的工作，其中的数据都已经由工具确认过。不要重新核对，直接在此基础上继续。\n\n${summary}`.trim()
@@ -116,7 +116,7 @@ const build = ({ history, system = '', tools = {}, budget, capabilities = {}, me
         ...flat.map(message => History.model(message, { answered, capabilities, reasoning: capabilities.reasoning ?? false, mediaFallback, normalizeMedia: false })).filter(message => message.content.length), // 被摘空的消息（只剩思考、媒体或没人应答的调用）整条丢掉。
     ]
 
-    // Token 只在真的有人读的时候才算：没设 contextBudget 时 Loop 压根不看它，
+    // Token 只在真的有人读的时候才算：没设 maxTokens 时 Loop 压根不看它，
     // 而 countTokens 要把整段上下文重新分词一遍（2000 条历史约 120ms），每轮都白烧一次。
     let counted
     return {

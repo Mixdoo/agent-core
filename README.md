@@ -418,17 +418,17 @@ import Agent from '@kernel4632/agent-core'
 | `mediaFallback` | `'error'` | 媒体能力关闭时的处理方式；改成 `'strip'` 后保留文字并丢掉不支持的媒体 |
 | `provider` | `{}` | AI SDK 的生成参数，整份交给 AI SDK；不设时用模型自己的默认值 |
 | `maxToolOutput` | `undefined` | 默认不截断工具输出；主动设置后超出部分从中间截断并告知模型 |
-| `contextBudget` | `undefined` | 默认不估算或压缩上下文；主动设置后超过预算触发自动压缩（注意区别于 `provider.maxOutputTokens`：那是单次生成上限） |
+| `maxTokens` | `undefined` | 默认不估算或压缩上下文；主动设置后超过预算触发自动压缩（注意区别于 `provider.maxOutputTokens`：那是单次生成上限） |
 | `compactThreshold` | `0.8` | 压缩触发比例，0.8 表示到达 80% 时压缩 |
-| `compactModel` | `undefined` | 压缩单独用一套模型时写在这里，例如 `{ model: '便宜的小模型' }`；不写就和主模型共用 |
+| `compact` | `undefined` | 压缩单独用一套模型时写在这里，例如 `{ model: '便宜的小模型' }`；不写就和主模型共用 |
 | `output` | `undefined` | 结构化输出格式，例如 `Agent.output.object({ schema })`；不写就返回普通文字 |
 | `maxSteps` | `undefined` | 默认不限制模型轮数；主动设置正整数后，到上限先保存这一轮的工具结果，再返回 `step-limit` |
 | `maxToolConcurrency` | `undefined` | 默认不限制同一轮工具并发；主动设置后超出的调用排队 |
 | `retryMaxDelay` | `undefined` | 默认不限制单次退避时间；主动设置后限制毫秒数 |
 | `retryMaxElapsed` | `undefined` | 默认不限制重试总时长；主动设置后到点把错误交给上层（毫秒） |
 | `requestTimeout` | `undefined` | 默认不限制单笔请求时长；主动设置毫秒数后，卡住的一笔会被中断 |
-| `idlePrompt` | 一条"请继续使用工具"的提醒 | 有工具但模型连续不调时，在结束前一轮临时发给模型；只挂在那一次请求上，不写进 `history`。设成 `''` 就不提醒 |
-| `idleRounds` | `3` | 有工具时，连续多少轮不调工具就结束一次 `send`；设成 `1` 就是模型不调工具即结束，设成 `Infinity` 就永不因不调工具结束。没注册工具时一轮就结束，不受它影响 |
+| `noToolPrompt` | 一条"请继续使用工具"的提醒 | 有工具但模型连续不调时，在结束前一轮临时发给模型；只挂在那一次请求上，不写进 `history`。设成 `''` 就不提醒 |
+| `noToolRounds` | `3` | 有工具时，连续多少轮不调工具就结束一次 `send`；设成 `1` 就是模型不调工具即结束，设成 `Infinity` 就永不因不调工具结束。没注册工具时一轮就结束，不受它影响 |
 
 陌生中转站建议先使用默认能力。遇到只支持文字、但接口声称兼容 OpenAI 的模型，可以按能力关闭：
 
@@ -465,7 +465,7 @@ const agent = Agent.create({
 })
 ```
 
-在 `agent.send({ input, config: { provider: { ... } } })` 里传入时，`provider` **整份替换**原值，其他未传的配置字段继续保留。`contextBudget` 是上下文预算，和 `provider.maxOutputTokens`（单次生成量）不是一回事。
+在 `agent.send({ input, config: { provider: { ... } } })` 里传入时，`provider` **整份替换**原值，其他未传的配置字段继续保留。`maxTokens` 是上下文预算，和 `provider.maxOutputTokens`（单次生成量）不是一回事。
 
 `cache` 默认开启。四种协议各按自己的方式让服务端复用固定的开头（system、工具描述、历史），命中后那部分不再重新计算，长会话能明显变快、变便宜：
 
@@ -571,7 +571,7 @@ const result = await agent.send({
 //                算钱、看缓存命中直接读这里；cacheReadTokens / inputTokens 就是缓存命中率
 // result.reason:
 //   'finished'   → 没注册工具，或结构化输出已校验成功：这就是最终回答
-//   'no-tool'    → 有工具，但连续 idleRounds 轮（默认 3）没调用工具才结束
+//   'no-tool'    → 有工具，但连续 noToolRounds 轮（默认 3）没调用工具才结束
 //   'tool-stop'  → 某个工具返回了 stop: true
 //   'step-limit' → 达到 maxSteps，当前工具结果已保存，下一次 send 可继续
 ```
@@ -746,7 +746,7 @@ await mcpClient.close()   // 连接、开关、关闭都由你的应用管理
 
 > 从 0.16 升级：`Agent.create({ mcp })`、`agent.mcp`、`Agent.skill` 和 `create({ skills })` 已删除。MCP 改为自己用 `@ai-sdk/mcp` 连接，再把工具传进 `tools`；技能的提示词自己拼进 `config.system`。
 >
-> 从 0.20 升级（一批改名，让名字直白、不再撞意思）：`config.maxTokens` → `config.contextBudget`；`config.compact` → `config.compactModel`；`config.noToolRounds` → `config.idleRounds`；`config.noToolPrompt` → `config.idlePrompt`；`onPermission` 的 `arguments` 字段 → `input`；结束原因多了一个 `'finished'`（没工具或结构化输出成功，原先是 `'no-tool'`）。工具对象的 `execute(input, { abortSignal })`、`toModelOutput({ output, input })` 现在按 AI SDK 签名调用。
+> 从 0.19 升级：`onPermission` 的 `arguments` 字段改名为 `input`；结束原因多了一个 `'finished'`（没注册工具、或结构化输出已校验成功，原先是 `'no-tool'`）。工具对象的 `execute(input, { abortSignal })`、`toModelOutput({ output, input })` 现在按 AI SDK 签名调用。
 
 #### `Agent.tool.execute(options)`
 
@@ -981,20 +981,20 @@ const agent = Agent.create({ config: { /* ... */ }, tools })
 
 **Q：上下文太长会怎样？**
 
-上下文超过 `config.contextBudget` 的 80%（可用 `compactThreshold` 调整）时，Loop 会自动调用 Compact 把历史压缩成一段总结，然后继续运行。
+上下文超过 `config.maxTokens` 的 80%（可用 `compactThreshold` 调整）时，Loop 会自动调用 Compact 把历史压缩成一段总结，然后继续运行。
 
 **压缩只往 `agent.history` 里追加一条总结，永远不删任何东西。** `history` 是唯一权威数据来源，该保留多少由持有它的你来决定——压缩控制的是"这一轮发给模型的内容有多大"，不是"历史能留多少"。
 
-**压缩可以另配一套模型。** 总结不需要主模型那么聪明，用便宜的小模型就够，写在 `config.compactModel` 里：
+**压缩可以另配一套模型。** 总结不需要主模型那么聪明，用便宜的小模型就够，写在 `config.compact` 里：
 
 ```js
 config: {
     baseURL: 'https://api.example.com/v1', apiKey: 'sk-xxx', model: '主模型',
-    compactModel: { model: '便宜的小模型' },   // 也能一起换 baseURL / apiKey / provider
+    compact: { model: '便宜的小模型' },   // 也能一起换 baseURL / apiKey / provider
 }
 ```
 
-不写 `compactModel` 就和主模型共用。自动压缩和手动 `agent.compact()` 用的都是这一套。
+不写 `compact` 就和主模型共用。自动压缩和手动 `agent.compact()` 用的都是这一套。
 
 **最新的那条总结会折进 `system`，而不是当成一条用户消息塞进对话里**，并且带一句"这是你自己之前做过的工作，数据已由工具确认"。裸的 `role:'user'` 总结会被模型读成"用户塞给我一张表"，于是它从头重做整个任务——真实端点实测 `gpt-oss-120b` 改之前 1/6 能正确续跑，改之后 6/6。
 
@@ -1059,7 +1059,7 @@ export default {
 有两种方式：
 
 1. 写一个 `finish` 工具，让它 `return { stop: true }`，并在系统提示词里告诉模型"完成任务时调用 finish 工具"。
-2. 不写 finish 工具，依赖默认行为：有工具时模型连续 `idleRounds` 轮（默认 3，第 2 轮会被提醒一次）不调用任何工具，Loop 自动返回 `{ reason: 'no-tool' }`。想让模型一不调工具就结束，设 `idleRounds: 1`。
+2. 不写 finish 工具，依赖默认行为：有工具时模型连续 `noToolRounds` 轮（默认 3，第 2 轮会被提醒一次）不调用任何工具，Loop 自动返回 `{ reason: 'no-tool' }`。想让模型一不调工具就结束，设 `noToolRounds: 1`。
 
 ---
 

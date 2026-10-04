@@ -19,12 +19,12 @@ const result = await Loop.run({
             body: {},
         },
         // 下面这些值由 Agent 组装好再传进来（见 index.js 的默认值），Loop 直接使用，不再自己补默认。
-        contextBudget: undefined,      // 不限制上下文；设置后才启用 token 估算和压缩
-        compactThreshold: 0.8,     // 设置 contextBudget 后使用的压缩比例
+        maxTokens: undefined,      // 不限制上下文；设置后才启用 token 估算和压缩
+        compactThreshold: 0.8,     // 设置 maxTokens 后使用的压缩比例
         maxSteps: undefined,       // 不设上限；调用方主动传入正整数时才限制模型轮数
         stream: true,              // 主请求和压缩都流式输出
-        idlePrompt: "请继续使用工具", // 结束前一轮临时发给模型的提醒
-        idleRounds: 3,           // 有工具时连续多少轮不调工具就结束；Infinity 表示永不因此结束
+        noToolPrompt: "请继续使用工具", // 结束前一轮临时发给模型的提醒
+        noToolRounds: 3,           // 有工具时连续多少轮不调工具就结束；Infinity 表示永不因此结束
         retryMaxDelay: 60000,       // 重试退避上限（毫秒）。重试是 LLM.chat 自带的，压缩那次请求也走同一套。
     },
     // --- 功能模块（必填，平齐的功能模块作为参数传）---
@@ -98,9 +98,9 @@ const run = async ({
     onStart, onLLMStart, onLLMFinish, onPermission, onLLMEvent, onRetry, onToolCall, onToolOutput, onToolResult, onStep, onCompact, // 全部回调，没传的自动跳过
 }) => {
     await Notify.tell(onStart) // 外部需要时知道循环已经开始了。
-    const idleRounds = llm.idleRounds       // 结束轮数由 Agent 填好再传进来，这里不再写第二份默认值。
+    const noToolRounds = llm.noToolRounds       // 结束轮数由 Agent 填好再传进来，这里不再写第二份默认值。
     const compactThreshold = llm.compactThreshold // 压缩比例同理，来源只有 Agent 一处。
-    let idleCount = 0        // 记录连续没有工具调用的模型回合。
+    let noToolCount = 0        // 记录连续没有工具调用的模型回合。
     let steps = 0              // 一次 send 发给模型的轮数；重试属于同一轮，压缩不算任务轮次。
     let temporaryPrompt = null  // 工具提示只临时发送给模型，不写入 history。
     const usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 } // 整次 send 的用量合计；算钱、看缓存命中都从这里读，不用自己在回调里累加。
@@ -112,14 +112,14 @@ const run = async ({
         // --- 构建上下文，Token 超限时压一次 ---
         // 每轮最多压一次，不循环压到达标为止：压缩本身就是一次真实模型请求，
         // 而"压完还是超限"通常意味着剩下的内容（单个巨大回合、或工具定义本身）根本压不动，
-        // 循环只会一轮一轮地烧钱——实测 contextBudget 配小时能烧到 5500 次请求，
+        // 循环只会一轮一轮地烧钱——实测 maxTokens 配小时能烧到 5500 次请求，
         // 每轮降一点点的情况下加了"没变小就停"的护栏也还能烧 122 次。
         // 压一次之后仍然超限就照常发出去，由模型服务判断收不收；下一轮如果还超，自然会再压一次。
-        let context = buildContext({ history, system, tools, budget: llm.contextBudget })
-        if (Number.isFinite(llm.contextBudget) && context.token >= llm.contextBudget * compactThreshold) {
+        let context = buildContext({ history, system, tools, budget: llm.maxTokens })
+        if (Number.isFinite(llm.maxTokens) && context.token >= llm.maxTokens * compactThreshold) {
             const content = await compact({ messages: context.messages, llm, stream: llm.stream, onCompact, onRetry, signal }) // 自动压缩只在接近上限时触发；Compact 本身不判断上下文大小。
             history.push(History.compact({ content }))                       // 总结写回 history。
-            context = buildContext({ history, system, tools, budget: llm.contextBudget })                // 用压缩后的历史重建上下文。
+            context = buildContext({ history, system, tools, budget: llm.maxTokens })                // 用压缩后的历史重建上下文。
         }
         // 压缩只往 history 里追加一条总结，永远不删任何东西：
         // history 是这个项目唯一的权威数据来源，该保留多少由持有它的上层决定，核心包无权替它丢数据。
@@ -145,12 +145,12 @@ const run = async ({
             await Notify.tell(onStep, { step: steps, result, toolCalls, toolResults: [] }) // 让调用方在回答已经写入 history 后观察这一轮。
             if ('output' in result || !Object.keys(tools).length) return { reason: 'finished', ...answer } // 结构化输出已校验成功，或根本没注册工具：这就是最终回答，不再追问。
             if (steps >= llm.maxSteps) return { reason: 'step-limit', ...answer } // 上限返回本轮文字，工具轮不捏造对象。
-            idleCount += 1                                                    // 累计没有工具调用的轮次。
-            if (idleCount === idleRounds - 1) temporaryPrompt = llm.idlePrompt // 结束前一轮：插入临时提示推一下模型。
-            if (idleCount >= idleRounds) return { reason: 'no-tool', ...answer } // 到达上限：返回最后一次回答。Infinity 时这里永不触发。
+            noToolCount += 1                                                    // 累计没有工具调用的轮次。
+            if (noToolCount === noToolRounds - 1) temporaryPrompt = llm.noToolPrompt // 结束前一轮：插入临时提示推一下模型。
+            if (noToolCount >= noToolRounds) return { reason: 'no-tool', ...answer } // 到达上限：返回最后一次回答。Infinity 时这里永不触发。
             continue
         }
-        idleCount = 0 // 有工具调用，计数清零。
+        noToolCount = 0 // 有工具调用，计数清零。
 
         // --- 并行执行所有工具调用 ---
         // Promise.all 让所有工具同时开跑，返回结果的顺序和 toolCalls 一致。
