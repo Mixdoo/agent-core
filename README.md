@@ -29,14 +29,14 @@
 
 你可以把它理解成一个"AI 大脑驱动引擎"：
 
-```
-你的程序
-  └─ Agent.create()      ← 创建一个 AI 实例
-       └─ agent.send()   ← 发送任务指令
-            └─ Loop      ← 自动循环
-                 ├─ LLM  ← 问模型："下一步做什么？"
-                 ├─ Tool ← 执行模型要求的工具
-                 └─ 把工具结果告诉模型，继续循环
+```mermaid
+flowchart TD
+    app["你的程序"] --> create["Agent.create()：创建实例"]
+    create --> send["agent.send()：发送指令"]
+    send --> loop["Loop：自动循环"]
+    loop --> llm["LLM：问模型「下一步做什么」"]
+    loop --> tool["Tool：执行模型要求的工具"]
+    tool --> loop
 ```
 
 模型每次回复要么"调用某个工具"，要么"我做完了"。这个包负责把这个循环跑起来，你只需要写工具文件就行。
@@ -51,16 +51,14 @@
 
 循环骨架很简单（建上下文 → 问模型 → 要调工具就执行再回上去），难的是**什么时候停下来**。这个包在"停"这件事上有几个和别人不一样的决定。
 
-<div style="max-width:720px;padding:14px;border:1px solid rgba(255,255,255,.16);border-radius:14px;font-family:system-ui;line-height:1.6">
-  <div style="padding:8px 10px;border:1px solid rgba(255,255,255,.2);border-radius:8px">1 建上下文（太长就先压缩一次）</div>
-  <div style="text-align:center;margin:4px 0">↓</div>
-  <div style="padding:8px 10px;border:1px solid rgba(255,255,255,.2);border-radius:8px">2 问一次模型</div>
-  <div style="text-align:center;margin:4px 0">↓ 模型要调工具？</div>
-  <div style="display:flex;gap:8px;flex-wrap:wrap">
-    <div style="flex:1;min-width:180px;padding:8px 10px;border:1px solid rgba(96,165,250,.45);border-radius:8px"><b>要</b> → 并行执行所有工具，结果写回 history，回到第 1 步</div>
-    <div style="flex:1;min-width:180px;padding:8px 10px;border:1px solid rgba(244,114,182,.45);border-radius:8px"><b>不要</b> → 走结束判定，决定这次 send 是不是做完了</div>
-  </div>
-</div>
+```mermaid
+flowchart TD
+    a["1 建上下文（太长就先压缩一次）"] --> b["2 问一次模型"]
+    b --> c{"模型要调工具？"}
+    c -->|要| d["并行执行所有工具，结果写回 history"]
+    d --> a
+    c -->|不要| e["走结束判定：这次 send 做完了吗"]
+```
 
 **① 模型不调工具，不会立刻结束。** 很多模型在任务没做完时会"礼貌地"给一段总结就停下。直接结束会把没干完的活丢掉。所以有工具时，模型不调工具会先**临时**插一句提醒（`noToolPrompt`）再问一次，连续 `noToolRounds` 轮（默认 3）都不调才结束。这句提醒只挂在那一次请求上，**不写进 `history`**。不想要这个行为，把它设成 `Infinity`。
 
@@ -78,24 +76,15 @@
 
 `history` 里原文一条不少；每次发请求时，只从里面**现挑**该带哪些回合：
 
-<div style="max-width:720px;padding:14px;border:1px solid rgba(255,255,255,.16);border-radius:14px;font-family:system-ui;line-height:1.6">
-  <div style="display:flex;gap:12px;flex-wrap:wrap">
-    <div style="flex:1;min-width:220px">
-      <div style="color:rgba(255,255,255,.6);margin-bottom:6px">history（只增不删）</div>
-      <div style="padding:6px 8px;border:1px solid rgba(255,255,255,.18);border-radius:6px">用户最初的目标</div>
-      <div style="padding:6px 8px;margin-top:4px;border:1px dashed rgba(255,255,255,.18);border-radius:6px;color:rgba(255,255,255,.45)">……很早的回合（已被总结覆盖）……</div>
-      <div style="padding:6px 8px;margin-top:4px;border:1px solid rgba(255,255,255,.18);border-radius:6px">compact：一条总结</div>
-      <div style="padding:6px 8px;margin-top:4px;border:1px solid rgba(255,255,255,.18);border-radius:6px">总结之后的全部新回合</div>
-    </div>
-    <div style="flex:1;min-width:220px">
-      <div style="color:rgba(255,255,255,.6);margin-bottom:6px">这一次发给模型的上下文</div>
-      <div style="padding:6px 8px;border:1px solid rgba(96,165,250,.45);border-radius:6px">最初目标（最多 3 个用户回合，≤20% 预算）</div>
-      <div style="padding:6px 8px;margin-top:4px;border:1px solid rgba(244,114,182,.45);border-radius:6px">最近现场（最多 3 个回合，≤30% 预算）</div>
-      <div style="padding:6px 8px;margin-top:4px;border:1px solid rgba(96,165,250,.45);border-radius:6px">总结后的新回合（全部保留，不限）</div>
-      <div style="padding:6px 8px;margin-top:4px;border:1px dashed rgba(255,255,255,.35);border-radius:6px">总结 → 折进 system</div>
-    </div>
-  </div>
-</div>
+`history` 里原文一条不少；每次发请求时，只从里面**现挑**该带哪些回合：
+
+| history 里的位置 | 内容 | 这一次发给模型吗 |
+|------------------|------|------------------|
+| 最初 | 用户最初的目标 | 保留：最多 3 个用户回合、≤20% 预算 |
+| 中段 | 更早的回合 | 已被总结覆盖，不再单独发 |
+| 总结 | 最新一条 `compact` 总结 | 折进 `system`（不是当消息） |
+| 总结前 | 最近的现场回合 | 保留：最多 3 个回合、≤30% 预算 |
+| 总结后 | 之后的全部新回合 | 全部保留（当前正在推进的） |
 
 几个关键取舍，以及为什么：
 
@@ -212,15 +201,13 @@ bun main.js
 
 MCP 和技能（skills）都由**你的应用**负责，核心只接收通用工具对象。两者的做法一样：先拿到"工具对象"，再交给 `Agent.tool.from`。
 
-<div style="max-width:720px;padding:14px;border:1px solid rgba(255,255,255,.16);border-radius:14px;font-family:system-ui;line-height:1.6">
-  <div style="display:flex;gap:8px;flex-wrap:wrap">
-    <div style="flex:1;min-width:140px;padding:10px;border:1px solid rgba(255,255,255,.2);border-radius:10px"><b>文件工具</b><br><code>./tools/*.js</code></div>
-    <div style="flex:1;min-width:140px;padding:10px;border:1px solid rgba(255,255,255,.2);border-radius:10px"><b>MCP 工具</b><br><code>mcp.tools()</code></div>
-    <div style="flex:1;min-width:140px;padding:10px;border:1px solid rgba(255,255,255,.2);border-radius:10px"><b>技能工具</b><br><code>skills.readTool()</code></div>
-  </div>
-  <div style="text-align:center;margin:8px 0">↓ <code>await Agent.tool.from(…)</code> ↓</div>
-  <div style="padding:10px;border:1px solid rgba(255,255,255,.3);border-radius:10px;text-align:center"><code>Agent.create({ config:{ system }, tools })</code></div>
-</div>
+```mermaid
+flowchart TD
+    f["文件工具 ./tools"] --> from["await Agent.tool.from(...)"]
+    m["MCP 工具 mcp.tools()"] --> from
+    s["技能工具 skills.readTool()"] --> from
+    from --> agent["Agent.create({ config: { system }, tools })"]
+```
 
 ### 接 MCP
 
@@ -372,23 +359,19 @@ const skillTool = {
 
 ### 数据流
 
-```
-agent.send(input)
-  │
-  ├─ History.user()          把用户输入变成历史块，存入 history 数组
-  │
-  └─ Loop.run()
-       │
-       ├─ Context.build()    从 history 裁剪出模型能看的上下文（自动处理 token）
-       ├─ LLM.chat()         请求模型（支持流式，失败自动重试）
-       │
-       ├─ [有工具调用]
-       │    ├─ Tool.execute() 在独立子进程里并行执行所有工具
-       │    └─ 把工具结果写入 history，继续下一轮循环
-       │
-       └─ [没有工具调用]
-            ├─ 没注册工具，或结构化输出已校验成功 → 立刻返回 { reason: 'finished' }
-            └─ 有工具：第 2 轮临时提醒"请继续使用工具"，连续 3 轮都不调 → 返回 { reason: 'no-tool' }
+```mermaid
+flowchart TD
+    send["agent.send(input)"] --> hu["History.user()：把输入变成历史块，存入 history"]
+    hu --> loop["Loop.run()"]
+    loop --> ctx["Context.build()：从 history 裁剪出模型能看的上下文"]
+    ctx --> llm["LLM.chat()：请求模型（流式、失败自动重试）"]
+    llm --> q{"模型要调工具？"}
+    q -->|有工具调用| te["Tool.execute()：在独立子进程里并行执行所有工具"]
+    te --> wr["把工具结果写入 history"]
+    wr --> loop
+    q -->|没有工具调用| done["结束判定"]
+    done --> f1["没注册工具 / 结构化输出已成功 → 返回 reason: finished"]
+    done --> f2["有工具，连续 3 轮都不调 → 返回 reason: no-tool"]
 ```
 
 ---
