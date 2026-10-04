@@ -1,115 +1,14 @@
-/* 包入口：import Agent from '@kernel4632/agent-core'。所有能力都挂在 Agent 上，这个文件负责把各个功能组合起来。
+/* 包入口：import Agent from '@kernel4632/agent-core'。所有能力都挂在 Agent 上，这个文件把各功能组合起来。
 
-参数分四组，规则只有一条：谁的东西就归谁，这个包不替上游保管参数。
+    const agent = Agent.create({
+        config: { baseURL, apiKey, model, system: '你是一个助手。' },
+        tools,                              // Agent.tool.from(...) 的返回值
+        callbacks: { onToolResult: r => console.log(r.toolName, r.output) },
+    })
+    const answer = await agent.send('帮我做件事')
+    console.log(answer.text, answer.reason)
 
-// 1. 连接：怎么找到模型。必填，没有默认值。
-baseURL, apiKey, model, protocol
-
-// 2. provider：AI SDK 的生成参数，整包原样透传。
-//    这个包不认识里面任何一个字段，上游加新参数时这里一行都不用改。
-provider: { temperature, topP, topK, maxOutputTokens, stopSequences, seed, toolChoice, providerOptions, headers, body }
-// 只有 headers 和 body 是连接层的东西（额外请求头、并进请求体的字段），其余全交给 AI SDK。
-
-// 3. system：人给这台 Agent 的身份。它不属于模型参数，是这个包要往上下文里放的东西。
-
-// 4. Agent 的策略：这个包自己的旋钮，和模型无关。
-// 带默认值（不写就用这个）：maxTokens, compactThreshold, noToolPrompt, noToolRounds, stream, cache, toolMode, capabilities, mediaFallback
-// 默认关、填了才生效（不填就是不限制）：maxSteps?, maxToolOutput?, maxToolConcurrency?, retryMaxDelay?, retryMaxElapsed?, requestTimeout?, compact?, output?
-// toolMode: 'native'（默认）只用原生工具，system 一个字节都不动；接不支持原生工具的模型时主动开 'text' 或 'auto'。
-//            'text' 是「模拟工具」开关：不发 tools，把工具说明注入 system，调用从文字里读。
-//            'auto' 是兼容开关：原生优先，被拒收时才降级注入 system（因此不是默认值）。
-// capabilities: { image, audio, video, file, tools, structuredOutput, toolChoice, reasoning, usage }
-// mediaFallback: 'error'（默认）或 'strip'；关闭某种媒体后，strip 会保留文字并丢掉媒体块。
-// requestTimeout: 单笔模型请求最多等多久（毫秒）；不设就不限时，卡住的请求会一直等。
-// noToolRounds: 有工具时连续多少轮不调工具就结束（默认 3，第 2 轮插入 noToolPrompt 提醒）；设成 Infinity 就永不因不调工具结束。
-// output: 结构化输出格式，如 Agent.output.object({ schema: Agent.schema.object({...}) })；返回值里读 output。
-//         写在配置顶层（它回答"要什么形状的结果"），底层会并进 provider 交给 AI SDK。
-// compact: 压缩单独用一套模型时写在这里，比如 { model: '便宜的小模型' }；也能换 baseURL / apiKey。
-//              不写就和主模型共用；自动压缩和手动 compact() 都用它。
-// 带 ? 的策略默认不限制，填了才生效；不带 ? 的有默认值（含 maxTokens 默认 128000，自动压缩默认开着，设 Infinity 关闭）。
-maxTokens 和 provider.maxOutputTokens 名字像但是两回事：前者是这个包的上下文预算（超了就压缩），
-后者是"这次最多生成多少 token"。改其中一个不会影响另一个。
-
-// 工具的来源可以任意搭配，一行拼装交给 Tool.from：
-//
-//     const tools = await Agent.tool.from(
-//         "./tools",              // 目录：里面的文件工具跑在子进程里，崩了不影响 Agent
-//         mcpClient.tools(),      // 内存工具：AI SDK / MCP 客户端给的工具对象，主进程直接调
-//         { skill },              // record：自定义函数；也可以传数组 [{ name, ... }, ...]
-//     )
-//
-// from 的参数可以是任意多个：目录（字符串 / URL）、工具对象数组、record、已装好的集合，或它们的 Promise。
-// 只有一个来源时，也可以直接 await Agent.tool.scan("./tools") 或 Agent.tool.adopt(objects)。
-// create 收已经装好的工具（同步，不扫目录）；send 收任意形状，目录会在发送时现扫。
-
-// 创建一个独立 Agent。参数会成为 Agent 的公开内部状态。
-const agent = Agent.create({
-    history: [],
-    config: {
-        baseURL: "https://api.example.com/v1",
-        apiKey: "sk-xxx",
-        model: "model-name",        // 也可直接传 AI SDK 模型实例；实例已自带地址和协议
-        protocol: "chat",
-        system: "你是一个编程助手。",
-        provider: { temperature: 0.3 },   // 要改模型参数就写在这里，不写就用模型自己的默认值
-    },
-    tools,        // from(...) / scan(...) / adopt(...) 的返回值
-    callbacks: {},
-})
-
-// 发送消息。没有再次传入的参数继续使用 Agent 当前状态。
-const answer = await agent.send('继续处理') // 只有一句话时直接传字符串；图片也可直接传内容块数组。
-console.log(answer.text)            // 最后一轮模型生成的文字；answer.reason 是结束原因。
-await agent.send({
-    input: "帮我写个爬虫",
-    callbacks: {
-        onLLMEvent: event => console.log(event),
-        onPermission: async permission => true,
-        onCompact: event => console.log(event),
-    },
-})
-
-// 发送时也可以覆盖内部参数。
-await agent.send({
-    input: "继续",
-    history: anotherHistory,
-    config: anotherConfig,
-    callbacks: { onLLMEvent: event => console.log(event) },
-})
-
-// 停止当前运行。
-await agent.stop()
-
-// send 内部默认就是流式（config.stream 默认 true），await 拿到和流式一样的结果。
-// 想实时拿到每一块：传 callbacks.onLLMEvent，模型每吐一段就调用一次。
-// 网页要边生成边推送：在 onLLMEvent 里把内容写进你自己的响应流，见 README 的"网页实时推送"。
-// 想要非流式的旧式请求：config.stream = false，这是唯一的兼容开关。
-
-// 手动压缩历史；默认沿用 callbacks.onCompact / callbacks.onRetry。
-const summary = await agent.compact()
-await agent.compact({ onCompact: event => console.log(event) }) // 本次覆盖默认回调。
-
-// 直接使用底层 LLM，无需再单独引入。
-const result = await Agent.llm.chat({ baseURL, apiKey, model, messages })
-
-// 要一个有固定格式的对象时，格式定义也从本包拿；返回值里直接读取 output。
-// config.output = Agent.output.object({ schema: Agent.schema.object({ total: Agent.schema.number() }) })
-// const { output } = await agent.send('计算总数')
-
-// callbacks 中可使用下面这些回调：
-// onPermission: ({ sessionId, toolCallId, toolName, input, signal }) => true | false，需要等待时可以返回 Promise。
-//               它是唯一一个看返回值的回调；它抛错时这次 send 失败。
-// 其余回调都只是通知：出错会被忽略，不影响任务（规则写在 utils/notify.js）。
-// onStart: () => {}，循环开始时调用，无返回值。
-// onLLMStart: ({ messages, tools }) => {}，每次实际请求模型前调用。
-// onLLMFinish: result => {}，模型请求完成时调用，result 是 LLM.chat 返回的完整结果。
-// onLLMEvent: event => {}，原样收到 AI SDK 流中的每个事件。
-// onRetry: info => {}，模型请求重试时调用，info 是重试信息。
-// onToolCall: call => {}，模型请求调用工具时调用，call 包含 toolCallId、toolName、input。
-// onToolOutput: output => {}，工具产生实时输出时调用，output 包含工具调用信息和输出数据。
-// onToolResult: result => {}，工具执行结束时调用，result 包含工具调用信息和最终结果。
-// onStep: step => {}，一轮模型和工具完成后调用，step 包含 step、result、toolCalls、toolResults。
-// onCompact: event => {}，接收 compact-start、所有 AI SDK 原生事件和 compact-finish。
+完整的配置项、回调、返回值，以及工具来源（文件 / 内存 / MCP / 技能）见 README 的「API 参考」和「接入 MCP 和技能」。
 */
 
 import { nanoid } from 'nanoid'
@@ -154,6 +53,7 @@ const inputProblem = (input, limits) => {
     if (!positive(limits.maxTokens, false)) return new RangeError('maxTokens must be a positive integer or Infinity') // 字符串 '1000' 会让压缩永远不触发。
     if (!positive(limits.noToolRounds, false)) return new RangeError('noToolRounds must be a positive integer or Infinity')
     if (!positive(limits.maxToolConcurrency, false)) return new RangeError('maxToolConcurrency must be a positive integer or Infinity')
+    if (!positive(limits.maxToolOutput, false)) return new RangeError('maxToolOutput must be a positive integer or Infinity') // 0/负数会把工具输出静默截成空。
     if (!(typeof limits.compactThreshold === 'number' && Number.isFinite(limits.compactThreshold) && limits.compactThreshold > 0 && limits.compactThreshold <= 1)) return new RangeError('compactThreshold must be a number in (0, 1]')
     if (!['native', 'text', 'auto'].includes(limits.toolMode)) return new TypeError("toolMode must be 'native', 'text' or 'auto'") // 拼错的 toolMode 会被默默当成 native。
     return null
@@ -288,7 +188,7 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = null, callba
 
 
     agent.compact = ({ onCompact = agent.callbacks.onCompact, onRetry = agent.callbacks.onRetry, ...options } = {}) => start(agent, async signal => {
-        const context = Context.build({ history: agent.history, system: agent.config.system, tools: agent.tools.schema, ratio: meter.ratio(modelKey(agent.config)), capabilities: agent.config.capabilities, mediaFallback: agent.config.mediaFallback })
+        const context = Context.build({ history: agent.history, system: agent.config.system, tools: agent.config.capabilities.tools === false ? {} : agent.tools.schema, ratio: meter.ratio(modelKey(agent.config)), capabilities: agent.config.capabilities, mediaFallback: agent.config.mediaFallback }) // 工具表和 send 保持一致：关掉工具能力时这里也不带。
         const compactLLM = buildCompact(agent.config)
         const content = await Compact.run({
             ...options,

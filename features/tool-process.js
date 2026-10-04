@@ -149,7 +149,7 @@ const PART = new Set(['text', 'image', 'audio', 'video', 'file', 'file-data', 'f
 // --- 成形：在跨进程之前就把返回值变成模型能读的输出块 ---
 // 放在工具进程里而不是主线程，是因为这一步要执行工具作者写的 toModelOutput、要做 JSON 化、要校验块形状，
 // 三件事都可能抛错；抛在这里只是一条正常的工具失败，抛在主线程会让那次调用永远不结算。
-// 输出太长时的截断不在这里：截断在主线程里统一做（见 tool.js 的 clip），文件工具和内存工具共用同一条规则。
+// 输出太长时的截断不在这里：截断在主线程里统一做（见 tool.js 的 cutOutput），文件工具和内存工具共用同一条规则。
 const shape = (tool, result, input) => {
     const value = result?.output ?? result                              // 工具可以返回 { output } 对象，也可以直接返回值。
     const output = tool.toModelOutput ? tool.toModelOutput({ output: value, input }) // AI SDK 的签名：和主线程里的内存工具、以及 @ai-sdk/mcp 的工具完全一致。

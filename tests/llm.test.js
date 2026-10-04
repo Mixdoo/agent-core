@@ -86,6 +86,13 @@ describe('请求里到底发了什么', () => {
         expect(recorded[0].stream_options).toEqual({ include_usage: true }) // 不加这个，多数 OpenAI 兼容端点流式响应里根本没有 usage。
     })
 
+    test('capabilities.toolChoice=false 时，请求体里确实没有 tool_choice', async () => {
+        const tools = (await Tool.scan(TOOLS)).schema
+        const body = await send({ tools, capabilities: { toolChoice: false } })
+        expect(body).toHaveProperty('tools')                                   // 工具还在。
+        expect(body).not.toHaveProperty('tool_choice')                          // AI SDK 默认会补 auto，这里必须真的拿掉。
+    })
+
     test('显式关闭 cache 时不发缓存字段', async () => {
         const body = await send({ cache: false })
         expect(body).not.toHaveProperty('prompt_cache_key')

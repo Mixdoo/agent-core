@@ -64,6 +64,7 @@ const aborted = () => Object.assign(new DOMException('Agent loop aborted', 'Abor
 // 不让它把 stop() 吊死（内存工具那边也是同样的"不等了"做法）。
 const waitForPermission = async (asked, signal) => {
     if (!signal) return asked
+    if (signal.aborted) return false // 进来时就已经取消：直接按拒绝，别去挂一个永远不触发的监听把自己吊死。
     let onAbort
     const stopped = new Promise(resolve => { onAbort = () => resolve(false); signal.addEventListener('abort', onAbort, { once: true }) })
     try { return await Promise.race([asked, stopped]) } finally { signal.removeEventListener('abort', onAbort) }

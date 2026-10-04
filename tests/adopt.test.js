@@ -130,6 +130,20 @@ describe('内存工具执行', () => {
         expect(result.output).toEqual({ type: 'json', value: ['a', 'b'] }) // 和文件工具一样，片段收齐当返回值。
         expect(seen).toEqual(['a', 'b'])                                   // 逐段实时送达上层。
     })
+
+    test('生成器工具超时结算后，不再继续转发输出', async () => {
+        const seen = []
+        const tool = { timeout: 30, execute: async function* () { for (let i = 0; i < 100; i += 1) { yield i; await Bun.sleep(10) } } }
+        const result = await run({ slowgen: tool }, 'slowgen', {}, { onOutput: output => seen.push(output.data) })
+        expect(result.error).toContain('超时')
+        const settledCount = seen.length
+        await Bun.sleep(60)
+        expect(seen.length).toBe(settledCount) // 结算后生成器被停下，不再冒新的输出。
+    })
+
+    test('adopt 收到 Promise 时明确报错，不静默变空表', () => {
+        expect(() => Tool.adopt(Promise.resolve([]))).toThrow(/Promise|await/)
+    })
 })
 
 describe('Tool.from 一行拼装', () => {

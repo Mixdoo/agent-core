@@ -84,7 +84,7 @@ export interface Callbacks {
     onPermission?: (permission: { sessionId: string; toolCallId: string; toolName: string; input: any; signal: AbortSignal }) => boolean | Promise<boolean>
     onRetry?: (info: { attempt: number; error: Error; delay: number }) => void
     onToolCall?: (call: { toolCallId: string; toolName: string; input: any; type?: string; title?: string; providerExecuted?: boolean; providerMetadata?: Record<string, any> }) => void | Promise<void>
-    onToolOutput?: (output: { toolName: string; stream: string; data: string; toolCallId: string }) => void
+    onToolOutput?: (output: { toolName: string; stream: string; data: unknown; toolCallId: string; input?: any }) => void
     onToolResult?: (result: { toolCallId: string; toolName: string; input?: any; output: any; result?: any; error?: string; type?: string; title?: string; providerExecuted?: boolean; providerMetadata?: Record<string, any> }) => void | Promise<void>
     onStep?: (step: { step: number; result: any; toolCalls: any[]; toolResults: any[] }) => void | Promise<void>
     onCompact?: (event: any) => void | Promise<void>
@@ -198,7 +198,7 @@ export interface AgentInstance {
     config: Config
     tools: ToolSet
     callbacks: Callbacks
-    running: { controller: AbortController; task: Promise<Answer> } | null
+    running: { controller: AbortController; task: Promise<Answer | string> } | null // send 时是 Answer；compact 时是总结字符串。
     send: {
         (input: string | any[], options?: Omit<SendOptions, 'input'>): Promise<Answer>
         (options: SendOptions & { input: string | any[] }): Promise<Answer>

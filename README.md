@@ -72,7 +72,7 @@ flowchart TD
     P --> A
 ```
 
-**① 模型不调工具，不会立刻结束。** 很多模型在任务没做完时会"礼貌地"给一段总结就停下。直接结束会把没干完的活丢掉。所以有工具时，模型不调工具会先**临时**插一句提醒（`noToolPrompt`）再问一次，连续 `noToolRounds` 轮（默认 3）都不调才结束。这句提醒只挂在那一次请求上，**不写进 `history`**。不想要这个行为，把它设成 `Infinity`。
+**① 模型不调工具，不会立刻结束。** 很多模型在任务没做完时会"礼貌地"给一段总结就停下。直接结束会把没干完的活丢掉。所以有工具时，模型不调工具会先**临时**插一句提醒（`noToolPrompt`）再问一次，连续 `noToolRounds` 轮（默认 3）都不调才结束。这句提醒只挂在那一次请求上，**不写进 `history`**。不想要这个行为，把 `noToolRounds` 设成 `Infinity`。
 
 **② `history` 是唯一的权威数据来源，只增不删。** 循环从不修改历史，模型消息、工具结果按发生的顺序追加。连压缩也只追加一条总结。原因：`history` 归你的应用所有（存库、渲染、多会话），核心替它丢弃数据是不可逆的错误——该留多少由持有它的你决定。
 
@@ -626,7 +626,7 @@ import Agent from '@kernel4632/agent-core'
 | `compact` | `undefined` | 压缩单独用一套模型时写在这里，例如 `{ model: '便宜的小模型' }`；不写就和主模型共用 |
 | `output` | `undefined` | 结构化输出格式，例如 `Agent.output.object({ schema })`；不写就返回普通文字 |
 | `maxSteps` | `undefined` | 默认不限制模型轮数；主动设置正整数后，到上限先保存这一轮的工具结果，再返回 `step-limit` |
-| `maxToolConcurrency` | `undefined` | 默认不限制同一轮工具并发；主动设置后超出的调用排队 |
+| `maxToolConcurrency` | `undefined` | 默认不限制**文件工具**的并发；主动设置后超出的排队。内存工具（`Agent.tool.adopt` / MCP）在主进程直接跑，不受这个上限约束 |
 | `retryMaxDelay` | `undefined` | 默认不限制单次退避时间；主动设置后限制毫秒数 |
 | `retryMaxElapsed` | `undefined` | 默认不限制重试总时长；主动设置后到点把错误交给上层（毫秒） |
 | `requestTimeout` | `undefined` | 默认不限制单笔请求时长；主动设置毫秒数后，卡住的一笔会被中断 |
@@ -762,11 +762,14 @@ await agent.send('继续')
 
 const result = await agent.send({
     input: '帮我写个函数',          // 用户输入（必填）。也可以是内容块数组，见下方"发图片"
-    config: { model: '新模型' },    // 可选：覆盖部分配置
-    history: [],                   // 可选：替换历史
-    tools: newTools,               // 可选：替换工具集
-    callbacks: { onLLMEvent: e => {} }, // 可选：合并回调
+    config: { model: '新模型' },    // 可选：覆盖部分配置（会写回 Agent，之后的 send 继续生效）
+    history: [],                   // 可选：整份替换历史（也写回 Agent）
+    tools: newTools,               // 可选：整份替换工具集（也写回 Agent）
+    callbacks: { onLLMEvent: e => {} }, // 可选：合并回调（逐项写回 Agent，最后传的长期生效）
 })
+
+// 注意：这四项覆盖都写进 Agent 状态，本次 send 之后一直有效，不是"只作用这一次"。
+// 想只影响一次，就在这次 send 里传对值，或之后再传一次恢复。
 
 // result.text → 最后一轮模型生成的文字
 // result.steps → 这次 send 一共请求了模型几轮
@@ -1258,7 +1261,7 @@ export default {
 
 并行。模型在一轮里要求调用多个工具时，所有工具同时开跑，结果按原顺序收集后一起写回历史。
 
-同一个 Agent 内同时最多跑 `config.maxToolConcurrency` 个（默认不限制，一个工具独占一个工具进程），超出的排队。模型偶尔会一轮返回几十个工具调用，建议设一个上限（比如 8）避免瞬间起几十个进程。不同 Agent 各自计算，互不影响。
+同一个 Agent 内，**文件工具**同时最多跑 `config.maxToolConcurrency` 个（默认不限制，一个工具独占一个工具进程），超出的排队。模型偶尔会一轮返回几十个工具调用，建议设一个上限（比如 8）避免瞬间起几十个进程。不同 Agent 各自计算，互不影响。**内存工具（`Agent.tool.adopt` / MCP）在主进程直接跑，不受这个上限约束**——要限它们得在自己的 `execute` 里做。
 
 注意阻塞型工具会**长期占着名额**：上限设成 8、又有 8 个会话各挂一个 `wait_for_message`，第 9 个会话的任何工具都排不进来。多会话的 bot 要按会话数把这个值调大。
 

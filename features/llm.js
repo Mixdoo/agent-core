@@ -112,7 +112,7 @@ const markLast = message => {
 
 // --- 建一条模型连接：模型名写法专用，协议决定用哪个 Provider ---
 // 已创建的模型实例不走这里，它的连接由调用方自己负责。
-const connect = ({ baseURL, apiKey, model, protocol, system, headers, cache, bodyOverrides, generation, usage }) => {
+const connect = ({ baseURL, apiKey, model, protocol, system, headers, cache, bodyOverrides, generation, usage, stripToolChoice }) => {
     const settings = { apiKey, baseURL, headers } // 连接三件套：地址、密钥、额外请求头。
 
     // 默认开启。chat / responses 发 prompt_cache_key；个别不认这个字段的中转站会 400，设 cache:false 即可关掉。
@@ -123,12 +123,15 @@ const connect = ({ baseURL, apiKey, model, protocol, system, headers, cache, bod
     const finalBody = { ...cacheBody, ...bodyOverrides } // 自定义 body 可以覆盖默认缓存字段。
 
     // 只有自己创建的 Provider 才能接管 fetch，并入调用方要求的原始请求体字段。
-    if (Object.keys(finalBody).length) {
+    // stripToolChoice：AI SDK 在带 tools 时会自动补 tool_choice，光在 input 里删不掉，只能在这一层从最终请求体里删。
+    if (Object.keys(finalBody).length || stripToolChoice) {
         settings.fetch = async (input, init) => {
             let body = init?.body // AI SDK 已经组好的协议请求体，连接层只负责并入额外字段。
             if (typeof body === 'string') {
-                try { body = { ...JSON.parse(body), ...finalBody } } // 明确指定的原始字段优先。
-                catch (error) { throw new TypeError('AI SDK request body is not valid JSON', { cause: error }) } // 保留原始解析错误，便于定位上游响应形状。
+                try {
+                    body = { ...JSON.parse(body), ...finalBody } // 明确指定的原始字段优先。
+                    if (stripToolChoice) delete body.tool_choice       // 关掉 toolChoice 能力时，确实从请求体里拿掉。
+                } catch (error) { throw new TypeError('AI SDK request body is not valid JSON', { cause: error }) } // 保留原始解析错误，便于定位上游响应形状。
             }
             return fetch(input, { ...init, body: body && JSON.stringify(body) }) // 保留 SDK 的请求头、方法和取消信号。
         }
@@ -275,7 +278,7 @@ const chat = async ({
 
     // --- 决定模型来源：模型实例直接用，模型名才由这个包创建连接 ---
     let providerModel = model // 调用方传入的 AI SDK 模型实例，原样使用。
-    if (typeof model === 'string') providerModel = connect({ baseURL, apiKey, model, protocol, system, headers, cache, bodyOverrides, generation, usage: capabilities.usage !== false })
+    if (typeof model === 'string') providerModel = connect({ baseURL, apiKey, model, protocol, system, headers, cache, bodyOverrides, generation, usage: capabilities.usage !== false, stripToolChoice: capabilities.toolChoice === false })
     if (typeof providerModel === 'string') throw new Error(`Unsupported protocol: ${protocol}`) // 协议拼错时立即报错，不把模型名当实例传下去。
 
     // --- 组织一次统一的 AI SDK 请求 ---

@@ -97,7 +97,11 @@ const build = ({ history, system = '', tools = {}, budget, ratio = DEFAULT_RATIO
         const pool = before.slice(Math.max(covered + 1, summaryIndex - KEEP_BEFORE_SUMMARY)).filter(turn => !goal.includes(turn)) // 上一条总结之后的、且没被目标选走的回合。
         const recent = within([...pool].reverse(), room * RECENT_SHARE).reverse()                              // 从最近的往回收，再正回时间顺序。
 
-        selected = [...goal, ...recent, ...turns.slice(summaryIndex + 1)]                                       // 时间顺序：最初目标 → 最近现场 → 总结后的新回合。
+        // 挑出来的三段（最初目标 / 最近现场 / 总结后的新回合）各自有序，但直接相接会打乱时间顺序：
+        // 目标取的是最早的几个用户回合，最近现场取的是靠后的窗口，中间夹着没被选中的、早于目标的回合。
+        // 所以最后按 turns 的原始顺序过滤一遍——三段都取自 turns，用引用去重即可。
+        const chosen = new Set([...goal, ...recent, ...turns.slice(summaryIndex + 1)])
+        selected = turns.filter(turn => chosen.has(turn))                                                       // 时间顺序由 turns 本身保证。
         // 兜底：预算太紧时上面三段可能都为空，context 就只剩一条 system——模型会拒收"没有消息"的请求。
         // 无论如何保底留一条真实回合（优先总结前最后那一条），内容大也照发，交由服务端判断收不收。
         if (!selected.length) {

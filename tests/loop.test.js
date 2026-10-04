@@ -627,4 +627,28 @@ describe('取消在工具边界', () => {
             expect(error.kind).toBe('aborted')           // 和模型取消错误一样带 kind。
         } finally { mock.stop(true) }
     })
+
+    test('onPermission 里同步取消时，send 会结束而不是永久挂起', async () => {
+        const mock = Bun.serve({
+            port: 0,
+            async fetch() {
+                return Response.json({ choices: [{ index: 0, message: { role: 'assistant', content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'echo', arguments: '{}' } }] }, finish_reason: 'tool_calls' }], usage: {} })
+            },
+        })
+        const controller = new AbortController()
+        try {
+            const error = await Loop.run({
+                history: [History.user({ content: '跑' })],
+                system: '',
+                tools: { echo: { description: 'e', inputSchema: jsonSchema({ type: 'object', properties: {} }) } },
+                llm: { baseURL: `http://127.0.0.1:${mock.port}/v1`, apiKey: 'k', model: 'm', stream: false },
+                buildContext: Context.build,
+                compact: async () => '总结',
+                executeTool: async () => ({ output: { type: 'text', value: 'x' } }),
+                onPermission: () => { controller.abort(); return new Promise(() => {}) }, // 同步取消，再返回一个永远不答的 Promise。
+                signal: controller.signal,
+            }).catch(caught => caught)
+            expect(error.kind).toBe('aborted') // 不挂死，按取消结束。
+        } finally { mock.stop(true) }
+    })
 })

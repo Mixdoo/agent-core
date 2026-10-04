@@ -101,7 +101,7 @@ const stripFence = raw => raw.trim().replace(/^```(?:json|JSON)?\s*/,'').replace
 
 // 把 XML 里读到的字符串参数转回它该有的类型：schema 说这个参数是 number，就转成数字。
 // 不转换的话，工具收到的 {"a": "1"} 和模型想表达的 {"a": 1} 对不上，工具可能算错。
-const coerce = (value, type) => {
+const toType = (value, type) => {
     if (type === 'number' || type === 'integer') { const n = Number(value); return Number.isNaN(n) ? value : n } // 转不动就原样留着。
     if (type === 'boolean') return value === 'true'                                                           // "true" → true。
     if (type === 'object' || type === 'array') { try { return JSON.parse(value) } catch { return value } }    // 嵌套结构按 JSON 解析。
@@ -143,20 +143,20 @@ const readJson = raw => {
 // --- Roo Code / Cline 风格：工具名做标签，参数做子标签 ---
 // 兼容这一套是因为很多本地小模型被喂过这种样本，会本能地这么写。例如：
 //   <read_file><path>a.js</path></read_file>
-// 子标签里的值是字符串，靠 coerce 按 schema 转回原来的类型。
+// 子标签里的值是字符串，靠 toType 按 schema 转回原来的类型。
 const readXml = (inner, name, params = {}) => {
     const input = {}
     let found = false
     for (const child of inner.matchAll(/<([a-zA-Z_][\w-]*)>([\s\S]*?)<\/\1>/g)) {              // 逐个读出 <参数名>值</参数名>。
         found = true
-        input[child[1]] = coerce(child[2].trim(), params[child[1]])                            // 按 schema 转类型。
+        input[child[1]] = toType(child[2].trim(), params[child[1]])                            // 按 schema 转类型。
     }
     if (found) return { toolName: name, input }                                                // 标准写法：每个参数一个子标签。
 
     const value = inner.trim()                                                                 // 没有子标签，标签体本身就是参数值。
     if (!value) return { toolName: name, input: {} }                                           // 空标签 = 没有参数的工具。
     const keys = Object.keys(params)
-    if (keys.length === 1) return { toolName: name, input: { [keys[0]]: coerce(value, params[keys[0]]) } } // 只有一个参数时，把标签体直接当成它。
+    if (keys.length === 1) return { toolName: name, input: { [keys[0]]: toType(value, params[keys[0]]) } } // 只有一个参数时，把标签体直接当成它。
     return { toolName: name, input: {}, invalid: true, error: new Error('工具参数格式无法识别') }            // 多个参数却没有子标签，认不出来。
 }
 
@@ -174,8 +174,8 @@ const parse = (text, spec, { loose = false } = {}) => {
     const add = (call, start, end) => { calls.push({ call, start }); ranges.push([start, end]) }
 
     // 模型有时会自己编造工具结果。从这里往后全丢掉——把幻觉当上下文会让它以为工具真跑过了。
-    const hallucinated = source.search(/<tool_result[\s>]/)
-    const body = hallucinated >= 0 ? source.slice(0, hallucinated) : source
+    const resultStart = source.search(/<tool_result[\s>]/)
+    const body = resultStart >= 0 ? source.slice(0, resultStart) : source
 
     // 主格式：<tool_call>{...}</tool_call>。也容忍没闭合：模型被截断时最后一块就是这样。
     const blockRe = /<tool_call>\s*([\s\S]*?)(?:<\/tool_call>|$)/g

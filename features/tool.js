@@ -148,6 +148,7 @@ const adopt = (input) => {
 
     // 目录只有 scan 会扫，adopt 不扫。传错了当场说清楚，而不是悄悄得到一份空工具表。
     if (typeof input === 'string' || input instanceof URL) throw new TypeError(`Tool.adopt 不接受路径；要扫描目录用 await Tool.from(${JSON.stringify(String(input))}) 或 Tool.scan(...)`)
+    if (typeof input?.then === 'function') throw new TypeError('Tool.adopt 收到的是 Promise（多半是漏了 await）；用 await Tool.from(...) 或先 await 再传') // 否则 Promise 会被当普通对象、静默得到空工具表。
     if (Array.isArray(input) && input.some(one => typeof one === 'string' || one instanceof URL)) throw new TypeError('Tool.adopt 的工具数组里不能放路径；要扫描多个目录用 await Tool.from(dir1, dir2) 或 Tool.scan(dir1, dir2)')
 
     // 已经是归一化集合：schema 和 handlers 都必须有，缺一个就是传错了。
@@ -346,6 +347,7 @@ const inProcess = async ({ name, input, handler, signal, onOutput, limit }) => {
     const interrupted = { output: { type: 'error-text', value: '工具执行已中断' }, interrupted: true }
     let timer
     let onAbort
+    let settled = false // 已按超时/取消结算后置 true：生成器循环据此停下，不再转发输出、也不空转一个不理会 signal 的生成器。
     try {
         if (signal?.aborted) return interrupted // 进来之前就已经取消了。
 
@@ -356,7 +358,11 @@ const inProcess = async ({ name, input, handler, signal, onOutput, limit }) => {
             const result = await handler.execute(input, { signal: stop, abortSignal: stop }) // 同步返回值也能被 await 接住。
             if (result && typeof result[Symbol.asyncIterator] === 'function') {
                 const chunks = []
-                for await (const chunk of result) { chunks.push(chunk); Notify.tell(onOutput, { toolName: name, stream: 'result', data: chunk }) } // 逐段实时送达。
+                for await (const chunk of result) {
+                    if (settled) { try { await result.return?.() } catch {} break } // 已经结算就别再往下跑（不理会取消的生成器否则会永远转）。
+                    chunks.push(chunk)
+                    Notify.tell(onOutput, { toolName: name, stream: 'result', data: chunk }) // 逐段实时送达。
+                }
                 return chunks
             }
             return result
@@ -364,10 +370,11 @@ const inProcess = async ({ name, input, handler, signal, onOutput, limit }) => {
         void task.catch(() => {}) // 先结算（取消/超时）后，工具迟到失败别变成未处理的拒绝。
 
         const racers = [task]
-        if (handler.timeout) racers.push(new Promise((_, reject) => { timer = setTimeout(() => { reject(new Error(`工具执行超时（${handler.timeout}ms）`)); controller.abort() }, handler.timeout) }))
-        if (signal) racers.push(new Promise(resolve => { onAbort = () => resolve(INTERRUPTED); signal.addEventListener('abort', onAbort, { once: true }) }))
+        if (handler.timeout) racers.push(new Promise((_, reject) => { timer = setTimeout(() => { settled = true; reject(new Error(`工具执行超时（${handler.timeout}ms）`)); controller.abort() }, handler.timeout) }))
+        if (signal) racers.push(new Promise(resolve => { onAbort = () => { settled = true; resolve(INTERRUPTED) }; signal.addEventListener('abort', onAbort, { once: true }) }))
 
         const raw = await Promise.race(racers)
+        settled = true // 正常返回也算结算：下面 finally 里清定时器、摘监听。
         if (raw === INTERRUPTED) { controller.abort(); return interrupted } // 取消优先结算，工具稍后返回也不采纳。
         const output = shape(handler, raw, input)
         return { output, stop: raw?.stop === true }

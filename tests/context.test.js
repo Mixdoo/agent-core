@@ -41,6 +41,23 @@ describe('Context 裁剪', () => {
         expect(() => Context.build({ history, system: 's', budget: 10, ratio: 0.6 })).not.toThrow()
     })
 
+    test('最初目标与最近现场拼起来也不打乱时间顺序', () => {
+        const history = [
+            History.user({ content: 'u0' }),
+            History.assistant({ content: 'a1', toolCalls: [{ id: 'c1', name: 't', arguments: {} }] }),
+            History.tool({ toolCallId: 'c1', toolName: 't', content: 'r1' }),
+            History.user({ content: 'u2' }),
+            History.assistant({ content: 'a3', toolCalls: [{ id: 'c3', name: 't', arguments: {} }] }),
+            History.tool({ toolCallId: 'c3', toolName: 't', content: 'r3' }),
+            History.compact({ content: '总结' }),
+            History.user({ content: 'u6' }),
+        ]
+        const { messages } = Context.build({ history, system: 's', budget: 128000, ratio: 0.6 })
+        const text = JSON.stringify(messages)
+        expect(text.indexOf('u0')).toBeLessThan(text.indexOf('a1')) // 应答必须跟在它触发的用户消息之后。
+        expect(text.indexOf('a1')).toBeLessThan(text.indexOf('u2')) // 顺序不能因为"目标/现场"分段而错乱。
+    })
+
     test('压缩后不再切断 tool-call 与 tool-result 的配对', () => {
         const history = withTurns(5)
         history.push(History.compact({ content: '前面读了 5 个文件' }))
