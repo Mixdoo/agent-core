@@ -16,6 +16,7 @@ export const DEFAULT_RATIO = 0.6 // 每字符大约多少 token。偏高：未�
 const MIN_RATIO = 0.1
 const MAX_RATIO = 2
 const SMOOTH = 0.3 // 新样本占的权重；越小越稳，越大越快跟上。
+const MIN_CHARS = 200 // 内容太短时字符数抖动大，算出来的比例不可靠，不值得采信。
 
 const clamp = ratio => Math.min(MAX_RATIO, Math.max(MIN_RATIO, ratio))
 
@@ -39,9 +40,11 @@ export const createMeter = () => {
         observe: (key, payload, real) => {
             if (!key || !Number.isFinite(real) || real <= 0) return
             const chars = JSON.stringify(payload).length
-            if (!chars) return
+            if (chars < MIN_CHARS) return // 太短的内容不采：比例噪声大。
             const sample = clamp(real / chars)
             const old = ratios.get(key)
+            // 已经有比例时，和新样本差太远（3 倍以上）的当成异常用量丢掉，别让一次离群值把估算带偏。
+            if (old !== undefined && (sample > old * 3 || sample < old / 3)) return
             ratios.set(key, old === undefined ? sample : old * (1 - SMOOTH) + sample * SMOOTH)
         },
     }

@@ -42,9 +42,6 @@ const KEEP_BEFORE_SUMMARY = 3
 const GOAL_SHARE = 0.2
 const RECENT_SHARE = 0.3
 
-// AI SDK 的 content 既可以是内容块数组，也可以是一段纯文本；纯文本里不会有工具调用。
-// 「怎么判断一条消息的内容块」这件事由 History 定义，这里直接用它的，不再自己写一份。
-
 // 一个回合有多大。用字符数而不是 token：裁剪要对每个候选回合都量一次，
 // 逐条估算 token 是没必要的开销。字符数用来在候选回合之间分预算足够了。
 const size = turn => turn.reduce((total, message) => total + JSON.stringify(message.content).length, 0)
@@ -100,6 +97,12 @@ const build = ({ history, system = '', tools = {}, budget, ratio = DEFAULT_RATIO
         const recent = within([...pool].reverse(), room * RECENT_SHARE).reverse()                              // 从最近的往回收，再正回时间顺序。
 
         selected = [...goal, ...recent, ...turns.slice(summaryIndex + 1)]                                       // 时间顺序：最初目标 → 最近现场 → 总结后的新回合。
+        // 兜底：预算太紧时上面三段可能都为空，context 就只剩一条 system——模型会拒收"没有消息"的请求。
+        // 无论如何保底留一条真实回合（优先总结前最后那一条），内容大也照发，交由服务端判断收不收。
+        if (!selected.length) {
+            const last = turns[summaryIndex - 1] ?? turns[0]                                                     // 总结前一条；没有前一条就用总结本身垫一条。
+            if (last) selected = [last]
+        }
     }
 
     // --- 出口：回合只是 Context 内部的形状，交给模型的仍然是平铺消息 ---

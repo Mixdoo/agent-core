@@ -619,7 +619,7 @@ import Agent from '@kernel4632/agent-core'
 | `stream` | `true` | 是否流式请求模型。默认流式，`await send` 仍拿到完整结果；设为 `false` 才走非流式的旧式请求 |
 | `cache` | `true` | 提示词缓存，默认开启。长会话的固定开头（system、工具、历史）会被服务端缓存，命中就是省时间和省钱 |
 | `toolMode` | `'native'` | 默认只用原生工具，system 零注入。接纯对话模型时主动打开 `'text'`（模拟工具）或 `'auto'`（兼容降级），见下方「让没有原生工具的模型也能用工具」 |
-| `capabilities` | 见下方 | 按模型能力逐项开关图片、音频、视频、文件、工具调用、结构化输出、toolChoice 和思考内容 |
+| `capabilities` | 见下方 | 按模型能力逐项开关图片、音频、视频、文件、工具调用、结构化输出、toolChoice、思考内容和流式用量 |
 | `mediaFallback` | `'error'` | 媒体能力关闭时的处理方式；改成 `'strip'` 后保留文字并丢掉不支持的媒体 |
 | `provider` | `{}` | AI SDK 的生成参数，整份交给 AI SDK；不设时用模型自己的默认值 |
 | `maxToolOutput` | `undefined` | 默认不截断工具输出；主动设置后超出部分从中间截断并告知模型 |
@@ -651,7 +651,7 @@ const agent = Agent.create({
 })
 ```
 
-`image`、`audio`、`video` 和 `file` 控制内容块；`tools` 控制是否发送工具描述；`structuredOutput` 控制是否发送 `response_format`；`toolChoice:false` 让请求完全省略 `tool_choice`；`reasoning:true` 才会把历史里的思考块发给模型。旧式 `image`、`audio`、`video` 内容块会在真正请求模型时转换成 AI SDK 当前使用的 `file`，历史数组仍保留原始形状。
+`image`、`audio`、`video` 和 `file` 控制内容块；`tools` 控制是否发送工具描述；`structuredOutput` 控制是否发送 `response_format`；`toolChoice:false` 让请求完全省略 `tool_choice`；`reasoning:true` 才会把历史里的思考块发给模型；`usage:false` 关掉流式请求里的 `stream_options.include_usage`（个别不认这个字段的中转站会 400，关掉即可，代价是 token 估算拿不到真实数据、只能靠粗估）。旧式 `image`、`audio`、`video` 内容块会在真正请求模型时转换成 AI SDK 当前使用的 `file`，历史数组仍保留原始形状。
 
 `provider` 直接放 AI SDK 的生成参数，例如：
 
@@ -943,6 +943,8 @@ Agent.tool.adopt(await mcpClient.tools())                                       
 > 从 0.19 升级：`onPermission` 的 `arguments` 字段改名为 `input`；结束原因多了一个 `'finished'`（没注册工具、或结构化输出已校验成功，原先是 `'no-tool'`）。工具对象的 `execute(input, { abortSignal })`、`toModelOutput({ output, input })` 现在按 AI SDK 签名调用。
 >
 > 从 0.21 升级：去掉了 `gpt-tokenizer`，上下文 token 改用**自校准估算**（字符数 × 每字符 token 比，比例由真实 `usage` 学到，跟着模型走）；`maxTokens` 默认变为 `128000`，**自动压缩默认开启**（想关掉设 `maxTokens: Infinity`）。产物从 ~3.9 MB 降到 ~1.3 MB。
+>
+> 从 0.22 升级：内存工具声明的 `timeout` 现在真的生效；新增 `capabilities.usage`（关掉流式请求里的 `include_usage`）；`compactThreshold`、字符串型 `maxTokens` 等非法配置现在会在 `send` 入口报错。
 
 #### `Agent.tool.execute(options)`
 
@@ -1193,6 +1195,8 @@ config: {
 ```
 
 不写 `compact` 就和主模型共用。自动压缩和手动 `agent.compact()` 用的都是这一套。
+
+> 用更小的小模型做压缩时注意：那笔压缩请求的**大小是由主模型的 `maxTokens` 决定的**，跟压缩模型自己的窗口无关。如果压缩模型的窗口比主模型预算小，压缩请求会先在小模型这边撑爆。让压缩模型的窗口 ≥ 主模型预算，或把 `maxTokens` 调小。
 
 **最新的那条总结会折进 `system`，而不是当成一条用户消息塞进对话里**，并且带一句"这是你自己之前做过的工作，数据已由工具确认"。裸的 `role:'user'` 总结会被模型读成"用户塞给我一张表"，于是它从头重做整个任务——真实端点实测 `gpt-oss-120b` 改之前 1/6 能正确续跑，改之后 6/6。
 

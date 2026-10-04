@@ -112,7 +112,7 @@ const markLast = message => {
 
 // --- 建一条模型连接：模型名写法专用，协议决定用哪个 Provider ---
 // 已创建的模型实例不走这里，它的连接由调用方自己负责。
-const connect = ({ baseURL, apiKey, model, protocol, system, headers, cache, bodyOverrides, generation }) => {
+const connect = ({ baseURL, apiKey, model, protocol, system, headers, cache, bodyOverrides, generation, usage }) => {
     const settings = { apiKey, baseURL, headers } // 连接三件套：地址、密钥、额外请求头。
 
     // 默认开启。chat / responses 发 prompt_cache_key；个别不认这个字段的中转站会 400，设 cache:false 即可关掉。
@@ -134,7 +134,7 @@ const connect = ({ baseURL, apiKey, model, protocol, system, headers, cache, bod
         }
     }
 
-    if (protocol === 'chat') return createOpenAICompatible({ ...settings, name: 'agent', includeUsage: true, supportsStructuredOutputs: Boolean(generation.output) }).chatModel(model) // 显式选择结构化输出时把 schema 一起发给服务端；includeUsage 让流式响应也带上 usage（token 估算器靠它自校准）。
+    if (protocol === 'chat') return createOpenAICompatible({ ...settings, name: 'agent', includeUsage: usage, supportsStructuredOutputs: Boolean(generation.output) }).chatModel(model) // 显式选择结构化输出时把 schema 一起发给服务端；includeUsage 让流式响应带上 usage（token 估算器靠它自校准），个别不认 stream_options 的中转站可关掉。
     if (protocol === 'responses') return createOpenAI(settings).responses(model)         // 官方 OpenAI Responses 接口。
     if (protocol === 'anthropic') return createAnthropic(settings).languageModel(model)   // Anthropic 原生接口。
     if (protocol === 'gemini') return createGoogle(settings).languageModel(model)         // Google 原生接口。
@@ -275,7 +275,7 @@ const chat = async ({
 
     // --- 决定模型来源：模型实例直接用，模型名才由这个包创建连接 ---
     let providerModel = model // 调用方传入的 AI SDK 模型实例，原样使用。
-    if (typeof model === 'string') providerModel = connect({ baseURL, apiKey, model, protocol, system, headers, cache, bodyOverrides, generation })
+    if (typeof model === 'string') providerModel = connect({ baseURL, apiKey, model, protocol, system, headers, cache, bodyOverrides, generation, usage: capabilities.usage !== false })
     if (typeof providerModel === 'string') throw new Error(`Unsupported protocol: ${protocol}`) // 协议拼错时立即报错，不把模型名当实例传下去。
 
     // --- 组织一次统一的 AI SDK 请求 ---

@@ -42,11 +42,25 @@ describe('token 估算器', () => {
 
     test('坏数据不污染比例', () => {
         const meter = createMeter()
-        const payload = { messages: [] }
+        const payload = { messages: [{ role: 'user', content: 'a'.repeat(1000) }] }
         meter.observe('k', payload, undefined) // 没有 usage。
         meter.observe('k', payload, 0)
         meter.observe('k', payload, -5)
         expect(meter.ratio('k')).toBe(DEFAULT_RATIO)
+    })
+
+    test('太短的样本不采信，离群样本被丢掉', () => {
+        const meter = createMeter()
+        const big = { messages: [{ role: 'user', content: 'a'.repeat(1000) }] }
+        const chars = JSON.stringify(big).length
+        meter.observe('k', big, Math.round(chars * 0.25)) // 稳定在 0.25。
+        const settled = meter.ratio('k')
+
+        meter.observe('k', { messages: [] }, 1000000) // 内容太短 → 直接忽略，不参与计算。
+        expect(meter.ratio('k')).toBe(settled)
+
+        meter.observe('k', big, Math.round(chars * 3)) // 偏差 >3 倍 → 当成异常用量丢掉。
+        expect(meter.ratio('k')).toBe(settled)
     })
 
     test('modelKey 能区分地址 / 协议 / 模型名', () => {

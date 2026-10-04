@@ -87,12 +87,28 @@ describe('内存工具执行', () => {
         expect(long.output.value).toContain('输出过长')
     })
 
-    test('signal 用 signal 和 abortSignal 两个键透传（AI SDK 工具读 abortSignal）', async () => {
+    test('signal 用 signal 和 abortSignal 两个键透传（AI SDK 工具读 abortSignal），并跟随外部取消', async () => {
         let got
         const controller = new AbortController()
         await run({ sig: { execute: async (input, { signal, abortSignal }) => { got = { signal, abortSignal }; return 'ok' } } }, 'sig', {}, { signal: controller.signal })
-        expect(got.signal).toBe(controller.signal)
-        expect(got.abortSignal).toBe(controller.signal)
+        expect(got.signal).toBe(got.abortSignal)          // 两个键指向同一个信号，工具读哪个都行。
+        expect(got.signal).toBeInstanceOf(AbortSignal)
+        controller.abort()
+        expect(got.signal.aborted).toBe(true)             // 外部取消能传到工具。
+    })
+
+    test('内存工具声明 timeout 时按超时结算，并把取消信号给到工具', async () => {
+        let sawAbort = false
+        const tool = {
+            execute: (input, { abortSignal }) => new Promise(resolve => {
+                abortSignal.addEventListener('abort', () => { sawAbort = true; resolve('晚了') })
+            }),
+            timeout: 40,
+        }
+        const result = await run({ slow: tool }, 'slow')
+        expect(result.error).toContain('超时')     // 到点按超时结算，不无限等。
+        expect(result.output.type).toBe('error-text')
+        expect(sawAbort).toBe(true)                 // 同时把取消信号发给工具，让它有机会收手。
     })
 })
 

@@ -11,6 +11,19 @@ import Context from '../features/context.js'
 import { withTurns, pairing } from './helpers.js'
 
 describe('Context 裁剪', () => {
+    test('预算太紧时也不会只剩一条 system（模型拒收空消息）', () => {
+        // 压缩会把总结追加到末尾；重建上下文时若"最初目标"和"最近现场"都装不下，
+        // 旧实现会只剩 system，AI SDK 直接抛 InvalidPrompt（messages must not be empty）。
+        const history = [
+            History.user({ content: 'A'.repeat(45000) }),      // 最初目标太大，装不进 20% 预算。
+            History.user({ content: 'B'.repeat(70000) }),      // 最近一条也太大，装不进 30% 预算。
+            History.compact({ content: '总结' }),               // 紧接着就重建。
+        ]
+        const { messages } = Context.build({ history, budget: 128000, ratio: 0.6, system: 's' })
+        const nonSystem = messages.filter(message => message.role !== 'system')
+        expect(nonSystem.length).toBeGreaterThan(0)             // 至少留一条真实消息，请求才发得出去。
+    })
+
     test('压缩后不再切断 tool-call 与 tool-result 的配对', () => {
         const history = withTurns(5)
         history.push(History.compact({ content: '前面读了 5 个文件' }))

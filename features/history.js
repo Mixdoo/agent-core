@@ -48,10 +48,11 @@ const text = (value, name) => {
 const messageId = id => text(id ?? nanoid(), 'id')
 
 // 字符串是最简单的写法；数组则原样保留 AI SDK 风格的内容块。
-const contentParts = (content, name = 'content') => {
-    if (Array.isArray(content)) return content                                          // 已经是内容块数组，原样用。
-    if (content === null && name === 'assistant content') return []                     // assistant 可以只调工具、不写字。
-    return [{ type: 'text', text: text(content, name) }]                                // 一句纯文本，包成一个文字块。
+// allowEmpty 只给 assistant 用：它可以只调工具、不写字（content 为 null）。
+const contentParts = (content, name = 'content', allowEmpty = false) => {
+    if (Array.isArray(content)) return content                       // 已经是内容块数组，原样用。
+    if (content === null && allowEmpty) return []                    // 允许空内容的调用方（assistant），空就是没有内容块。
+    return [{ type: 'text', text: text(content, name) }]             // 一句纯文本，包成一个文字块。
 }
 
 // 工具参数可以是对象，也可以是 OpenAI 格式的 JSON 字符串。
@@ -74,7 +75,7 @@ const assistant = ({ id, content = null, toolCalls = [] }) => ({
     id: messageId(id),                                          // 每条消息一个 id，前端靠它定位和更新。
     role: 'assistant',                                          // 这是模型说的话。
     content: [
-        ...contentParts(content, 'assistant content'),          // 正文和思考按原样放进 content。
+        ...contentParts(content, 'assistant content', true),    // 正文和思考按原样放进 content；允许为空（只调工具时）。
         ...toolCalls.map(({ id: callId, name, arguments: rawArguments, input }) => ({ // 每个工具调用也变成一个内容块。
             type: 'tool-call',                                  // 一次工具调用就是一个内容块。
             toolCallId: text(callId, 'toolCalls[].id'),         // 结果靠这个 id 找回它，不能为空。

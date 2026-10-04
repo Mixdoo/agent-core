@@ -24,6 +24,7 @@ export interface Capabilities {
     structuredOutput?: boolean
     toolChoice?: boolean
     reasoning?: boolean
+    usage?: boolean
 }
 
 export type CacheOption = boolean | { key?: string; retention?: string; body?: Record<string, unknown> }

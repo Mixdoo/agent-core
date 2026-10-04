@@ -17,7 +17,7 @@ maxTokens?, compactThreshold, maxSteps?, maxToolOutput?, maxToolConcurrency?, re
 // toolMode: 'native'（默认）只用原生工具，system 一个字节都不动；接不支持原生工具的模型时主动开 'text' 或 'auto'。
 //            'text' 是「模拟工具」开关：不发 tools，把工具说明注入 system，调用从文字里读。
 //            'auto' 是兼容开关：原生优先，被拒收时才降级注入 system（因此不是默认值）。
-// capabilities: { image, audio, video, file, tools, structuredOutput, toolChoice, reasoning }
+// capabilities: { image, audio, video, file, tools, structuredOutput, toolChoice, reasoning, usage }
 // mediaFallback: 'error'（默认）或 'strip'；关闭某种媒体后，strip 会保留文字并丢掉媒体块。
 // requestTimeout: 单笔模型请求最多等多久（毫秒）；不设就不限时，卡住的请求会一直等。
 // noToolRounds: 有工具时连续多少轮不调工具就结束（默认 3，第 2 轮插入 noToolPrompt 提醒）；设成 Infinity 就永不因不调工具结束。
@@ -137,11 +137,36 @@ const buildCompact = config => buildLLM(config, config.compact)
 
 
 // --- 默认值只有这一处 ---
-const DEFAULT_CAPABILITIES = { ...History.mediaDefaults, tools: true, structuredOutput: true, toolChoice: true, reasoning: false }
+const DEFAULT_CAPABILITIES = { ...History.mediaDefaults, tools: true, structuredOutput: true, toolChoice: true, reasoning: false, usage: true }
 const DEFAULT_COMPACT_THRESHOLD = 0.8
 const DEFAULT_MAX_TOKENS = 128000 // 默认上下文预算：不设也能在接近上限时自动压缩，避免把上下文撑爆。设 Infinity 关闭。
 const DEFAULT_NO_TOOL_ROUNDS = 3
 const DEFAULT_NO_TOOL_PROMPT = '[错误] 你刚才的响应中没有使用工具！请继续使用工具（这是一条系统提醒消息，请勿以对话形式回复）'
+
+// --- 入口检查：被入口直接调用的指令只在这里查一次 ---
+// 返回第一条不合法的问题（一个带原因的 Error），全都合法就返回 null。
+const inputProblem = (input, limits) => {
+    const empty = typeof input === 'string' ? !input.trim() : !Array.isArray(input) || !input.length
+    const positive = (value, finite = true) => value === undefined || (finite ? Number.isInteger(value) && value >= 1 : value === Infinity || Number.isInteger(value) && value >= 1)
+    if (empty) return new TypeError('input must be a non-empty string or a non-empty content array')
+    if (!positive(limits.maxSteps)) return new RangeError('maxSteps must be a positive integer')
+    if (!positive(limits.maxTokens, false)) return new RangeError('maxTokens must be a positive integer or Infinity') // 字符串 '1000' 会让压缩永远不触发。
+    if (!positive(limits.noToolRounds, false)) return new RangeError('noToolRounds must be a positive integer or Infinity')
+    if (!positive(limits.maxToolConcurrency, false)) return new RangeError('maxToolConcurrency must be a positive integer or Infinity')
+    if (!(typeof limits.compactThreshold === 'number' && Number.isFinite(limits.compactThreshold) && limits.compactThreshold > 0 && limits.compactThreshold <= 1)) return new RangeError('compactThreshold must be a number in (0, 1]')
+    if (!['native', 'text', 'auto'].includes(limits.toolMode)) return new TypeError("toolMode must be 'native', 'text' or 'auto'") // 拼错的 toolMode 会被默默当成 native。
+    return null
+}
+
+// --- 一次 send 传入的 config 合并进 Agent 当前配置 ---
+// provider 整份替换（调用方给了就整份用它的），capabilities 按字段叠加，其余字段覆盖。
+const mergeConfig = (current, override) => ({
+    ...current,
+    ...override,
+    provider: 'provider' in override ? { ...override.provider } : current.provider,
+    capabilities: 'capabilities' in override ? { ...current.capabilities, ...override.capabilities } : current.capabilities,
+})
+
 
 // --- 开始一次运行：先停掉上一次，再做这一次的事 ---
 const start = (agent, work, outside) => {
@@ -213,21 +238,12 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = null, callba
         const empty = typeof input === 'string' ? !input.trim() : !Array.isArray(input) || !input.length
         const badConfig = 'config' in options && (typeof options.config !== 'object' || options.config === null || Array.isArray(options.config))
         const limits = { ...agent.config, ...(badConfig ? {} : options.config ?? {}) }
-        const positive = (value, finite = true) => value === undefined || (finite ? Number.isInteger(value) && value >= 1 : value === Infinity || Number.isInteger(value) && value >= 1)
-        const invalid =
-            empty ? new TypeError('input must be a non-empty string or a non-empty content array')
-            : badConfig ? new TypeError('config must be an object')
-            : !positive(limits.maxSteps) ? new RangeError('maxSteps must be a positive integer')
-            : !positive(limits.maxTokens, false) ? new RangeError('maxTokens must be a positive integer or Infinity') // 字符串 '1000' 会让压缩永远不触发，当场拦下；Infinity 表示不压缩。
-            : !positive(limits.noToolRounds, false) ? new RangeError('noToolRounds must be a positive integer or Infinity')
-            : !positive(limits.maxToolConcurrency, false) ? new RangeError('maxToolConcurrency must be a positive integer or Infinity')
-            : !['native', 'text', 'auto'].includes(limits.toolMode) ? new TypeError("toolMode must be 'native', 'text' or 'auto'") // 拼错的 toolMode 会被默默当成 native，不如直接报错。
-            : null
+        const invalid = badConfig ? new TypeError('config must be an object') : inputProblem(input, limits)
         if (invalid) return Promise.reject(invalid)
 
         return start(agent, async signal => {
             if ('history' in options) agent.history = options.history
-            if ('config' in options) agent.config = { ...agent.config, ...options.config, provider: 'provider' in options.config ? { ...options.config.provider } : agent.config.provider, capabilities: 'capabilities' in options.config ? { ...agent.config.capabilities, ...options.config.capabilities } : agent.config.capabilities }
+            if ('config' in options) agent.config = mergeConfig(agent.config, options.config)
             if ('tools' in options) agent.tools = await Tool.from(options.tools) // send 是异步的，传来的目录会现扫；create 是同步的，只收已经装好的工具。
             if ('callbacks' in options) agent.callbacks = { ...agent.callbacks, ...options.callbacks }
             const callbacks = { ...agent.callbacks }
@@ -277,7 +293,7 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = null, callba
         })
         agent.history.push(History.compact({ content }))
         return content
-    })
+    }, options.signal) // 手动压缩也接受外部取消信号，和 send 一致。
 
     return agent
 }

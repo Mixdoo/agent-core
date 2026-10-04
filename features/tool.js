@@ -28,7 +28,7 @@
     // result = { output, interrupted }     被 signal 取消
 
     // 积木 4：合并工具集合
-    const all = Tool.merge(local, remote)
+    const all = Tool.merge(fileTools, remoteTools)
 
 工具集合里的条目有两种执行方式，execute 一处分开：
   文件工具   → handler 带 url，交给工具子进程（见 tool-process.js），排队、取消、超时都在这里管；
@@ -70,14 +70,22 @@ const runtime = /^bun(\.exe)?$/i.test(basename(process.execPath)) ? process.exec
 // 再按集合分池只会让每次 Tool.scan 都新建一池、旧池的空闲进程永远没人回收。
 // 工具在忙时按各自的 signal 控制并发；空闲进程最多留 8 个，避免多个 Agent 跑完后长期占内存。
 const pool = { live: new Set(), idle: [], busy: new Map(), limit: 8 }
+const DEFAULT_CONCURRENCY = 8 // 一次调用没指定上限时用的并发数。和 pool.limit 是两个概念，只是数值恰好相同。
 let sequence = 0
 
 // 每次运行一个队列：p-queue 保证同一队列内同时最多跑 concurrency 个，超出的自己排队。
+// 有 signal 的（Loop 的一轮）各用各的队列；没有 signal 的直接调用，按并发数各用各的队列——
+// 不能共用一个再改它的 concurrency，那样两次并发调用会互相顶掉对方的上限。
 const queues = new WeakMap()
-const direct = new PQueue({ concurrency: 8 })
+const directs = new Map() // 并发数 → 那个并发数专用的队列。
 
 const queueOf = (signal, concurrency) => {
-    if (!signal) { direct.concurrency = concurrency ?? pool.limit; return direct }
+    if (!signal) {
+        const limit = concurrency ?? DEFAULT_CONCURRENCY
+        let queue = directs.get(limit)
+        if (!queue) { queue = new PQueue({ concurrency: limit }); directs.set(limit, queue) }
+        return queue
+    }
     let queue = queues.get(signal)
     if (!queue) { queue = new PQueue({ concurrency: Infinity }); queues.set(signal, queue) }
     queue.concurrency = concurrency ?? Infinity
@@ -309,29 +317,37 @@ const execute = async ({ name, input, handlers, signal, onOutput, limit = Infini
     const handler = handlers?.[name]
     if (!handler?.execute && !handler?.url) throw new Error(`Tool ${name} was not found in handlers`)
     const result = handler.execute
-        ? await memory({ name, input, handler, signal, onOutput, limit })
-        : await local({ name, input, handler, signal, onOutput, limit, concurrency })
+        ? await inProcess({ name, input, handler, signal, onOutput, limit })
+        : await runInSubprocess({ name, input, handler, signal, onOutput, limit, concurrency })
     return { ...result, output: clip(result.output, limit) }
 }
 
 
 // --- 在主进程里执行一个内存工具 ---
-const memory = async ({ name, input, handler, signal, onOutput, limit }) => {
+const inProcess = async ({ name, input, handler, signal, onOutput, limit }) => {
+    // 内存工具声明了 timeout 就加一层看门狗。它杀不了进程（函数在主进程里），所以做法是：
+    // 到点给工具一个 abortSignal 让它自己收手，同时让这次调用按超时结算。
+    const controller = new AbortController()
+    const stop = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal
+    let timer
     try {
         // 执行签名和 AI SDK 一致：execute(input, { abortSignal, ... })。同时给 signal 一个别名，
         // 兼容按我们早期文档写成 execute(input, { signal }) 的工具。@ai-sdk/mcp 读的是 abortSignal。
-        const raw = await handler.execute(input, { signal, abortSignal: signal })
+        const run = handler.execute(input, { signal: stop, abortSignal: stop })
+        void run.catch(() => {}) // 超时先结算后，工具稍后才失败的话，别变成未处理的拒绝。
+        const raw = handler.timeout
+            ? await Promise.race([run, new Promise((_, reject) => { timer = setTimeout(() => { reject(new Error(`工具执行超时（${handler.timeout}ms）`)); controller.abort() }, handler.timeout) })]) // 先按超时结算，再通知工具取消（顺序反了会先拿到工具的结果）。
+            : await run
         const output = shape(handler, raw, input)
-        const stop = raw?.stop === true
-        return { output, stop }
+        return { output, stop: raw?.stop === true }
     } catch (error) {
         return { output: { type: 'error-text', value: `工具执行失败：${error?.message || String(error)}` }, error: error?.message || String(error) }
-    }
+    } finally { clearTimeout(timer) }
 }
 
 
 // --- 在工具进程里执行一个文件工具 ---
-const local = ({ name, input, handler, signal, onOutput, limit, concurrency }) => {
+const runInSubprocess = ({ name, input, handler, signal, onOutput, limit, concurrency }) => {
     const call = { id: String(++sequence), name, signal, onOutput, output: buffer(limit), done: false }
     const queue = queueOf(signal, concurrency)
 
@@ -353,7 +369,7 @@ const local = ({ name, input, handler, signal, onOutput, limit, concurrency }) =
             call.done = true
             clearTimeout(call.timer)
             signal?.removeEventListener('abort', stop)
-            call.done2?.()
+            call.releaseSlot?.() // 告诉队列这次调用真的结束了，名额可以让给同批的下一个。
             resolve(result)
         }
 
@@ -382,7 +398,7 @@ const local = ({ name, input, handler, signal, onOutput, limit, concurrency }) =
             try { child = await borrow() }
             catch (error) { return call.finish({ output: { type: 'error-text', value: `工具执行失败：工具进程启动失败（${error.message}）` }, error: error.message }) }
             if (call.done) return release(child)
-            await new Promise(done => { call.done2 = done; start(child) })
+            await new Promise(done => { call.releaseSlot = done; start(child) }) // 等这次调用结算，队列才知道可以让下一个上。
         })
     })
 }

@@ -7,7 +7,23 @@
 
 import { expect, test, describe } from 'bun:test'
 import Tool from '../features/tool.js'
+import { BLOCK, PART } from '../utils/shape.js'
 import { BROKEN, CYCLIC_FORMAT, PROTO, TOOLS } from './helpers.js'
+
+// 工具进程不能 import（它是从 stdin 喂进去的匿名程序），所以那半边自己抄了一份输出块类型表。
+// 这里盯住两份别悄悄跑偏。
+const extractSet = (source, name) => {
+    const body = source.match(new RegExp(`const ${name} = new Set\\(\\[([\\s\\S]*?)\\]\\)`))?.[1] ?? ''
+    return new Set([...body.matchAll(/'([^']+)'/g)].map(match => match[1]))
+}
+
+describe('输出块类型表', () => {
+    test('主线程和工具进程两份完全一致', async () => {
+        const source = await Bun.file(new URL('../features/tool-process.js', import.meta.url)).text()
+        expect(extractSet(source, 'BLOCK')).toEqual(BLOCK)
+        expect(extractSet(source, 'PART')).toEqual(PART)
+    })
+})
 
 describe('Tool 扫描', () => {
     test('工具目录里的非工具文件被跳过，不再让整次扫描崩溃', async () => {

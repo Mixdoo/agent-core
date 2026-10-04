@@ -28,11 +28,7 @@ auto 模式还要记住"哪个模型不认原生工具字段"，下次直接走�
 
 import { asSchema } from 'ai'
 import { nanoid } from 'nanoid'
-
-// AI SDK 消息的内容可以是一句纯文本，也可以是内容块数组；这里统一读成块数组。
-const parts = message => Array.isArray(message.content) ? message.content
-    : message.content == null ? []
-    : [{ type: 'text', text: message.content }]
+import History from './history.js' // 「消息内容怎么变成块数组」由 History 定义，这里直接用它的
 
 
 // --- 给模型的说明书：一句话说清格式，再列出每个工具的 JSON Schema ---
@@ -240,7 +236,7 @@ const downgrade = messages => {
 
         if (message.role === 'tool') {
             // 一条工具结果消息可能带着多个结果块，每个都写成一段 <tool_result> 文字，媒体块跟着保留。
-            const content = parts(message).flatMap(part => {
+            const content = History.parts(message).flatMap(part => {
                 const blocks = outputBlocks(part.output)
                 const text = blocks.filter(one => one.type === 'text').map(one => one.text).join('\n')
                 return [{ type: 'text', text: `<tool_result name="${part.toolName}">\n${text}\n</tool_result>` }, ...blocks.filter(one => one.type !== 'text')]
@@ -251,7 +247,7 @@ const downgrade = messages => {
 
         if (message.role === 'assistant') {
             // 标准消息里的工具调用块，在这里改写成模型当初写的那样一段文字。
-            const content = parts(message).flatMap(part => part.type === 'tool-call' ? [{ type: 'text', text: asToolCallText(part) }] : [part])
+            const content = History.parts(message).flatMap(part => part.type === 'tool-call' ? [{ type: 'text', text: asToolCallText(part) }] : [part])
             out.push({ ...message, content })
             continue
         }
@@ -262,8 +258,8 @@ const downgrade = messages => {
     // 相邻同角色合并：tool 结果降级后会和后面的 user 挨在一起，部分接口不接受连续的同角色消息。
     return out.reduce((list, message) => {
         const previous = list.at(-1)
-        if (!previous || previous.role !== message.role || message.role === 'system') { list.push(message); return list }
-        previous.content = [...parts(previous), ...parts(message)]
+        if (!previous || previous.role !== message.role || message.role === 'system') { list.push(message); return list } // 不同角色或不合并，原样放一条。
+        list[list.length - 1] = { ...previous, content: [...History.parts(previous), ...History.parts(message)] } // 合并成一条新消息，不改调用方传进来的对象。
         return list
     }, [])
 }
@@ -296,7 +292,7 @@ const read = (result, spec, options) => {
 
     // 只替换 assistant 里的文字块，思考等其他块原样保留。
     const assistant = [...result.responseMessages].reverse().find(message => message.role === 'assistant')
-    const kept = assistant ? parts(assistant).filter(part => part.type !== 'text' && part.type !== 'tool-call') : []
+    const kept = assistant ? History.parts(assistant).filter(part => part.type !== 'text' && part.type !== 'tool-call') : []
     const content = [...kept, ...(parsed.text ? [{ type: 'text', text: parsed.text }] : []), ...toolCalls.map(({ invalid, error, ...part }) => part)]
     const responseMessages = [...result.responseMessages.filter(message => message !== assistant), { role: 'assistant', content }]
 
@@ -307,9 +303,9 @@ const read = (result, spec, options) => {
 // --- auto 模式：记住"这个模型不认原生工具字段"，同一模型之后直接走文字，不再撞墙 ---
 // 进程级记忆：同一个进程里所有 Agent 共用，条目是模型的标识字符串，很小。
 const refusing = new Set()
-const modelKey = ({ model, protocol, baseURL }) => typeof model === 'string' ? `${protocol}:${baseURL}:${model}` : `instance:${model.provider}:${model.modelId}`
-const remember = llm => refusing.add(modelKey(llm))
-const remembered = llm => refusing.has(modelKey(llm))
+const modelName = ({ model, protocol, baseURL }) => typeof model === 'string' ? `${protocol}:${baseURL}:${model}` : `instance:${model.provider}:${model.modelId}` // 这里只用于记住"哪个模型拒收过原生工具"，和 tokens.js 的 modelKey 不是一回事。
+const remember = llm => refusing.add(modelName(llm))
+const remembered = llm => refusing.has(modelName(llm))
 
 // 这个错误是不是接口拒收了工具字段：4xx 是"请求本身被拒"；5xx 只有在错误信息明确提到工具时才算——部分网关对不认识的字段报 500。
 const refused = error => error?.kind === 'request' || (error?.kind === 'server' && /tool|function/i.test(`${error.message} ${error.responseBody ?? ''}`))

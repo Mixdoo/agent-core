@@ -104,6 +104,9 @@ describe('Agent 入口', () => {
         await expect(badSignal).rejects.toThrow('signal must be an AbortSignal')
         await expect(agent.send({ input: 'x', config: { maxToolConcurrency: 0 } })).rejects.toThrow('maxToolConcurrency')
         await expect(agent.send({ input: 'x', config: { noToolRounds: 0 } })).rejects.toThrow('noToolRounds')
+        await expect(agent.send({ input: 'x', config: { compactThreshold: undefined } })).rejects.toThrow('compactThreshold') // undefined 会让压缩永远不触发。
+        await expect(agent.send({ input: 'x', config: { compactThreshold: 0 } })).rejects.toThrow('compactThreshold')       // 0 会让每轮都触发。
+        await expect(agent.send({ input: 'x', config: { maxTokens: '1000' } })).rejects.toThrow('maxTokens')                 // 字符串会让压缩算不出来。
     })
 
     test('maxToolConcurrency 设成 Infinity 是合法的', async () => {
