@@ -182,8 +182,10 @@ const agent = Agent.create({
 
 // 发送指令，等待完成
 const result = await agent.send('帮我向小明打个招呼')
-console.log('Agent 结束，原因:', result.reason)   // 'finished' 模型认为任务完成；另外几种见下方 result.reason 说明
+console.log('Agent 结束，原因:', result.reason)   // 有工具时通常是 'no-tool'：模型停手后还会被追问最多 noToolRounds 轮（默认 3）才结束
 ```
+
+> 上面这个例子里注册了工具，所以模型就算一次就把话说完了，`send` 也不会立刻返回——它会连续几轮确认模型真的不再用工具（这是这个包循环的特点，避免模型过早收手）。想一停手就结束，设 `noToolRounds: 1`；想明确收尾，写一个返回 `stop: true` 的 `finish` 工具。
 
 运行：
 
@@ -325,6 +327,10 @@ const skillTool = {
         },
     },
 }
+
+// 拼装：提示词进 system，读正文的工具进 tools
+const tools = await Agent.tool.from('./tools', skillTool)
+const agent = Agent.create({ config: { ...config, system: ['你是一个助手。', system].filter(Boolean).join('\n\n') }, tools })
 ```
 
 完整约定（frontmatter 字段、目录名等于技能名、正文按需加载）见 [agentskills.io](https://agentskills.io)。想要省事就直接用上面的 `agent-skills-ts-sdk` 之类的库。

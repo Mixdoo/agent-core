@@ -145,6 +145,18 @@ describe('内存工具执行', () => {
         expect(() => Tool.adopt(Promise.resolve([]))).toThrow(/Promise|await/)
     })
 
+    test('数组里的工具没 name 时给出对应报错', () => {
+        expect(() => Tool.adopt([{ execute: async () => 1 }])).toThrow(/name/)
+    })
+
+    test('async 的 toModelOutput 生效，并收到 toolCallId', async () => {
+        let gotId
+        const tools = Tool.adopt([{ name: 'a', execute: async () => ({ value: 'x' }), toModelOutput: async ({ output, toolCallId }) => { gotId = toolCallId; return { type: 'text', value: output.value } } }])
+        const result = await Tool.execute({ name: 'a', input: {}, toolCallId: 'call-9', handlers: tools.handlers })
+        expect(result.output).toEqual({ type: 'text', value: 'x' }) // async toModelOutput 会被 await。
+        expect(gotId).toBe('call-9')                               // toolCallId 透传进来了。
+    })
+
     test('同步生成器 function* 也能流式收集', async () => {
         const seen = []
         const result = await run({ sgen: { execute: function* () { yield 'a'; yield 'b' } } }, 'sgen', {}, { onOutput: output => seen.push(output.data) })

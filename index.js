@@ -79,6 +79,8 @@ const start = (agent, work, outside) => {
     const signal = outside ? AbortSignal.any([controller.signal, outside]) : controller.signal
 
     const task = (async () => {
+        // 如果调用方给的 signal 进来就已经取消了，这次调用注定失败，直接拒绝——别先停掉还在跑的上一次任务。
+        if (outside?.aborted) throw Object.assign(new DOMException('Agent run aborted', 'AbortError'), { kind: 'aborted' })
         if (previous) {
             previous.controller.abort()
             await previous.task.catch(() => {})
@@ -141,7 +143,7 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = null, callba
         const badConfig = 'config' in options && (typeof options.config !== 'object' || options.config === null || Array.isArray(options.config))
         const badHistory = 'history' in options && !Array.isArray(options.history) // 覆盖会写回 Agent，坏值必须先挡在门外，否则这台 Agent 之后每次 send 都崩。
         const badCallbacks = 'callbacks' in options && (typeof options.callbacks !== 'object' || options.callbacks === null || Array.isArray(options.callbacks))
-        const limits = { ...agent.config, ...(badConfig ? {} : options.config ?? {}) }
+        const limits = badConfig || !options.config ? agent.config : mergeConfig(agent.config, options.config) // 和真正生效的合并规则同一处，别在这里再写一遍浅合并。
         const invalid =
             badConfig ? new TypeError('config must be an object')
             : badHistory ? new TypeError('history must be an array')

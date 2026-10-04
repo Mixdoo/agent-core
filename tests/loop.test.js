@@ -652,6 +652,15 @@ describe('取消在工具边界', () => {
         } finally { mock.stop(true) }
     })
 
+    test('外部 signal 已取消的 send 不会停掉正在跑的上一次', async () => {
+        const agent = Agent.create({ config }) // 这个 describe 用的是会 sleep 120ms 的假模型。
+        const first = agent.send('第一次')
+        const controller = new AbortController()
+        controller.abort()
+        await expect(agent.send('第二次', { signal: controller.signal })).rejects.toThrow() // 这次注定失败。
+        await expect(first).resolves.toMatchObject({ text: '回答' })                          // 上一次不受影响，照常跑完。
+    })
+
     test('权限等待中取消，写进历史的是"已取消"而不是"被拒绝"', async () => {
         const mock = Bun.serve({
             port: 0,

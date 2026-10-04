@@ -95,6 +95,13 @@ describe('多模态', () => {
         expect(parts[0].data).toEqual({ type: 'url', url: new URL('https://x/a.png') }) // URL 对象也要走 url 分支，不能当字节。
     })
 
+    test('工具结果里带标签的 data URL 会被改成 url，而不是当内联数据', () => {
+        const output = { type: 'content', value: [{ type: 'file', mediaType: 'image/png', data: { type: 'data', data: 'data:image/png;base64,AAAA' } }] }
+        const rendered = History.model({ role: 'tool', content: [{ type: 'tool-result', toolCallId: 'c1', toolName: 's', output }] }, {}).content[0].output.value
+        expect(rendered[0].data.type).toBe('url')                     // data URL 不能当内联数据，AI SDK 会拒收。
+        expect(rendered[0].data.url.href).toContain('data:image/png') // 原样搬到 url 字段。
+    })
+
     test('工具结果里的旧 image 块会被转成合法 file 块，不再毒死会话', async () => {
         const server = Bun.serve({ port: 0, async fetch() { return Response.json({ choices: [{ index: 0, message: { role: 'assistant', content: '好' }, finish_reason: 'stop' }], usage: {} }) } })
         try {

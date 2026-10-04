@@ -170,11 +170,13 @@ const adopt = (input) => {
     const schema = Object.create(null)
     const handlers = Object.create(null)
     const dropped = []
+    const nameless = []
 
     for (const [name, tool] of entries) {
+        if (!name) { nameless.push(tool); continue }                 // 数组里的工具没写 name：单独报，别和"缺 execute"混在一起。
         // 看起来像工具（有描述或参数）却没有 execute，是写漏了，直接报错而不是悄悄丢掉。
-        if (!name || typeof tool?.execute !== 'function') {
-            if (tool && (tool.description || tool.inputSchema)) dropped.push(name ?? '(无名)')
+        if (typeof tool?.execute !== 'function') {
+            if (tool && (tool.description || tool.inputSchema)) dropped.push(name)
             continue
         }
 
@@ -188,6 +190,8 @@ const adopt = (input) => {
 
         handlers[name] = { execute, toModelOutput, timeout }
     }
+
+    if (nameless.length) throw new TypeError('数组里的工具必须带 name（record 形式的名字从键来）')
 
     if (dropped.length) throw new TypeError(`工具 ${dropped.join('、')} 缺少 execute 函数`)
 
@@ -326,12 +330,12 @@ const cutOutput = (output, limit) => {
 
 // --- 执行一个工具 ---
 // handler.execute（内存工具）→ 主进程直接调；handler.url（文件工具）→ 工具子进程。
-const execute = async ({ name, input, handlers, signal, onOutput, limit = Infinity, concurrency }) => {
+const execute = async ({ name, input, toolCallId, handlers, signal, onOutput, limit = Infinity, concurrency }) => {
     const handler = handlers?.[name]
     if (!handler?.execute && !handler?.url) throw new Error(`Tool ${name} was not found in handlers`)
     const result = handler.execute
-        ? await inProcess({ name, input, handler, signal, onOutput, limit })
-        : await runInSubprocess({ name, input, handler, signal, onOutput, limit, concurrency })
+        ? await inProcess({ name, input, toolCallId, handler, signal, onOutput, limit })
+        : await runInSubprocess({ name, input, toolCallId, handler, signal, onOutput, limit, concurrency })
     return { ...result, output: cutOutput(result.output, limit) }
 }
 
@@ -343,7 +347,7 @@ const execute = async ({ name, input, handlers, signal, onOutput, limit = Infini
 // 两种情况下都会把取消信号发给工具，让它有机会自己收手。
 const INTERRUPTED = Symbol('interrupted')
 
-const inProcess = async ({ name, input, handler, signal, onOutput, limit }) => {
+const inProcess = async ({ name, input, toolCallId, handler, signal, onOutput, limit }) => {
     const controller = new AbortController()
     const stop = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal
     const interrupted = { output: { type: 'error-text', value: '工具执行已中断' }, interrupted: true }
@@ -379,7 +383,7 @@ const inProcess = async ({ name, input, handler, signal, onOutput, limit }) => {
         const raw = await Promise.race(racers)
         settled = true // 正常返回也算结算：下面 finally 里清定时器、摘监听。
         if (raw === INTERRUPTED) { controller.abort(); return interrupted } // 取消优先结算，工具稍后返回也不采纳。
-        const output = shape(handler, raw, input)
+        const output = await shape(handler, raw, input, toolCallId)
         return { output, stop: raw?.stop === true }
     } catch (error) {
         return { output: { type: 'error-text', value: `工具执行失败：${error?.message || String(error)}` }, error: error?.message || String(error) }
@@ -391,7 +395,7 @@ const inProcess = async ({ name, input, handler, signal, onOutput, limit }) => {
 
 
 // --- 在工具进程里执行一个文件工具 ---
-const runInSubprocess = ({ name, input, handler, signal, onOutput, limit, concurrency }) => {
+const runInSubprocess = ({ name, input, toolCallId, handler, signal, onOutput, limit, concurrency }) => {
     const call = { id: String(++sequence), name, signal, onOutput, output: buffer(limit), done: false }
     const queue = queueOf(signal, concurrency)
 
@@ -427,7 +431,7 @@ const runInSubprocess = ({ name, input, handler, signal, onOutput, limit, concur
                 call.finish({ output: { type: 'error-text', value: `${call.output.text()}\n工具执行超时（${handler.timeout}ms）` }, error: 'timeout' })
             }, handler.timeout)
 
-            try { child.send({ callId: call.id, url: handler.url, name, input }) }
+            try { child.send({ callId: call.id, url: handler.url, name, input, toolCallId }) }
             catch (error) {
                 retire(child)
                 call.finish({ output: { type: 'error-text', value: `工具执行失败：无法派发到工具进程（${error.message}）` }, error: error.message })

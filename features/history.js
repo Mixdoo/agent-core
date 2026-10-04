@@ -164,8 +164,14 @@ const preparePart = (part, options) => {
     if (part.type === 'video') return media(part, part.video, 'video/mp4')                    // 旧 video 块 → file 块。
     if (part.type === 'file-data') return media(part, part.data, part.mediaType ?? 'application/octet-stream') // 已经是 file 系列，补上默认类型。
     if (part.type === 'file-url') return media(part, part.url ?? part.data, part.mediaType ?? 'application/octet-stream')
-    // 已经是 file：data 带了标签（{type:'data'|'url'}）就原样用；还是裸字符串（旧写法）就补成带标签的形状。
-    if (part.type === 'file') return part.data && typeof part.data === 'object' && 'type' in part.data ? part : media(part, part.data ?? part.url, part.mediaType ?? 'application/octet-stream')
+    // 已经是 file：分三种。data 带标签且是内联字节 → 原样；data 带标签但里面是网址 / data URL → 改成 url（AI SDK 不接受把它们当内联数据）；data 还是裸值（旧写法）→ 补成带标签的形状。
+    if (part.type === 'file') {
+        const tagged = part.data && typeof part.data === 'object' && 'type' in part.data
+        if (!tagged) return media(part, part.data ?? part.url, part.mediaType ?? 'application/octet-stream')
+        const inner = part.data.type === 'data' ? part.data.data : undefined
+        if (inner instanceof URL || (typeof inner === 'string' && /^(https?:|data:)/i.test(inner))) return media(part, inner, part.mediaType ?? 'application/octet-stream')
+        return part
+    }
     return part                                        // 到这里只剩不认识的块，原样。 
 }
 

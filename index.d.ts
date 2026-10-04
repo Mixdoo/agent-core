@@ -125,9 +125,10 @@ export interface ToolModule {
     execute: (options: {
         name: string
         input?: Record<string, unknown>
+        toolCallId?: string
         handlers: Record<string, any>
         signal?: AbortSignal
-        onOutput?: (output: { toolName: string; stream: string; data: string }) => void
+        onOutput?: (output: { toolName: string; stream: string; data: unknown }) => void
         limit?: number
         concurrency?: number
     }) => Promise<{ output: any; stop?: boolean; error?: string; interrupted?: boolean }>

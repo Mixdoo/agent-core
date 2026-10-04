@@ -216,7 +216,8 @@ const classifyError = (error, timeout) => {
     if (timeout?.aborted) error.kind = 'timeout'                 // 我们自己的限时先判，避免被当成用户取消。
     else if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') error.kind = 'aborted'
     else if (error?.name === 'AI_TypeValidationError' || error?.name === 'AI_NoObjectGeneratedError') error.kind = 'unknown' // 连上了、状态码也成功，只是内容对不上格式。
-    else if (error?.statusCode === undefined) error.kind = 'network' // 连接根本没建起来，没有状态码。
+    // 没有状态码不一定是网络问题：AI SDK 的本地校验错误（形状/内容非法）也没状态码，但请求根本没发出去，归到 unknown 而不是 network。
+    else if (error?.statusCode === undefined) error.kind = (typeof error?.name === 'string' && error.name.startsWith('AI_') && error.name !== 'AI_APICallError') ? 'unknown' : 'network'
     else if (error.statusCode === 401 || error.statusCode === 403) error.kind = 'auth'
     else if (error.statusCode === 429) error.kind = 'limit'
     else if (error.statusCode === 408) error.kind = 'timeout'

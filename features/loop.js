@@ -188,7 +188,7 @@ const run = async ({
             let value
             try {
                 // onToolOutput 是高频流式回调，这里不等它：等一下就等于给模型输出加了一道节流阀。
-                value = await executeTool({ name: call.toolName, input: call.input, signal, onOutput: output => onToolOutput?.({ ...output, ...call }) }) // Loop 只说要执行哪个工具，怎么找到它由调用方负责。
+                value = await executeTool({ name: call.toolName, input: call.input, toolCallId: call.toolCallId, signal, onOutput: output => onToolOutput?.({ ...output, ...call }) }) // Loop 只说要执行哪个工具，怎么找到它由调用方负责。
             } catch (error) {
                 // 工具失败属于工具结果，不能让一次工具失败打断整个 Agent 循环。
                 // 取消路径由 tool.js 用 resolve 处理，不会走到这里；这里接的是"工具名不在表里"这类调用错误。

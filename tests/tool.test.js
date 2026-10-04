@@ -84,10 +84,11 @@ describe('Tool 执行', () => {
         expect(result.output.value.length).toBe(9 * 1024 * 1024) // 9MB 一块不少；曾经超过 8MB 缓冲就丢。
     })
 
-    test('json 块没有 value 时，截断不抛错', async () => {
+    test('json 块没有 value 时变成工具失败，而不是毒死 history', async () => {
         const tools = Tool.adopt([{ name: 'j', execute: async () => ({ output: { type: 'json' } }) }])
         const result = await Tool.execute({ name: 'j', input: {}, handlers: tools.handlers, limit: 100 })
-        expect(result.output.type).toBe('json') // 无 value 的 json 块按空串量长度，不崩。
+        expect(result.output.type).toBe('error-text') // 缺 value 的 json 块会被 AI SDK 本地拒收，挡在边界。
+        expect(result.error).toBeTruthy()
     })
 
     test('工具返回循环引用时变成一条工具错误，而不是毒死 history', async () => {
