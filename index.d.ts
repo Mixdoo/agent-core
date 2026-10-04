@@ -189,7 +189,7 @@ export interface SendOptions {
     input?: string | any[]
     history?: Message[]
     config?: Partial<Config>
-    tools?: ToolSource     // 目录字符串 / URL 也可以，send 时会现扫
+    tools?: ToolSource | ToolSource[]     // 目录字符串 / URL / 数组也可以，send 时会现扫
     callbacks?: Callbacks
     signal?: AbortSignal
 }

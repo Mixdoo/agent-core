@@ -149,6 +149,7 @@ const adopt = (input) => {
     // 目录只有 scan 会扫，adopt 不扫。传错了当场说清楚，而不是悄悄得到一份空工具表。
     if (typeof input === 'string' || input instanceof URL) throw new TypeError(`Tool.adopt 不接受路径；要扫描目录用 await Tool.from(${JSON.stringify(String(input))}) 或 Tool.scan(...)`)
     if (typeof input?.then === 'function') throw new TypeError('Tool.adopt 收到的是 Promise（多半是漏了 await）；用 await Tool.from(...) 或先 await 再传') // 否则 Promise 会被当普通对象、静默得到空工具表。
+    if (typeof input !== 'object') throw new TypeError('Tool.adopt 只接受工具对象、工具数组或 record') // 数字 / 布尔 / 函数这类根本不是工具，别静默变空表。
     if (Array.isArray(input) && input.some(one => typeof one === 'string' || one instanceof URL)) throw new TypeError('Tool.adopt 的工具数组里不能放路径；要扫描多个目录用 await Tool.from(dir1, dir2) 或 Tool.scan(dir1, dir2)')
 
     // 已经是归一化集合：schema 和 handlers 都必须有，缺一个就是传错了。

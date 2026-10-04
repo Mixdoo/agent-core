@@ -146,9 +146,9 @@ const mediaKind = part => {
     if (part.type === 'image' || part.type === 'audio' || part.type === 'video') return part.type // 旧写法：类型直接写在块上。
     if (part.type !== 'file' && part.type !== 'file-data' && part.type !== 'file-url') return null // 不是任何媒体块。
     if (typeof part.mediaType !== 'string') return 'file' // mediaType 不是字符串（畸形输入）就当普通文件，别在 .startsWith 上抛。
-    if (part.mediaType.startsWith('image/')) return 'image' // 新写法：看 mediaType 判断媒体种类。
-    if (part.mediaType.startsWith('audio/')) return 'audio'
-    if (part.mediaType.startsWith('video/')) return 'video'
+    if (part.mediaType === 'image' || part.mediaType.startsWith('image/')) return 'image' // 带斜杠的完整类型和只有顶层段的写法都认。
+    if (part.mediaType === 'audio' || part.mediaType.startsWith('audio/')) return 'audio'
+    if (part.mediaType === 'video' || part.mediaType.startsWith('video/')) return 'video'
     return 'file'                                  // 认得出是文件，但不是图音视，按普通文件算。
 }
 

@@ -37,6 +37,19 @@ describe('Agent 入口', () => {
         expect(first.running).toBeNull()
     })
 
+    test('create 收到坏的 config/history/callbacks 当场报错，不拖到 send', () => {
+        expect(() => Agent.create({ config: null })).toThrow(/config/)
+        expect(() => Agent.create({ history: 'x' })).toThrow(/history/)
+        expect(() => Agent.create({ callbacks: 1 })).toThrow(/callbacks/)
+    })
+
+    test('send 收到畸形的用户内容块时当场拒绝，不写进 history', async () => {
+        const agent = Agent.create()
+        const error = await agent.send([{ type: 'image', image: 123 }]).catch(caught => caught)
+        expect(error).toBeInstanceOf(TypeError)
+        expect(agent.history.length).toBe(0) // 坏块没进只增不删的历史。
+    })
+
     test('config 里的 provider 是浅拷一层，两个 Agent 不共享同一个对象', () => {
         const shared = { temperature: 0.2 }
         const first = Agent.create({ config: { provider: shared } })

@@ -149,6 +149,22 @@ describe('内存工具执行', () => {
         expect(() => Tool.adopt({ x: 'nope' })).toThrow(/execute/) // 显式传进来的东西，不是工具就报错。
     })
 
+    test('adopt 收到数字/布尔/函数时明确报错，不静默变空表', () => {
+        expect(() => Tool.adopt(123)).toThrow(/工具对象/)
+        expect(() => Tool.adopt(true)).toThrow(/工具对象/)
+        expect(() => Tool.adopt(() => {})).toThrow(/工具对象/)
+    })
+
+    test('execution-denied 的 reason 非字符串时变成工具失败', async () => {
+        const tools = Tool.adopt([{ name: 'd', execute: async () => ({ output: { type: 'execution-denied', reason: 123 } }) }])
+        expect((await Tool.execute({ name: 'd', input: {}, handlers: tools.handlers })).output.type).toBe('error-text')
+    })
+
+    test('旧媒体块的 mediaType 非字符串时变成工具失败', async () => {
+        const tools = Tool.adopt([{ name: 'm', execute: async () => ({ output: { type: 'content', value: [{ type: 'image', image: 'AA==', mediaType: 123 }] } }) }])
+        expect((await Tool.execute({ name: 'm', input: {}, handlers: tools.handlers })).output.type).toBe('error-text')
+    })
+
     test('媒体值非法时变成工具失败，而不是毒死 history', async () => {
         const tools = Tool.adopt([{ name: 'bad', execute: async () => ({ output: { type: 'content', value: [{ type: 'file', mediaType: 'image/png', data: { type: 'url' } }] } }) }])
         const result = await Tool.execute({ name: 'bad', input: {}, handlers: tools.handlers })

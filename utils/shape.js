@@ -41,14 +41,17 @@ const okFileData = value => {
 // 二进制要转成 base64 才能跨进程 / 进 JSON，否则会被 JSON.stringify 变成 {"0":..,"1":..} 的普通对象。
 // URL 也会被 JSON.stringify 调 toJSON 变成字符串——这一步之后要重新校验，别让形状在“校验通过”和“真正发出”之间变样。
 const jsonSafe = value => JSON.parse(JSON.stringify(value, (key, one) => one instanceof ArrayBuffer ? Buffer.from(new Uint8Array(one)).toString('base64') : one instanceof Uint8Array ? Buffer.from(one).toString('base64') : one))
-const badPart = part => {
+// 一个内容块的值/字段是否不合法。PART 里的类型才会走到这里；两条公共检查先做，再按类型分派。
+export const badPart = part => {
+    if (part.mediaType !== undefined && typeof part.mediaType !== 'string') return true // mediaType / filename 非字符串：旧形状也一样要查。
+    if (part.filename !== undefined && typeof part.filename !== 'string') return true
     if (part.type === 'text') return typeof part.text !== 'string'
     if (part.type === 'image') return !okMedia(part.image)
     if (part.type === 'audio') return !okMedia(part.audio)
     if (part.type === 'video') return !okMedia(part.video)
     if (part.type === 'file-data') return !okMedia(part.data)
     if (part.type === 'file-url') return !okMedia(part.url)
-    return !okFileData(part.data) || (part.mediaType !== undefined && typeof part.mediaType !== 'string') || (part.filename !== undefined && typeof part.filename !== 'string') // file
+    return !okFileData(part.data) // file
 }
 
 const shape = async (tool, result, input, toolCallId) => {
@@ -65,9 +68,10 @@ const shape = async (tool, result, input, toolCallId) => {
     const output = jsonSafe(produced)
 
     if (!BLOCK.has(output?.type)) throw new TypeError(`工具输出块的 type 不合法：${JSON.stringify(output?.type)}，只能是 ${[...BLOCK].join(' / ')}`)
-    // 顶层字段也必须齐：text/error-text 要字符串 value，json/error-json 要有 value。缺了写进 history 会让 AI SDK 本地拒收。
+    // 顶层字段也必须齐：text/error-text 要字符串 value，json/error-json 要有 value，execution-denied 的 reason 若是给了就得是字符串。
     if ((output.type === 'text' || output.type === 'error-text') && typeof output.value !== 'string') throw new TypeError(`${output.type} 输出块必须有字符串 value`)
     if ((output.type === 'json' || output.type === 'error-json') && output.value === undefined) throw new TypeError(`${output.type} 输出块必须有 value`)
+    if (output.type === 'execution-denied' && output.reason !== undefined && typeof output.reason !== 'string') throw new TypeError('execution-denied 输出块的 reason 必须是字符串')
     if (output.type === 'content' && !Array.isArray(output.value)) throw new TypeError('content 输出块的 value 必须是数组')
     const bad = output.type === 'content' && output.value.find(part => !PART.has(part?.type))
     if (bad) throw new TypeError(`content 块里的 ${JSON.stringify(bad.type)} 部件不合法，只能是 ${[...PART].join(' / ')}。媒体可以用旧 image/audio/video，也可以用 AI SDK 当前的 file`)

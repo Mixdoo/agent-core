@@ -22,6 +22,7 @@ import LLM from './features/llm.js'           // 底层模型请求封装，也�
 import TextTools from './features/text-tools.js' // 纯对话模型的文字工具协议，直接用 LLM.chat 时也能自己调
 import History from './features/history.js'   // 负责创建标准格式的历史消息块
 import { createMeter, modelKey } from './utils/tokens.js' // 本地 token 估算器：按模型记账，用真实 usage 自校准
+import { badPart, PART } from './utils/shape.js' // 内容块形状校验：send 的用户输入也用它挡一下，别让坏块进只增不删的历史
 import { version } from './package.json'      // 版本号只在 package.json 里写一次，打包时会被内联进产物
 
 
@@ -49,6 +50,11 @@ const inputProblem = (input, limits) => {
     const empty = typeof input === 'string' ? !input.trim() : !Array.isArray(input) || !input.length
     const positive = (value, finite = true) => value === undefined || (finite ? Number.isInteger(value) && value >= 1 : value === Infinity || Number.isInteger(value) && value >= 1)
     if (empty) return new TypeError('input must be a non-empty string or a non-empty content array')
+    // 内容块数组也当边界查一次：形状坏的块写进只增不删的历史后，之后每次 send 都会被 AI SDK 本地拒收。
+    if (Array.isArray(input)) {
+        const bad = input.find(part => PART.has(part?.type) && badPart(part))
+        if (bad) return new TypeError(`内容块的 ${JSON.stringify(bad.type)} 形状不合法：媒体要 mediaType 且值是字符串 / URL / 二进制`)
+    }
     if (!positive(limits.maxSteps)) return new RangeError('maxSteps must be a positive integer')
     if (!positive(limits.maxTokens, false)) return new RangeError('maxTokens must be a positive integer or Infinity') // 字符串 '1000' 会让压缩永远不触发。
     if (!positive(limits.noToolRounds, false)) return new RangeError('noToolRounds must be a positive integer or Infinity')
@@ -74,13 +80,13 @@ const mergeConfig = (current, override) => ({
 // --- 开始一次运行：先停掉上一次，再做这一次的事 ---
 const start = (agent, work, outside) => {
     if (outside !== undefined && !(outside instanceof AbortSignal)) return Promise.reject(new TypeError('signal must be an AbortSignal'))
+    // 调用方给的 signal 进来就已经取消：这次注定失败，直接拒绝——连 agent.running 都不碰，别把还在跑的上一次挤出状态。
+    if (outside?.aborted) return Promise.reject(Object.assign(new DOMException('Agent run aborted', 'AbortError'), { kind: 'aborted' }))
     const previous = agent.running
     const controller = new AbortController()
     const signal = outside ? AbortSignal.any([controller.signal, outside]) : controller.signal
 
     const task = (async () => {
-        // 如果调用方给的 signal 进来就已经取消了，这次调用注定失败，直接拒绝——别先停掉还在跑的上一次任务。
-        if (outside?.aborted) throw Object.assign(new DOMException('Agent run aborted', 'AbortError'), { kind: 'aborted' })
         if (previous) {
             previous.controller.abort()
             await previous.task.catch(() => {})
@@ -100,6 +106,10 @@ const start = (agent, work, outside) => {
 // 创建一台独立 Agent。
 // tools 接受 scan()/adopt() 的返回值、数组、record 或 null，内部自动归一化。
 const create = ({ id = nanoid(), history = [], config = {}, tools = null, callbacks = {} } = {}) => {
+    // 边界检查：create 收到的坏值当场说清楚，别等到 send 才抛出难懂的错误（send 对这几个字段已有同样的检查）。
+    if (config === null || typeof config !== 'object' || Array.isArray(config)) throw new TypeError('config must be an object')
+    if (!Array.isArray(history)) throw new TypeError('history must be an array')
+    if (callbacks === null || typeof callbacks !== 'object' || Array.isArray(callbacks)) throw new TypeError('callbacks must be an object')
     const meter = createMeter()   // 这台 Agent 的 token 估算器：按模型自校准，跨 send 复用。放闭包里，不进公开状态。
     const agent = {
         id,
