@@ -127,16 +127,14 @@ const scan = async (...directories) => {
 
 // --- 接纳内存工具对象，归一化成 { schema, handlers } ---
 // 接受：
-//   数组   [{ name, description, inputSchema, execute, toModelOutput?, timeout? }, ...]
+//   单个工具 { name, description, inputSchema, execute, toModelOutput?, timeout? }
+//   数组   [{ name, ... }, ...]
 //   record { toolName: { description, inputSchema, execute, ... } }（AI SDK / MCP toolset 形状）
 //   已归一化的 { schema, handlers } → 原样通过
 //   null / undefined → 空工具集
 //
 // inputSchema 三种写法都认：裸 JSON Schema、zod/valibot（~standard）、AI SDK jsonSchema()。
-// 调用方不需要手动转；采纳 MCP 客户端的 tools() 直接传进来就能用。
-//
-// MCP 工具的 execute 返回 CallToolResult（{ content: [...] }）；核心只管通用契约，
-// 转成输出块是应用层的事——可以在工具对象上加 toModelOutput 来接管。
+// 采纳 MCP 客户端的 tools() 直接传进来就能用——工具自带的 execute / toModelOutput 都按 AI SDK 的签名调用。
 const adopt = (input) => {
     if (!input) return { schema: Object.create(null), handlers: Object.create(null) }
 
@@ -144,19 +142,30 @@ const adopt = (input) => {
     if (typeof input === 'string' || input instanceof URL) throw new TypeError(`Tool.adopt 不接受路径；要扫描目录用 await Tool.from(${JSON.stringify(String(input))}) 或 Tool.scan(...)`)
     if (Array.isArray(input) && input.some(one => typeof one === 'string' || one instanceof URL)) throw new TypeError('Tool.adopt 的工具数组里不能放路径；要扫描多个目录用 await Tool.from(dir1, dir2) 或 Tool.scan(dir1, dir2)')
 
-    // 已经是归一化集合：有 schema 和 handlers 两个自有属性
-    if (!Array.isArray(input) && typeof input === 'object' && 'schema' in input && 'handlers' in input) return input
+    // 已经是归一化集合：schema 和 handlers 都必须有，缺一个就是传错了。
+    if (!Array.isArray(input) && typeof input === 'object' && ('schema' in input || 'handlers' in input)) {
+        if (input.schema == null || input.handlers == null) throw new TypeError('工具集合必须同时带 schema 和 handlers')
+        return input
+    }
+
+    // 直接给一个工具对象（{ name, execute }）就当成单元素数组，不要求调用方自己包一层。
+    const list = typeof input.execute === 'function' ? [input] : input
 
     // 把 record 或数组都统一成条目列表
-    const entries = Array.isArray(input)
-        ? input.map(tool => [tool.name, tool])                     // 数组：工具对象自带 name
-        : Object.entries(input).map(([name, tool]) => [name, { name, ...tool }]) // record：名字从键来
+    const entries = Array.isArray(list)
+        ? list.map(tool => [tool?.name, tool])                     // 数组：工具对象自带 name
+        : Object.entries(list).map(([name, tool]) => [name, typeof tool === 'object' && tool ? { name, ...tool } : tool]) // record：名字从键来
 
     const schema = Object.create(null)
     const handlers = Object.create(null)
+    const dropped = []
 
     for (const [name, tool] of entries) {
-        if (!name || typeof tool?.execute !== 'function') continue // 没有名字或没有执行函数的，跳过。
+        // 看起来像工具（有描述或参数）却没有 execute，是写漏了，直接报错而不是悄悄丢掉。
+        if (!name || typeof tool?.execute !== 'function') {
+            if (tool && (tool.description || tool.inputSchema)) dropped.push(name ?? '(无名)')
+            continue
+        }
 
         const { execute, toModelOutput, timeout, ...modelTool } = tool
 
@@ -168,6 +177,8 @@ const adopt = (input) => {
 
         handlers[name] = { execute, toModelOutput, timeout }
     }
+
+    if (dropped.length) throw new TypeError(`工具 ${dropped.join('、')} 缺少 execute 函数`)
 
     return { schema, handlers }
 }
@@ -245,7 +256,7 @@ const open = () => {
 
             if (message.type === 'output') {
                 call.output.push(String(message.data))
-                Notify.tell(call.onOutput, { tool: call.name, stream: message.stream, data: message.data })
+                Notify.tell(call.onOutput, { toolName: call.name, stream: message.stream, data: message.data })
                 return
             }
 
@@ -307,9 +318,10 @@ const execute = async ({ name, input, handlers, signal, onOutput, limit = Infini
 // --- 在主进程里执行一个内存工具 ---
 const memory = async ({ name, input, handler, signal, onOutput, limit }) => {
     try {
-        // signal 透传给工具；工具本身决定要不要响应它（MCP execute 不用 signal 也没关系）。
-        const raw = await handler.execute(input, { signal })
-        const output = shape(handler, raw)
+        // 执行签名和 AI SDK 一致：execute(input, { abortSignal, ... })。同时给 signal 一个别名，
+        // 兼容按我们早期文档写成 execute(input, { signal }) 的工具。@ai-sdk/mcp 读的是 abortSignal。
+        const raw = await handler.execute(input, { signal, abortSignal: signal })
+        const output = shape(handler, raw, input)
         const stop = raw?.stop === true
         return { output, stop }
     } catch (error) {
@@ -377,9 +389,10 @@ const local = ({ name, input, handler, signal, onOutput, limit, concurrency }) =
 
 
 // --- 合并工具集合 ---
+// null / undefined 直接跳过：合并本身是"有几个算几个"，逼调用方自己过滤空值是多余负担。
 const merge = (...sets) => ({
-    schema: Object.assign(Object.create(null), ...sets.map(set => set.schema ?? {})),
-    handlers: Object.assign(Object.create(null), ...sets.map(set => set.handlers ?? {})),
+    schema: Object.assign(Object.create(null), ...sets.map(set => set?.schema ?? {})),
+    handlers: Object.assign(Object.create(null), ...sets.map(set => set?.handlers ?? {})),
 })
 
 export default { from, scan, adopt, execute, merge }

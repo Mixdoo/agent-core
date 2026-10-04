@@ -82,9 +82,9 @@ export interface Callbacks {
     onLLMEvent?: (event: any) => void | Promise<void>
     onPermission?: (permission: { sessionId: string; toolCallId: string; toolName: string; arguments: any; signal: AbortSignal }) => boolean | Promise<boolean>
     onRetry?: (info: { attempt: number; error: Error; delay: number }) => void
-    onToolCall?: (call: { toolCallId: string; toolName: string; input: any }) => void | Promise<void>
-    onToolOutput?: (output: { tool: string; stream: string; data: string; toolCallId: string; toolName: string }) => void
-    onToolResult?: (result: { toolCallId: string; toolName: string; output: any; result?: any; error?: string }) => void | Promise<void>
+    onToolCall?: (call: { toolCallId: string; toolName: string; input: any; type?: string; title?: string; providerExecuted?: boolean; providerMetadata?: Record<string, any> }) => void | Promise<void>
+    onToolOutput?: (output: { toolName: string; stream: string; data: string; toolCallId: string }) => void
+    onToolResult?: (result: { toolCallId: string; toolName: string; input?: any; output: any; result?: any; error?: string; type?: string; title?: string; providerExecuted?: boolean; providerMetadata?: Record<string, any> }) => void | Promise<void>
     onStep?: (step: { step: number; result: any; toolCalls: any[]; toolResults: any[] }) => void | Promise<void>
     onCompact?: (event: any) => void | Promise<void>
 }
@@ -100,8 +100,8 @@ export interface ToolLike {
     name?: string           // 数组形式时必填；record 形式时从键名取
     description?: string
     inputSchema?: any       // 裸 JSON Schema / zod / AI SDK jsonSchema() 三种都认
-    execute: (input: any, options?: { signal?: AbortSignal }) => Promise<any>
-    toModelOutput?: (value: any) => any
+    execute: (input: any, options?: { signal?: AbortSignal; abortSignal?: AbortSignal }) => Promise<any>
+    toModelOutput?: (options: { output: any; input?: any; toolCallId?: string }) => any
     timeout?: number
     [key: string]: any
 }
@@ -124,7 +124,7 @@ export interface ToolModule {
         input?: Record<string, unknown>
         handlers: Record<string, any>
         signal?: AbortSignal
-        onOutput?: (output: { tool: string; stream: string; data: string }) => void
+        onOutput?: (output: { toolName: string; stream: string; data: string }) => void
         limit?: number
         concurrency?: number
     }) => Promise<{ output: any; stop?: boolean; error?: string; interrupted?: boolean }>

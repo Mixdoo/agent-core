@@ -92,8 +92,8 @@ export default {
 ```js
 import Agent from '@kernel4632/agent-core'
 
-// 扫描工具目录，得到工具描述和执行器
-const tools = await Agent.tool.scan('./tools')
+// 一行拿到工具：目录、内存工具（MCP / AI SDK）可以任意搭配
+const tools = await Agent.tool.from('./tools')
 
 // 创建一个 Agent 实例
 const agent = Agent.create({
@@ -542,7 +542,7 @@ console.log(answer.text)
 | `onLLMEvent` | 流式事件（每个 token） | AI SDK 原生事件 |
 | `onPermission` | 工具执行前 | `{ toolName, arguments, sessionId, toolCallId, signal }` → 返回 `true/false` |
 | `onToolCall` | 工具即将执行 | `{ toolCallId, toolName, input }` |
-| `onToolOutput` | 工具有流式输出 | `{ tool, stream, data, toolCallId, toolName }` |
+| `onToolOutput` | 工具有流式输出 | `{ toolName, stream, data, toolCallId }` |
 | `onToolResult` | 工具执行完成 | `{ toolName, output, ... }` |
 | `onStep` | 一轮模型和工具都完成后 | `{ step, result, toolCalls, toolResults }` |
 | `onRetry` | 请求失败重试 | `{ attempt, error, delay }`（主请求和压缩请求共用） |
@@ -724,18 +724,24 @@ Agent.tool.adopt({ add: { description: '加法', inputSchema: {...}, execute } }
 Agent.tool.adopt(await mcpClient.tools())                                        // MCP 客户端的工具直接传
 ```
 
-`inputSchema` 可以是裸 JSON Schema、zod，或 AI SDK 的 `jsonSchema()`。`execute(input, { signal })` 会收到取消信号。
+`inputSchema` 可以是裸 JSON Schema、zod，或 AI SDK 的 `jsonSchema()`。`execute(input, { abortSignal })` 会收到取消信号（也接受别名 `signal`）。
 
 文件工具和内存工具可以合并：`Agent.tool.merge(await Agent.tool.scan('./tools'), Agent.tool.adopt(mcpTools))`，或者直接用 `Agent.tool.from('./tools', mcpTools)`（见上）。
 
-**MCP 结果的转换由你来做。** 核心不认识 MCP。MCP 工具返回的 `{ content: [...] }` 默认会作为 JSON 交给模型；想让模型看到原样的文字和图片，给工具加一个 `toModelOutput`：
+**MCP 工具直接可用，不需要包装。** `@ai-sdk/mcp` 的 `client.tools()` 返回值本身带 `execute` 和 `toModelOutput`，核心按 AI SDK 的签名调用它们，所以文字、图片都会正确交给模型：
 
 ```js
-const mcpTools = Object.fromEntries(Object.entries(await mcpClient.tools()).map(([name, tool]) =>
-    [name, { ...tool, toModelOutput: result => ({ type: 'content', value: result.content }) }]))
+import { createMCPClient } from '@ai-sdk/mcp'
+import { Experimental_StdioMCPTransport as Stdio } from '@ai-sdk/mcp/mcp-stdio' // stdio 传输要从子路径导入
+
+const mcpClient = await createMCPClient({ transport: new Stdio({ command: 'bun', args: ['/abs/server.js'] }) })
+const tools = await Agent.tool.from('./tools', mcpClient.tools())   // 就这一句
+const agent = Agent.create({ config, tools })
+// ...
+await mcpClient.close()   // 连接、开关、关闭都由你的应用管理
 ```
 
-连接、开关和关闭 MCP 服务也由你的应用管理。
+想自己改写工具结果时，给工具加一个 `toModelOutput`，签名和 AI SDK 一致（拿到的是 `{ output, input }`）：`toModelOutput: ({ output }) => ({ type: 'content', value: output.content })`。
 
 > 从 0.16 升级：`Agent.create({ mcp })`、`agent.mcp`、`Agent.skill` 和 `create({ skills })` 已删除。MCP 改为自己用 `@ai-sdk/mcp` 连接，再把工具传进 `tools`；技能的提示词自己拼进 `config.system`。
 

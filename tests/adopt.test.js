@@ -39,11 +39,17 @@ describe('Tool.adopt 归一化', () => {
         expect(tools.schema.none.inputSchema.jsonSchema).toEqual({ type: 'object', properties: {} })
     })
 
-    test('已归一化的集合原样通过，null 变空集合，非工具跳过', async () => {
+    test('已归一化的集合原样通过，null 变空集合，无 execute 的工具当场报错', async () => {
         const scanned = await Tool.scan(TOOLS)
         expect(Tool.adopt(scanned)).toBe(scanned)
         expect(Object.keys(Tool.adopt(null).schema)).toEqual([])
-        expect(Object.keys(Tool.adopt({ junk: { description: '没有 execute' } }).schema)).toEqual([])
+        expect(() => Tool.adopt({ junk: { description: '没有 execute' } })).toThrow(/execute/) // 看起来是工具却没 execute：报错，不静默丢弃。
+        expect(() => Tool.adopt({ schema: {}, handlers: undefined })).toThrow(/handlers/)      // 半份集合也报错。
+    })
+
+    test('单个工具对象直接传，不用包成数组', () => {
+        const tools = Tool.adopt({ name: 'echo', ...echo })
+        expect(Object.keys(tools.schema)).toEqual(['echo'])
     })
 
     test('__proto__ 当工具名不会污染原型链', () => {
@@ -62,8 +68,8 @@ describe('内存工具执行', () => {
         expect((await run({ nil: { execute: async () => null } }, 'nil')).output.value).toContain('没有输出')
     })
 
-    test('toModelOutput 接管成形（MCP CallToolResult 走这条路）', async () => {
-        const mcpLike = { execute: async () => ({ content: [{ type: 'text', text: 'hi' }] }), toModelOutput: result => ({ type: 'content', value: result.content }) }
+    test('toModelOutput 用 AI SDK 签名接管成形（MCP CallToolResult 走这条路）', async () => {
+        const mcpLike = { execute: async () => ({ content: [{ type: 'text', text: 'hi' }] }), toModelOutput: ({ output }) => ({ type: 'content', value: output.content }) }
         expect((await run({ mcpLike }, 'mcpLike')).output).toEqual({ type: 'content', value: [{ type: 'text', text: 'hi' }] })
     })
 
@@ -81,11 +87,12 @@ describe('内存工具执行', () => {
         expect(long.output.value).toContain('输出过长')
     })
 
-    test('signal 透传给工具', async () => {
+    test('signal 用 signal 和 abortSignal 两个键透传（AI SDK 工具读 abortSignal）', async () => {
         let got
         const controller = new AbortController()
-        await run({ sig: { execute: async (input, { signal }) => { got = signal; return 'ok' } } }, 'sig', {}, { signal: controller.signal })
-        expect(got).toBe(controller.signal)
+        await run({ sig: { execute: async (input, { signal, abortSignal }) => { got = { signal, abortSignal }; return 'ok' } } }, 'sig', {}, { signal: controller.signal })
+        expect(got.signal).toBe(controller.signal)
+        expect(got.abortSignal).toBe(controller.signal)
     })
 })
 

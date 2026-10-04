@@ -149,9 +149,9 @@ const PART = new Set(['text', 'image', 'audio', 'video', 'file', 'file-data', 'f
 // 放在工具进程里而不是主线程，是因为这一步要执行工具作者写的 toModelOutput、要做 JSON 化、要校验块形状，
 // 三件事都可能抛错；抛在这里只是一条正常的工具失败，抛在主线程会让那次调用永远不结算。
 // 输出太长时的截断不在这里：截断在主线程里统一做（见 tool.js 的 clip），文件工具和内存工具共用同一条规则。
-const shape = (tool, result) => {
+const shape = (tool, result, input) => {
     const value = result?.output ?? result                              // 工具可以返回 { output } 对象，也可以直接返回值。
-    const output = tool.toModelOutput ? tool.toModelOutput(value)       // 工具自带格式化函数时优先用它。
+    const output = tool.toModelOutput ? tool.toModelOutput({ output: value, input }) // AI SDK 的签名：和主线程里的内存工具、以及 @ai-sdk/mcp 的工具完全一致。
         : BLOCK.has(result?.output?.type) ? result.output               // 工具自己就给了成形的输出块——图片和多模态结果走的就是这条路。
         : value === undefined || value === null || value === '' ? { type: 'text', value: '工具执行成功，但没有输出' } // 空返回也给一句交代。
         : typeof value === 'string' ? { type: 'text', value }           // 返回字符串，直接当文字给模型。
@@ -175,7 +175,7 @@ process.on('message', async data => {
         const module = await import(data.url)                                   // 工具进程是独立进程，工具文件在这里重新加载。
         const tool = [module.default].flat().find(one => one.name === data.name) // 按工具名找到文件里的那一个。
         const result = await collect(await tool.execute(data.input))            // 跑工具；生成器工具顺便把每个 yield 实时发出去。
-        process.send({ callId: data.callId, type: 'done', output: shape(tool, result), stop: result?.stop === true }) // stop 是工具主动要求结束整个循环。
+        process.send({ callId: data.callId, type: 'done', output: shape(tool, result, data.input), stop: result?.stop === true }) // stop 是工具主动要求结束整个循环。
     } catch (error) {
         process.send({ callId: data.callId, type: 'error', message: error?.message || String(error) }) // 工具抛错、toModelOutput 抛错、输出块非法、JSON 化失败，对模型来说都是"这个工具没成功"。
     } finally {

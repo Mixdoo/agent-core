@@ -215,8 +215,10 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = null, callba
             empty ? new TypeError('input must be a non-empty string or a non-empty content array')
             : badConfig ? new TypeError('config must be an object')
             : !positive(limits.maxSteps) ? new RangeError('maxSteps must be a positive integer')
+            : !positive(limits.maxTokens) ? new RangeError('maxTokens must be a positive integer') // 字符串 '1000' 会让压缩永远不触发，当场拦下。
             : !positive(limits.noToolRounds, false) ? new RangeError('noToolRounds must be a positive integer or Infinity')
             : !positive(limits.maxToolConcurrency, false) ? new RangeError('maxToolConcurrency must be a positive integer or Infinity')
+            : !['native', 'text', 'auto'].includes(limits.toolMode) ? new TypeError("toolMode must be 'native', 'text' or 'auto'") // 拼错的 toolMode 会被默默当成 native，不如直接报错。
             : null
         if (invalid) return Promise.reject(invalid)
 
