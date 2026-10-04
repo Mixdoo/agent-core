@@ -110,6 +110,19 @@ describe('内存工具执行', () => {
         expect(result.output.type).toBe('error-text')
         expect(sawAbort).toBe(true)                 // 同时把取消信号发给工具，让它有机会收手。
     })
+    test('同步返回的内存工具不是失败', async () => {
+        const result = await run({ sync: { execute: () => '同步结果' } }, 'sync')
+        expect(result.output).toEqual({ type: 'text', value: '同步结果' })
+    })
+
+    test('取消信号一到就按中断结算，不等不响应取消的工具', async () => {
+        const controller = new AbortController()
+        const hanging = { execute: () => new Promise(() => {}) } // 永远不结算、也不理 signal。
+        const pending = run({ hang: hanging }, 'hang', {}, { signal: controller.signal })
+        controller.abort()
+        const result = await pending
+        expect(result.interrupted).toBe(true) // stop()/下一次 send() 因此不会被永久卡住。
+    })
 })
 
 describe('Tool.from 一行拼装', () => {

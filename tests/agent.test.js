@@ -140,6 +140,20 @@ describe('Agent 入口', () => {
         expect(agent.config.maxTokens).toBe(128000) // 默认带上上下文预算，自动压缩才会开启。
     })
 
+    test('send 传的 compact 只覆盖写了的字段，其余保留', async () => {
+        const agent = Agent.create({ config: config({ compact: { baseURL: 'http://a', apiKey: 'ka', model: 'cheap' } }) })
+        await agent.send({ input: 'x', config: { compact: { model: 'cheaper' } } })
+        expect(agent.config.compact).toEqual({ baseURL: 'http://a', apiKey: 'ka', model: 'cheaper' }) // 局部覆盖不丢字段。
+    })
+
+    test('外部 signal 已取消时 send 拒绝，错误带 kind', async () => {
+        const agent = Agent.create({ config: config() })
+        const controller = new AbortController()
+        controller.abort()
+        const error = await agent.send('x', { signal: controller.signal }).catch(caught => caught)
+        expect(error.kind).toBe('aborted') // 取消错误和模型错误一样能用 error.kind 分支。
+    })
+
     test('历史是外部传进来的那份数组，Agent 往里追加而不是替换', async () => {
         const history = [History.user({ content: '上一轮' })]
         const agent = Agent.create({ history, config: config() })

@@ -88,8 +88,6 @@ flowchart TD
 
 `history` 里原文一条不少；每次发请求时，只从里面**现挑**该带哪些回合：
 
-`history` 里原文一条不少；每次发请求时，只从里面**现挑**该带哪些回合：
-
 | history 里的位置 | 内容 | 这一次发给模型吗 |
 |------------------|------|------------------|
 | 最初 | 用户最初的目标 | 保留：最多 3 个用户回合、≤20% 预算 |
@@ -781,7 +779,9 @@ const result = await agent.send({
 //   'step-limit' → 达到 maxSteps，当前工具结果已保存，下一次 send 可继续
 ```
 
-`send` 的出错方式只有一种：返回的 Promise 拒绝。空输入、非法配置、取消、模型报错全都从这里出来，所以只需要写 `.catch()`，不用另外包同步的 `try/catch`。模型报错的 `error.kind` 见下方。
+`send` 的出错方式只有一种：返回的 Promise 拒绝。空输入、非法配置、取消、模型报错全都从这里出来，所以只需要写 `.catch()`，不用另外包同步的 `try/catch`。取消造成的拒绝带 `error.kind === 'aborted'`；模型报错的 `error.kind` 见下方。
+
+> 输入是在发请求**之前**就写进 `history` 的，所以一次 `send` 失败后，这条输入已经留在历史里（历史只增不删）。重试前记得先决定要不要把它去掉，否则会叠成连续两条同样的输入。
 
 连续发送时，建议保存并处理旧任务的 Promise，避免出现未处理的中止错误：
 
@@ -1095,7 +1095,7 @@ bun test --coverage
 bun run build
 ```
 
-只生成 `dist/agent-core.js`：Bun 运行时使用的依赖全部内联并压缩。同时把手写的类型声明 `index.d.ts` 复制成 `dist/agent-core.d.ts`，TypeScript 用户导入时有参数补全和类型检查。构建脚本在没有 `node_modules` 的临时目录中导入产物，实际运行一次工具和模型模拟请求，成功后才替换 `dist/agent-core.js`。npm 包只包含这份产物、README 和 package.json；`npm pack` / `npm publish` 前会自动构建。产物顶部写有版本号和提交号，压缩不是加密。
+只生成 `dist/agent-core.js`：Bun 运行时使用的依赖全部内联并压缩。同时把手写的类型声明 `index.d.ts` 复制成 `dist/agent-core.d.ts`，TypeScript 用户导入时有参数补全和类型检查。构建脚本在没有 `node_modules` 的临时目录中导入产物，实际运行一次工具和模型模拟请求，成功后才替换 `dist/agent-core.js`。发布包只包含 `dist/agent-core.js`、`dist/agent-core.d.ts`、`README.md`、`LICENSE` 和 `package.json`；`npm pack` / `npm publish` 前会自动构建。产物顶部写有版本号和提交号，压缩不是加密。
 
 ```js
 import Agent from './agent-core.js'
@@ -1116,6 +1116,8 @@ const agent = Agent.create({ config: { /* ... */ }, tools })
 | `Agent.context` | `.build()` |
 | `Agent.compact` | `.run()` |
 | `Agent.llm` | `.chat()` |
+| `Agent.textTools` | 文字工具协议：`.prepare()` / `.wrap()` / `.read()`，直接调 `llm.chat` 时用 |
+| `Agent.output` / `Agent.schema` | 结构化输出的 Output 与 Zod，包内同一份，无需另装 |
 
 `Agent.history` 是嵌入时最常用的那个：把 IM 消息转成 user 块、往历史里塞一条系统通知、从数据库恢复会话，都要靠它造出格式正确的消息。
 

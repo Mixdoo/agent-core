@@ -116,9 +116,10 @@ export type ToolInput =
     | undefined
 
 // --- 工具的扫描、接纳与执行 ---
+export type ToolSource = string | URL | ToolInput
 export interface ToolModule {
-    from: (...sources: Array<string | URL | ToolInput | Promise<ToolInput> | Array<string | URL | ToolInput>>) => Promise<ToolSet>
-    scan: (...directories: Array<string | URL>) => Promise<ToolSet>
+    from: (...sources: Array<ToolSource | Promise<ToolSource> | ToolSource[]>) => Promise<ToolSet>
+    scan: (...directories: Array<string | URL | Array<string | URL>>) => Promise<ToolSet>
     adopt: (input: ToolInput) => ToolSet
     execute: (options: {
         name: string

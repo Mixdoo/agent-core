@@ -96,7 +96,7 @@ const result = await Agent.llm.chat({ baseURL, apiKey, model, messages })
 // const { output } = await agent.send('计算总数')
 
 // callbacks 中可使用下面这些回调：
-// onPermission: ({ sessionId, toolCallId, toolName, arguments, signal }) => true | false，需要等待时可以返回 Promise。
+// onPermission: ({ sessionId, toolCallId, toolName, input, signal }) => true | false，需要等待时可以返回 Promise。
 //               它是唯一一个看返回值的回调；它抛错时这次 send 失败。
 // 其余回调都只是通知：出错会被忽略，不影响任务（规则写在 utils/notify.js）。
 // onStart: () => {}，循环开始时调用，无返回值。
@@ -159,12 +159,14 @@ const inputProblem = (input, limits) => {
 }
 
 // --- 一次 send 传入的 config 合并进 Agent 当前配置 ---
-// provider 整份替换（调用方给了就整份用它的），capabilities 按字段叠加，其余字段覆盖。
+// provider 整份替换（调用方给了就整份用它的）；capabilities 和 compact 按字段叠加（它们是嵌套配置，
+// 只传其中一项不该把另一项丢掉）。其余字段覆盖。
 const mergeConfig = (current, override) => ({
     ...current,
     ...override,
     provider: 'provider' in override ? { ...override.provider } : current.provider,
     capabilities: 'capabilities' in override ? { ...current.capabilities, ...override.capabilities } : current.capabilities,
+    compact: 'compact' in override ? { ...current.compact, ...override.compact } : current.compact,
 })
 
 
@@ -180,7 +182,7 @@ const start = (agent, work, outside) => {
             previous.controller.abort()
             await previous.task.catch(() => {})
         }
-        if (signal.aborted) throw new DOMException('Agent run aborted', 'AbortError')
+        if (signal.aborted) throw Object.assign(new DOMException('Agent run aborted', 'AbortError'), { kind: 'aborted' }) // 取消也带 kind，和模型错误一致。
         return work(signal)
     })()
 

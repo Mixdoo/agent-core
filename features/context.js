@@ -44,7 +44,8 @@ const RECENT_SHARE = 0.3
 
 // 一个回合有多大。用字符数而不是 token：裁剪要对每个候选回合都量一次，
 // 逐条估算 token 是没必要的开销。字符数用来在候选回合之间分预算足够了。
-const size = turn => turn.reduce((total, message) => total + JSON.stringify(message.content).length, 0)
+// content 允许缺失（外部恢复的历史可能有），缺了按 0 算，别让 JSON.stringify(undefined).length 抛错。
+const size = turn => turn.reduce((total, message) => total + JSON.stringify(message.content ?? null).length, 0)
 
 // --- 在预算内按给定顺序挑回合，装不下就到此为止 ---
 const within = (turns, budget) => {
@@ -110,10 +111,16 @@ const build = ({ history, system = '', tools = {}, budget, ratio = DEFAULT_RATIO
     const answered = History.answeredCalls(flat) // 这批消息里真正拿到结果的调用。
     const instructions = brief(system, summary)                                                                 // 系统提示词 + 最新总结。
 
-    const messages = [
+    const built = [
         ...(instructions ? [{ role: 'system', content: instructions }] : []),                                   // system 进入 messages，并一起参与 Token 估算。
         ...flat.map(message => History.model(message, { answered, capabilities, reasoning: capabilities.reasoning ?? false, mediaFallback, normalizeMedia: false })).filter(message => message.content.length), // 被摘空的消息（只剩思考、媒体或没人应答的调用）整条丢掉。
     ]
+
+    // 摘空之后可能一条非 system 都不剩（用户只发了一张被 strip 掉的图、或压缩后现场全是空回合），
+    // 模型拒收"没有消息"的请求，这里补一条兜底文字消息，保证请求发得出去。
+    const messages = !built.some(message => message.role !== 'system') && flat.length
+        ? [...built, { role: 'user', content: [{ type: 'text', text: '（上下文已压缩，请继续）' }] }]
+        : built
 
     // Token 只在真的有人读的时候才算：没设 maxTokens 时 Loop 压根不看它。
     // 估算只是一次字符计数（毫秒级），但这份惰性语义保留着，调用方不读就不算。

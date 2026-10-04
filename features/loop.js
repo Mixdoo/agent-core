@@ -23,9 +23,9 @@ const result = await Loop.run({
         compactThreshold: 0.8,     // 上下文估算达到预算的这个比例时压缩
         maxSteps: undefined,       // 不设上限；调用方主动传入正整数时才限制模型轮数
         stream: true,              // 主请求和压缩都流式输出
-        noToolPrompt: "请继续使用工具", // 结束前一轮临时发给模型的提醒
+        noToolPrompt: "请继续使用工具", // 示例；Agent 默认会传一段更长的提醒（见 index.js）
         noToolRounds: 3,           // 有工具时连续多少轮不调工具就结束；Infinity 表示永不因此结束
-        retryMaxDelay: 60000,       // 重试退避上限（毫秒）。重试是 LLM.chat 自带的，压缩那次请求也走同一套。
+        retryMaxDelay: undefined,   // 重试退避上限（毫秒）。重试是 LLM.chat 自带的，压缩那次请求也走同一套。
     },
     // --- 功能模块（必填，平齐的功能模块作为参数传）---
     buildContext: Context.build,       // 上下文构建模块
@@ -57,6 +57,8 @@ import LLM from './llm.js'
 import TextTools from './text-tools.js'
 import Notify from '../utils/notify.js'
 import { createMeter, modelKey } from '../utils/tokens.js'
+
+const aborted = () => Object.assign(aborted(), { kind: 'aborted' }) // 取消错误也带 kind，调用方能和模型错误一样按 error.kind 分支。
 
 // --- 把一次请求的用量加进合计 ---
 // 各供应商给的字段不一定齐全（有的不报缓存，有的连 total 都没有），缺的按 0 算，不让一个 undefined 把合计变成 NaN。
@@ -109,7 +111,7 @@ const run = async ({
 
     while (true) {
         // --- 每轮开始：先响应取消信号 ---
-        if (signal?.aborted) throw new DOMException('Agent loop aborted', 'AbortError')
+        if (signal?.aborted) throw aborted()
 
         // --- 构建上下文，Token 超限时压一次 ---
         // 每轮最多压一次，不循环压到达标为止：压缩本身就是一次真实模型请求，
@@ -129,7 +131,7 @@ const run = async ({
 
         // --- 请求模型 ---
         // 重试不在这里：它是 LLM.chat 自带的，压缩那次请求走的是同一条路、同一套退避。
-        if (signal?.aborted) throw new DOMException('Agent loop aborted', 'AbortError')
+        if (signal?.aborted) throw aborted()
         const request = { ...llm, messages: temporaryPrompt ? [...context.messages, History.user({ content: temporaryPrompt })] : context.messages, tools, signal, onLLMEvent, onLLMStart, onRetry } // 临时提示只挂在本次请求上。
         const result = await ask(request, llm)
         steps += 1            // 模型完整回答后才算这一轮，失败重试由 LLM.chat 自己处理。
@@ -193,7 +195,7 @@ const run = async ({
 
         // --- 判断是否停止循环 ---
         if (toolResults.some(result => result.stop)) {                                          // 任何一个工具要求停止，整个循环就结束。
-            if (signal?.aborted) throw new DOMException('Agent loop aborted', 'AbortError')      // 取消导致的停止，仍然按异常向上抛。
+            if (signal?.aborted) throw aborted()      // 取消导致的停止，仍然按异常向上抛。
             return { reason: 'tool-stop', ...answer } // 工具主动停止时不另外生成未请求的最终对象。
         }
         if (steps >= llm.maxSteps) return { reason: 'step-limit', ...answer } // 完整工具历史写完后退出。

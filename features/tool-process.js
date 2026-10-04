@@ -12,7 +12,7 @@
     工具进程 → 主线程   { callId, type: 'output', stream, data } 工具产生了一段实时输出
     工具进程 → 主线程   { callId, type: 'done', output, stop }   跑完了，output 已经是模型能直接读的形态
     工具进程 → 主线程   { callId, type: 'error', message }       工具抛错了
-内存工具不走这里：它们在主进程里由 tool.js 的 memory 直接调用。
+内存工具不走这里：它们在主进程里由 tool.js 的 inProcess 直接调用。
 
 它隔离的是生命周期，不是环境。工具在这里拥有和 Agent 完全相同的权限：
 读写任意文件、执行任意命令、联网、读到父进程的全部环境变量（包括 apiKey）。

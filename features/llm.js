@@ -43,7 +43,7 @@ const result = await LLM.chat({
 
     // --- 提示词缓存（默认开启）---
     cache: true,                    // true 使用默认键；{ key, retention, body } 自定义；false 完全关闭
-    capabilities: { image, audio, video, file, tools, structuredOutput, toolChoice, reasoning }, // 针对脆弱渠道逐项关闭能力
+    capabilities: { image, audio, video, file, tools, structuredOutput, toolChoice, reasoning, usage }, // 针对脆弱渠道逐项关闭能力
     mediaFallback: 'error',         // 关闭媒体后报错；'strip' 只保留文字继续请求
 });
 

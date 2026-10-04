@@ -71,6 +71,13 @@ describe('Tool 扫描', () => {
 
 
 describe('Tool 执行', () => {
+    test('limit 是个位数时截断仍然生效（不能返回整段原文）', async () => {
+        const tools = Tool.adopt([{ name: 'long', execute: async () => 'x'.repeat(500) }])
+        const result = await Tool.execute({ name: 'long', input: {}, handlers: tools.handlers, limit: 2 })
+        expect(result.output.value).toContain('省略')       // 确实截断了。
+        expect(result.output.value.length).toBeLessThan(200) // 不是把 500 字原样返回。
+    })
+
     test('工具返回循环引用时变成一条工具错误，而不是毒死 history', async () => {
         const tools = await Tool.scan(BROKEN)
         const result = await Tool.execute({ name: 'cyclic', input: {}, handlers: tools.handlers })

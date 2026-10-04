@@ -24,6 +24,23 @@ describe('Context 裁剪', () => {
         expect(nonSystem.length).toBeGreaterThan(0)             // 至少留一条真实消息，请求才发得出去。
     })
 
+    test('只发一张被 strip 掉的图时，也不会只剩 system', () => {
+        // 回合留下了，但媒体被摘空、消息整条被 filter 掉，旧实现没在最终 messages 上兜底。
+        const history = [History.user({ content: [{ type: 'image', image: 'x' }] })]
+        const { messages } = Context.build({ history, system: 's', capabilities: { image: false }, mediaFallback: 'strip' })
+        expect(messages.some(message => message.role !== 'system')).toBe(true)
+    })
+
+    test('历史里有缺 content 的消息时，裁剪不崩', () => {
+        // agent.history 是公开可写的，也能从库里恢复；少一个 content 字段不该让整次 send 崩。
+        const history = [
+            History.user({ content: '开始' }),
+            { id: 'x', role: 'assistant', content: undefined },
+            History.compact({ content: '总结' }),
+        ]
+        expect(() => Context.build({ history, system: 's', budget: 10, ratio: 0.6 })).not.toThrow()
+    })
+
     test('压缩后不再切断 tool-call 与 tool-result 的配对', () => {
         const history = withTurns(5)
         history.push(History.compact({ content: '前面读了 5 个文件' }))

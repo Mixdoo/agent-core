@@ -206,7 +206,11 @@ const from = async (...sources) => {
 
 
 // --- 一次调用的实时输出缓冲：有界 ---
+// 攒着"已产出的内容"，中断/超时时还给模型。即使调用方没设 maxToolOutput（limit=Infinity），
+// 这里也必须有个硬上限：一个边跑边刷日志、又长期不返回的工具，否则能把主进程内存吃光。
+const MAX_BUFFER = 1 << 20 // 100 万字符，够模型看懂已产出的内容了。
 const buffer = limit => {
+    const cap = Number.isFinite(limit) ? limit : MAX_BUFFER
     const head = []
     const tail = []
     let headSize = 0
@@ -215,10 +219,10 @@ const buffer = limit => {
 
     return {
         push(chunk) {
-            if (headSize < limit * 0.7) { head.push(chunk); headSize += chunk.length; return }
+            if (headSize < cap * 0.7) { head.push(chunk); headSize += chunk.length; return }
             tail.push(chunk)
             tailSize += chunk.length
-            while (tailSize > limit * 0.3) { const gone = tail.shift(); tailSize -= gone.length; dropped += gone.length }
+            while (tailSize > cap * 0.3) { const gone = tail.shift(); tailSize -= gone.length; dropped += gone.length }
         },
         text: () => dropped
             ? `${head.join('')}\n\n……[输出过长，中间省略 ${dropped} 个字符]……\n\n${tail.join('')}`
@@ -300,8 +304,11 @@ const borrow = async () => {
 
 
 // --- 截断 ---
-const cut = (text, limit) => text.length <= limit ? text
-    : `${text.slice(0, Math.floor(limit * 0.7))}\n\n……[输出过长，中间省略 ${text.length - limit} 个字符。请缩小范围或分页重新获取]……\n\n${text.slice(-Math.floor(limit * 0.3))}`
+const cut = (text, limit) => {
+    if (text.length <= limit) return text
+    const tailSize = Math.floor(limit * 0.3) // limit 很小时可能算成 0；slice(-0) 会返回整段，所以要单独挡一下。
+    return `${text.slice(0, Math.floor(limit * 0.7))}\n\n……[输出过长，中间省略 ${text.length - limit} 个字符。请缩小范围或分页重新获取]……\n\n${tailSize ? text.slice(-tailSize) : ''}`
+}
 
 const clip = (output, limit) => {
     if (!Number.isFinite(limit)) return output
@@ -324,25 +331,41 @@ const execute = async ({ name, input, handlers, signal, onOutput, limit = Infini
 
 
 // --- 在主进程里执行一个内存工具 ---
+// 内存工具是普通函数，杀不掉，所以三件事都靠"不再等它"来做：
+//   取消：外部 signal 一到就按"已中断"结算，不等工具收尾（工具不理 signal 也不会卡住 stop/send）。
+//   超时：工具自己声明了 timeout 就到点按超时结算。
+// 两种情况下都会把取消信号发给工具，让它有机会自己收手。
+const INTERRUPTED = Symbol('interrupted')
+
 const inProcess = async ({ name, input, handler, signal, onOutput, limit }) => {
-    // 内存工具声明了 timeout 就加一层看门狗。它杀不了进程（函数在主进程里），所以做法是：
-    // 到点给工具一个 abortSignal 让它自己收手，同时让这次调用按超时结算。
     const controller = new AbortController()
     const stop = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal
+    const interrupted = { output: { type: 'error-text', value: '工具执行已中断' }, interrupted: true }
     let timer
+    let onAbort
     try {
+        if (signal?.aborted) return interrupted // 进来之前就已经取消了。
+
         // 执行签名和 AI SDK 一致：execute(input, { abortSignal, ... })。同时给 signal 一个别名，
         // 兼容按我们早期文档写成 execute(input, { signal }) 的工具。@ai-sdk/mcp 读的是 abortSignal。
-        const run = handler.execute(input, { signal: stop, abortSignal: stop })
-        void run.catch(() => {}) // 超时先结算后，工具稍后才失败的话，别变成未处理的拒绝。
-        const raw = handler.timeout
-            ? await Promise.race([run, new Promise((_, reject) => { timer = setTimeout(() => { reject(new Error(`工具执行超时（${handler.timeout}ms）`)); controller.abort() }, handler.timeout) })]) // 先按超时结算，再通知工具取消（顺序反了会先拿到工具的结果）。
-            : await run
+        // Promise.resolve 包一层：AI SDK 允许 execute 同步返回，不加这层同步值会被当成没有 .catch 而误判失败。
+        const run = Promise.resolve(handler.execute(input, { signal: stop, abortSignal: stop }))
+        void run.catch(() => {}) // 先结算（取消/超时）后，工具迟到失败别变成未处理的拒绝。
+
+        const racers = [run]
+        if (handler.timeout) racers.push(new Promise((_, reject) => { timer = setTimeout(() => { reject(new Error(`工具执行超时（${handler.timeout}ms）`)); controller.abort() }, handler.timeout) }))
+        if (signal) racers.push(new Promise(resolve => { onAbort = () => resolve(INTERRUPTED); signal.addEventListener('abort', onAbort, { once: true }) }))
+
+        const raw = await Promise.race(racers)
+        if (raw === INTERRUPTED) { controller.abort(); return interrupted } // 取消优先结算，工具稍后返回也不采纳。
         const output = shape(handler, raw, input)
         return { output, stop: raw?.stop === true }
     } catch (error) {
         return { output: { type: 'error-text', value: `工具执行失败：${error?.message || String(error)}` }, error: error?.message || String(error) }
-    } finally { clearTimeout(timer) }
+    } finally {
+        clearTimeout(timer)
+        if (onAbort) signal.removeEventListener('abort', onAbort)
+    }
 }
 
 
