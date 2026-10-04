@@ -316,7 +316,7 @@ const cutText = (text, limit) => {
 
 const cutOutput = (output, limit) => {
     if (!Number.isFinite(limit)) return output
-    if (output.type === 'content') return { ...output, value: output.value.map(part => part.type === 'text' ? { ...part, text: cutText(part.text, limit) } : part) }
+    if (output.type === 'content') return { ...output, value: output.value.map(part => part.type === 'text' ? { ...part, text: cutText(part.text ?? '', limit) } : part) }
     const text = typeof output.value === 'string' ? output.value : JSON.stringify(output.value) ?? String(output.value) // 无 value 的 json 块（JSON.stringify 返回 undefined）按空串处理，别让 .length 抛错。
     return text.length <= limit ? output : { type: 'text', value: cutText(text, limit) }
 }
@@ -357,7 +357,7 @@ const inProcess = async ({ name, input, handler, signal, onOutput, limit }) => {
         // 注意：生成器要在两次 yield 之间 await 一下，否则它会占着事件循环不停转，连超时/取消都插不进来——那是工具自己的写法问题。
         const task = (async () => {
             const result = await handler.execute(input, { signal: stop, abortSignal: stop }) // 同步返回值也能被 await 接住。
-            if (result && typeof result.next === 'function') { // 生成器 / 迭代器：数组没有 .next，不会被误当成生成器。
+            if (result && typeof result.next === 'function' && (typeof result[Symbol.asyncIterator] === 'function' || typeof result[Symbol.iterator] === 'function')) { // 生成器 / 迭代器：既要 .next 又要可迭代（数组只有 iterator 没 next，不会被误当成生成器）。
                 const chunks = []
                 for await (const chunk of result) { // for await 对同步生成器和异步生成器都适用。
                     if (settled) { try { await result.return?.() } catch {} break } // 已经结算就别再往下跑（不理会取消的生成器否则会一直转）。

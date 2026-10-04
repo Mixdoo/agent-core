@@ -126,7 +126,8 @@ for (const name of ['log', 'info', 'warn', 'error']) {
 
 // --- 异步生成器工具：每个 yield 立刻发出去，最后把全部片段作为返回值 ---
 const collect = async result => {
-    if (!result || typeof result[Symbol.asyncIterator] !== 'function') return result // 普通返回值，不用收集。
+    // 生成器 / 迭代器：既要 .next 又要可迭代（数组只有 iterator 没 next，不会被误当成生成器）。同步、异步生成器都收。
+    if (!result || typeof result.next !== 'function' || (typeof result[Symbol.asyncIterator] !== 'function' && typeof result[Symbol.iterator] !== 'function')) return result
     const chunks = []                                                                 // 攒下每个 yield 出来的片段。
     for await (const chunk of result) {
         chunks.push(chunk)
@@ -162,6 +163,9 @@ const shape = (tool, result, input) => {
     if (!BLOCK.has(output?.type)) throw new TypeError(`工具输出块的 type 不合法：${JSON.stringify(output?.type)}，只能是 ${[...BLOCK].join(' / ')}`)
     const bad = output.type === 'content' && output.value.find(part => !PART.has(part?.type))
     if (bad) throw new TypeError(`content 块里的 ${JSON.stringify(bad.type)} 部件不合法，只能是 ${[...PART].join(' / ')}。媒体可以用旧 image/audio/video，也可以用 AI SDK 当前的 file`)
+    // 类型对了、字段缺了也不行：text 部件没 text、file 部件没 mediaType/data，写进 history 一样会让 AI SDK 本地拒收。
+    const broken = output.type === 'content' && output.value.find(part => (part.type === 'text' && typeof part.text !== 'string') || (part.type === 'file' && (!part.mediaType || part.data == null)))
+    if (broken) throw new TypeError(`content 块里的 ${JSON.stringify(broken.type)} 部件缺少必需字段：text 要有 text；file 要有 mediaType 和 data`)
 
     // 跨进程只传纯 JSON，自带格式化的那条路也一样要过这一关：
     // Date 变字符串、NaN 变 null、循环引用在这里变成一条正常的工具错误，不会写进 history 把 Agent 毒死。

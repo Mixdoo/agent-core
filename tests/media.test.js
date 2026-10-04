@@ -45,8 +45,9 @@ describe('多模态', () => {
             { type: 'file-url', mediaType: 'image/jpeg', url: 'https://x/y.jpg' },
         ] }, {}).content
 
-        expect(parts[0].data).toBe('DDD')            // 内嵌数据原样。
-        expect(parts[1].data).toBe('https://x/y.jpg') // 网址也能当数据取出来。
+        expect(parts[0].data).toEqual({ type: 'data', data: 'DDD' })            // 内嵌数据包成 AI SDK v7 的带标签形状。
+        expect(parts[1].data.type).toBe('url')                                  // http(s) 网址走 url 分支。
+        expect(parts[1].data.url.href).toBe('https://x/y.jpg')                  // url 必须是 URL 对象，AI SDK 才收。
     })
 
     test('关掉媒体能力且不选择丢弃时，明确报错而不是悄悄发出去', () => {
@@ -86,6 +87,20 @@ describe('多模态', () => {
         expect(words.text).toContain('输出过长')
         expect(media.data.data.length).toBeGreaterThan(100000)   // 图截一刀就彻底废了，必须原样放行。
         expect(media.mediaType).toBe('image/png')
+    })
+
+    test('工具结果里的旧 image 块会被转成合法 file 块，不再毒死会话', async () => {
+        const server = Bun.serve({ port: 0, async fetch() { return Response.json({ choices: [{ index: 0, message: { role: 'assistant', content: '好' }, finish_reason: 'stop' }], usage: {} }) } })
+        try {
+            const history = [
+                History.user({ content: '截图' }),
+                History.assistant({ content: null, toolCalls: [{ id: 'c1', name: 'shot', arguments: {} }] }),
+                History.tool({ toolCallId: 'c1', toolName: 'shot', content: { type: 'content', value: shot } }), // 工具结果里带旧 image 块。
+            ]
+            const agent = Agent.create({ history, config: { baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'k', model: 'm', stream: false } })
+            const answer = await agent.send('继续') // 旧实现这里本地抛 AI_InvalidPromptError，而毒块已写进只增不删的 history。
+            expect(answer.text).toBe('好')
+        } finally { server.stop(true) }
     })
 
     test('作废的 media 形状被当场挡住，而不是穿过去毒死 history', async () => {

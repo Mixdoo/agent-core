@@ -38,6 +38,9 @@ const shape = (tool, result, input) => {
     if (!BLOCK.has(output?.type)) throw new TypeError(`工具输出块的 type 不合法：${JSON.stringify(output?.type)}，只能是 ${[...BLOCK].join(' / ')}`)
     const bad = output.type === 'content' && output.value.find(part => !PART.has(part?.type))
     if (bad) throw new TypeError(`content 块里的 ${JSON.stringify(bad.type)} 部件不合法，只能是 ${[...PART].join(' / ')}。媒体可以用旧 image/audio/video，也可以用 AI SDK 当前的 file`)
+    // 类型对了、字段缺了也不行：text 部件没 text、file 部件没 mediaType/data，写进 history 一样会让 AI SDK 本地拒收。
+    const broken = output.type === 'content' && output.value.find(part => (part.type === 'text' && typeof part.text !== 'string') || (part.type === 'file' && (!part.mediaType || part.data == null)))
+    if (broken) throw new TypeError(`content 块里的 ${JSON.stringify(broken.type)} 部件缺少必需字段：text 要有 text；file 要有 mediaType 和 data`)
 
     return JSON.parse(JSON.stringify(output)) // 只传纯 JSON：Date 变字符串、NaN 变 null、循环引用在这里变成一条正常的工具错误。
 }

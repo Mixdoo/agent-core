@@ -122,10 +122,14 @@ const answeredCalls = messages => new Set(messages.flatMap(message => parts(mess
 
 // --- 统一旧媒体块：AI SDK 当前用 file，旧渠道常用 image / audio / video ---
 // 历史原样保存，只有发给模型的副本做转换；这样换模型不会破坏数据库里的原始消息。
+// AI SDK v7 的 file 块要求 data 是带标签的形状：{type:'data',data} 或 {type:'url',url}，
+// 直接给裸字符串会被它在本地拒收（尤其在工具结果里），于是 history 一写进去就永久毒死会话。
 const media = (part, value, fallback) => ({
     type: 'file',                                  // AI SDK 现在统一用 file 装媒体。
     mediaType: part.mediaType ?? fallback,         // 没写类型时按调用方给的默认值。
-    data: value,                                   // 媒体的内容（base64 或 URL）。
+    // http(s) / data URL 走 url 分支（AI SDK 要求 url 是 URL 对象，且不接受把 data URL 当内联数据）；
+    // 其余（纯 base64 或字节）走 data 分支。裸字符串在这两处都会被 AI SDK 本地拒收，从而毒死 history。
+    data: typeof value === 'string' && /^(https?:|data:)/i.test(value) ? { type: 'url', url: new URL(value) } : { type: 'data', data: value },
     ...(part.filename ? { filename: part.filename } : {}), // 有文件名就带上。
 })
 
@@ -158,13 +162,17 @@ const preparePart = (part, options) => {
     if (part.type === 'video') return media(part, part.video, 'video/mp4')                    // 旧 video 块 → file 块。
     if (part.type === 'file-data') return media(part, part.data, part.mediaType ?? 'application/octet-stream') // 已经是 file 系列，补上默认类型。
     if (part.type === 'file-url') return media(part, part.url ?? part.data, part.mediaType ?? 'application/octet-stream')
-    return part                                        // 已经是标准 file 块，不动它。
+    // 已经是 file：data 带了标签（{type:'data'|'url'}）就原样用；还是裸字符串（旧写法）就补成带标签的形状。
+    if (part.type === 'file') return part.data && typeof part.data === 'object' && 'type' in part.data ? part : media(part, part.data ?? part.url, part.mediaType ?? 'application/octet-stream')
+    return part                                        // 到这里只剩不认识的块，原样。 
 }
 
 // 工具结果里的内容块也要走同一套规则（结果里可能带图片）。
+// 这里强制转换（不管调用方给的 normalizeMedia）：工具结果这个位置只收 AI SDK v7 的带标签 file 块，
+// 旧写法（image / file-data / file-url）会直接被 AI SDK 拒收，而结果已经写进只增不删的 history。
 const prepareOutput = (output, options) => output?.type !== 'content'
     ? output                                                                                        // 不是多模态结果，原样返回。
-    : { ...output, value: output.value.flatMap(part => { const prepared = preparePart(part, options); return prepared ? [prepared] : [] }) } // 逐块处理，被摘掉的块丢掉。
+    : { ...output, value: output.value.flatMap(part => { const prepared = preparePart(part, { ...options, normalizeMedia: true }); return prepared ? [prepared] : [] }) } // 逐块处理，被摘掉的块丢掉。
 
 // --- 媒体能力开关的默认值，整个项目只有这一处 ---
 // Agent 组装完整能力表时从这里取媒体那几项，History.model 单独被调用时也用它，两处永远一致。

@@ -270,7 +270,8 @@ const chat = async ({
     // --- 能力开关：决定哪些字段根本不发给这个模型 ---
     const { headers, body: bodyOverrides = {}, ...call } = provider // headers / body 是连接参数，其余生成参数直接交给 AI SDK。
     // 已创建的模型无法再更换内部 fetch：默认的 cache:true 对实例安静跳过，只有调用方明确写了缓存对象或 body 才报错。
-    if (typeof model !== 'string' && (typeof cache === 'object' && cache || Object.keys(bodyOverrides).length)) throw new TypeError('cache options and provider.body require a string model; configure custom models when creating them')
+    // toolChoice:false 也只能在自建连接（字符串模型）里真正删字段；实例上做不到，明确报错，别静默失效。
+    if (typeof model !== 'string' && (typeof cache === 'object' && cache || Object.keys(bodyOverrides).length || capabilities.toolChoice === false)) throw new TypeError('cache options, provider.body and capabilities.toolChoice=false require a string model; configure custom models when creating them')
     if (typeof model !== 'string') cache = false // 实例的连接由创建者负责，这个包不往里补缓存字段。
     const sendTools = capabilities.tools !== false
     const sendOutput = capabilities.structuredOutput !== false
@@ -319,7 +320,7 @@ const chat = async ({
             },
             signal, onRetry, maxDelay: retryMaxDelay, maxElapsed: retryMaxElapsed,
         })
-    } catch (error) { throw classifyError(error, attempt) }
+    } catch (error) { throw classifyError(error, null) } // 退避等待期被取消时，p-retry 直接抛 AbortError，不经过 operation；这里别再拿上一笔的旧限时信号判成 timeout。
 }
 
 export default { chat }
