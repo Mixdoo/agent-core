@@ -31,11 +31,11 @@
 
 ```mermaid
 flowchart TD
-    app["你的程序"] --> create["Agent.create()：创建实例"]
-    create --> send["agent.send()：发送指令"]
-    send --> loop["Loop：自动循环"]
-    loop --> llm["LLM：问模型「下一步做什么」"]
-    loop --> tool["Tool：执行模型要求的工具"]
+    app["你的程序"] --> create["Agent.create()<br/>创建实例"]
+    create --> send["agent.send()<br/>发送指令"]
+    send --> loop["Loop<br/>自动循环"]
+    loop --> llm["LLM<br/>问模型"]
+    loop --> tool["Tool<br/>执行工具"]
     tool --> loop
 ```
 
@@ -53,11 +53,23 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    a["1 建上下文（太长就先压缩一次）"] --> b["2 问一次模型"]
-    b --> c{"模型要调工具？"}
-    c -->|要| d["并行执行所有工具，结果写回 history"]
-    d --> a
-    c -->|不要| e["走结束判定：这次 send 做完了吗"]
+    A["建上下文<br/>（太长先压缩一次）"] --> B["问一次模型"]
+    B --> C{"模型要调工具？"}
+
+    C -->|要| D["并行执行所有工具"]
+    D --> E["结果写回 history"]
+    E --> S{"有工具返回<br/>stop:true？"}
+    S -->|是| T1["返回 tool-stop"]
+    S -->|否| T2{"步数到 maxSteps？"}
+    T2 -->|是| T3["返回 step-limit"]
+    T2 -->|否| A
+
+    C -->|不要| F{"结束判定"}
+    F -->|结构化输出成功<br/>或没注册工具| R1["返回 finished"]
+    F -->|步数到 maxSteps| T3
+    F -->|连续不调工具<br/>达 noToolRounds| R2["返回 no-tool"]
+    F -->|还没到| P["继续下一轮<br/>（末轮前插一句提醒）"]
+    P --> A
 ```
 
 **① 模型不调工具，不会立刻结束。** 很多模型在任务没做完时会"礼貌地"给一段总结就停下。直接结束会把没干完的活丢掉。所以有工具时，模型不调工具会先**临时**插一句提醒（`noToolPrompt`）再问一次，连续 `noToolRounds` 轮（默认 3）都不调才结束。这句提醒只挂在那一次请求上，**不写进 `history`**。不想要这个行为，把它设成 `Infinity`。
@@ -203,10 +215,10 @@ MCP 和技能（skills）都由**你的应用**负责，核心只接收通用工
 
 ```mermaid
 flowchart TD
-    f["文件工具 ./tools"] --> from["await Agent.tool.from(...)"]
-    m["MCP 工具 mcp.tools()"] --> from
-    s["技能工具 skills.readTool()"] --> from
-    from --> agent["Agent.create({ config: { system }, tools })"]
+    f["文件工具<br/>./tools"] --> from["Agent.tool.from(...)"]
+    m["MCP 工具<br/>mcp.tools()"] --> from
+    s["技能工具<br/>skills.readTool()"] --> from
+    from --> agent["Agent.create(...)"]
 ```
 
 ### 接 MCP
@@ -361,17 +373,14 @@ const skillTool = {
 
 ```mermaid
 flowchart TD
-    send["agent.send(input)"] --> hu["History.user()：把输入变成历史块，存入 history"]
-    hu --> loop["Loop.run()"]
-    loop --> ctx["Context.build()：从 history 裁剪出模型能看的上下文"]
-    ctx --> llm["LLM.chat()：请求模型（流式、失败自动重试）"]
+    send["agent.send(input)"] --> hu["History.user()"]
+    hu --> ctx["Context.build()<br/>裁剪上下文"]
+    ctx --> llm["LLM.chat()<br/>请求模型"]
     llm --> q{"模型要调工具？"}
-    q -->|有工具调用| te["Tool.execute()：在独立子进程里并行执行所有工具"]
-    te --> wr["把工具结果写入 history"]
-    wr --> loop
-    q -->|没有工具调用| done["结束判定"]
-    done --> f1["没注册工具 / 结构化输出已成功 → 返回 reason: finished"]
-    done --> f2["有工具，连续 3 轮都不调 → 返回 reason: no-tool"]
+    q -->|要| te["Tool.execute()<br/>并行执行"]
+    te --> wr["结果写入 history"]
+    wr --> ctx
+    q -->|不要| done["结束判定<br/>（分支见「核心设计」）"]
 ```
 
 ---
