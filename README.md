@@ -3,7 +3,7 @@
 [![CI](https://github.com/kernel4632/agent-core/actions/workflows/ci.yml/badge.svg)](https://github.com/kernel4632/agent-core/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/kernel4632/agent-core)](https://github.com/kernel4632/agent-core/releases/latest)
 
-一个轻量的 AI Agent 核心包。给它一个 LLM 地址和一堆工具文件，它就能自动循环"问模型 → 执行工具 → 再问模型"，直到任务完成。
+一个轻量的 AI Agent 核心包。给它一个 LLM 地址和一些工具（工具文件目录，或内存里的工具对象），它就能自动循环"问模型 → 执行工具 → 再问模型"，直到任务完成。
 
 ---
 
@@ -138,14 +138,14 @@ bun main.js
 │   ├── history.js        ← 对话记录：造消息块、拆回合、渲染
 │   ├── context.js        ← 把历史消息裁剪成这一轮发给模型的上下文
 │   ├── compact.js        ← 上下文太长时写总结
-│   ├── tool.js           ← 本地工具：扫描、执行、合并工具集合（主线程这一半）
-│   ├── tool-process.js   ← 本地工具真正跑起来的地方（子进程那一半）
-│   ├── mcp.js            ← MCP：一组带状态的服务，启动即连、随时开关，把服务端公开的东西变成工具
-│   └── skill.js          ← 扫描技能目录，内置 skill 工具按需加载
+│   ├── tool.js           ← 工具：扫描文件工具、接纳内存工具、执行、合并（主线程这一半）
+│   └── tool-process.js   ← 文件工具真正跑起来的地方（子进程那一半）
 │
 └── utils/                ← 工具：被功能调用，不反过来依赖功能
     ├── retry.js          ← 失败自动重试（指数退避）
-    └── notify.js         ← 所有回调的统一出口
+    ├── notify.js         ← 所有回调的统一出口
+    ├── schema.js         ← 工具参数格式归一化（scan 和 adopt 共用）
+    └── shape.js          ← 工具返回值变成输出块（内存工具用；子进程里有一份副本）
 ```
 
 `tool.js` 和 `tool-process.js` 是同一件事的两半，所以放在一起：前者在主线程里找工具、管工具进程，
@@ -399,8 +399,7 @@ import Agent from '@kernel4632/agent-core'
 | `options.id` | `string` | Agent ID，默认自动生成 |
 | `options.history` | `array` | 初始历史消息，默认 `[]` |
 | `options.config` | `object` | 模型配置，见下表 |
-| `options.tools` | `object` | `Agent.tool.scan()` 的返回值 |
-| `options.skills` | `object` | `Agent.skill.scan()` 的返回值；不传就不启用技能 |
+| `options.tools` | `object \| array` | `scan()` / `adopt()` 的返回值，也可以直接传工具对象数组或 record，会自动归一化 |
 | `options.callbacks` | `object` | 回调函数集合，见下表 |
 
 **`config` 字段：**
@@ -678,57 +677,6 @@ Agent 当前的完整历史消息数组，可直接读写。
 
 ---
 
-### MCP
-
-#### MCP 服务挂在一台 Agent 上，启动即连、随时开关
-
-```js
-const agent = Agent.create({
-    config,
-    tools: await Agent.tool.scan('./tools'),   // 本地工具照旧
-    mcp: {
-        web:   { transport: { type: 'http', url: 'http://localhost:3000/mcp' }, prefix: 'web_' },
-        files: { transport: { type: 'stdio', command: 'bun', args: ['/abs/server.js'] }, enabled: false },
-    },
-})
-
-await agent.mcp.ready()          // 等启动时的首批连接全部有结果（成功或失败）
-agent.mcp.status()               // { web: { state: 'open', tools: 12 }, files: { state: 'closed' } }
-await agent.mcp.open('files')    // 连上 → { state: 'open', tools: 5 }；连不上 → { state: 'error', error }
-await agent.mcp.close('web')     // 关掉 → { state: 'closed' }
-await agent.mcp.closeAll()       // 全部关掉
-```
-
-每个服务的状态只有四种：`closed`（没连或已关）、`connecting`（正在连）、`open`（已连，工具对模型可见）、`error`（连不上）。**任何操作都返回状态，不抛异常**：启动时连不上就停在 `error` 并带上原因，交给你的代码去解析；想重试就再 `open()` 一次。认不出的服务名同样返回 `{ state: 'error', error }`。
-
-**Agent 先启动，MCP 再连。** `Agent.create` 立刻返回，每个 `enabled`（默认 `true`）的服务在后台连接，不阻塞、不拖住 Agent。用 `agent.mcp.status()` 随时看状态，用 `await agent.mcp.ready()` 等首批连完。
-
-**开着才可见。** 每次 `send` 现拼工具表：「本地工具 + 当前开着的 MCP 工具 + 技能工具」。所以运行中开关某个服务，下一轮就生效——关掉的服务，它的工具模型看不到；打开又回来。
-
-开关和状态都在 `agent.mcp` 上：`status(name?)` / `open(name)` / `close(name)` / `closeAll()` / `ready()` / `tools()`。
-
-#### MCP 服务端公开的东西
-
-服务端公开的三种原语都会变成同一张工具表里的条目，模型不需要区分来源：
-
-| 服务端公开 | 变成什么 |
-|------------|----------|
-| tools | 每个远端工具一个同名工具，调用即执行 |
-| prompts | 每个提示词模板一个工具，模型传参调用就取回这段提示 |
-| resources | 合并成一个 `read_resource` 工具，参数是要读的 `uri`；可用地址写在工具描述里 |
-
-服务端没有声明 `prompts` 或 `resources` 时不会去问，也不会多出用不上的工具。取回的提示词会带上 `user：` / `assistant：` 角色标签，便于模型判断这是谁说的话。`prefix` 避免不同服务出现同名工具。
-
-连接参数只收可序列化的数据（`transport`、`prefix`、`timeout`、`enabled`、`signal`）。本地服务用 `{ type: 'stdio', command: 'bun', args: ['/absolute/path/server.js'], env: {} }`；远端也支持 SDK 的 SSE 连接配置。
-
-#### 取消、超时和关闭
-
-**取消和超时按 MCP 自己的方式。** MCP 调用不走工具子进程：取消时把 `signal` 交给 MCP 客户端，这次请求立刻结束并返回"已中断"，连接还能接着用；设了 `timeout` 时到点按失败返回。需要注意，客户端只停掉自己这一边，服务端可能仍在执行，**远端已经做完的事撤不回来**。
-
-**关闭是你的事。** 连接一直开着，直到你 `close(name)` 或 `closeAll()`；`agent.stop()` 只管当前任务，不动 MCP。stdio 服务在关闭时收到终止信号。一直不关的话，stdio 服务会保持运行。
-
----
-
 ### `Agent.tool`
 
 #### `Agent.tool.scan(directory)`
@@ -750,6 +698,31 @@ const tools = await Agent.tool.scan('./tools')
 ```
 
 每次调用都是独立的，多个 Agent 可以各扫描各的目录，互不影响。
+
+#### `Agent.tool.adopt(input)`
+
+把内存里的常规工具对象变成和 `scan` 一样的 `{ schema, handlers }`。内存工具在主进程直接执行，不走子进程。
+
+```js
+Agent.tool.adopt([{ name: 'add', description: '加法', inputSchema: {...}, execute: async input => input.a + input.b }]) // 数组
+Agent.tool.adopt({ add: { description: '加法', inputSchema: {...}, execute } })  // record：AI SDK / MCP toolset 的形状
+Agent.tool.adopt(await mcpClient.tools())                                        // MCP 客户端的工具直接传
+```
+
+`inputSchema` 可以是裸 JSON Schema、zod，或 AI SDK 的 `jsonSchema()`。`execute(input, { signal })` 会收到取消信号。`create` 和 `send` 的 `tools` 会自动调用 `adopt`，所以通常不用手动调。
+
+文件工具和内存工具可以合并：`Agent.tool.merge(await Agent.tool.scan('./tools'), Agent.tool.adopt(mcpTools))`。
+
+**MCP 结果的转换由你来做。** 核心不认识 MCP。MCP 工具返回的 `{ content: [...] }` 默认会作为 JSON 交给模型；想让模型看到原样的文字和图片，给工具加一个 `toModelOutput`：
+
+```js
+const mcpTools = Object.fromEntries(Object.entries(await mcpClient.tools()).map(([name, tool]) =>
+    [name, { ...tool, toModelOutput: result => ({ type: 'content', value: result.content }) }]))
+```
+
+连接、开关和关闭 MCP 服务也由你的应用管理。
+
+> 从 0.16 升级：`Agent.create({ mcp })`、`agent.mcp`、`Agent.skill` 和 `create({ skills })` 已删除。MCP 改为自己用 `@ai-sdk/mcp` 连接，再把工具传进 `tools`；技能的提示词自己拼进 `config.system`。
 
 #### `Agent.tool.execute(options)`
 
@@ -878,59 +851,6 @@ History.turns(agent.history)   // 折成回合：[[user], [assistant, tool], [us
 
 ---
 
-### `Agent.skill`
-
-技能是"现成的操作步骤"：把一段固定的流程写成文件放进目录，模型需要时再按名字加载。和工具一样按目录扫描，但**默认零注入**——没扫到技能，系统的提示词一个字节都不多，也不会多出任何内置工具。
-
-```
-skills/
-├── create-mcp-server/
-│   └── SKILL.md
-└── review-pr/
-    └── SKILL.md
-```
-
-每个 `SKILL.md` 开头是一小段 frontmatter，下面才是正文：
-
-```md
----
-name: review-pr
-description: 审查一个 PR 时使用。包含检查清单和固定话术。
----
-
-# 审查 PR
-
-1. 先跑测试……
-2. 检查……
-```
-
-规则：
-
-- 技能名必须等于它所在的文件夹名（`review-pr/` 里就写 `name: review-pr`），对不上会当场报错，不做无声的猜测。
-- `description` 要写清"什么时候该用这个技能"，它会被注入系统提示词；正文不会。
-- 支持 YAML 的 `|` 和 `>` 写多行说明。
-
-扫描和接入：
-
-```js
-const skills = await Agent.skill.scan('./skills')               // 一个目录
-const skills = await Agent.skill.scan(builtinDir, userDir)      // 多个目录，后面的覆盖前面的同名技能
-const skills = await Agent.skill.scan(new URL('./skills', import.meta.url)) // 嵌进别人项目时用 URL
-
-const agent = Agent.create({ config, tools, skills })
-```
-
-**注入多少、什么时候注入：**
-
-- 传了 skills 且**扫到了技能**：往系统提示词追加一段「可用技能」，每行一个技能名和它的 `description`；同时挂上一个内置的 `skill` 工具。模型判断当前任务和某个技能对得上时，用 `skill` 工具把那个技能的**正文**读进来，再照着做。一次只加载一个，正文不会提前塞进上下文。
-- 没传 skills、传了 `null`、或目录里**一个技能都没有**：system 原样发出，工具表里也没有 `skill` 工具。这就是默认状态。
-
-技能要通过 `skills` 传进去，不要用 `Agent.tool.merge` 合进 `tools`：合进去只会多一个 `skill` 工具，技能列表不会注入 system，模型不知道有哪些技能可选。
-
-`skill` 这个名字如果和你的某个工具重名，内置技能工具优先——别给工具起这个名字就行。
-
----
-
 ## 运行测试
 
 ```bash
@@ -969,8 +889,7 @@ const agent = Agent.create({ config: { /* ... */ }, tools })
 |---|---|
 | `Agent.version` | 包版本，排查问题时报得出来 |
 | `Agent.create(...)` | 创建 Agent 实例 |
-| `Agent.tool` | `.scan()` / `.execute()` |
-| `Agent.skill` | `.scan()` —— 扫描技能目录，见「`Agent.skill`」 |
+| `Agent.tool` | `.scan()` / `.adopt()` / `.execute()` / `.merge()` |
 | `Agent.history` | `.user()` / `.assistant()` / `.tool()` / `.compact()` 造消息块；`.turns()` / `.render()` 读历史 |
 | `Agent.context` | `.build()` |
 | `Agent.compact` | `.run()` |
@@ -1003,7 +922,7 @@ const agent = Agent.create({ config: { /* ... */ }, tools })
 
 **不管并发排队和限流。** 同一台 Agent 上后一次 `send` 会停掉前一次（这是有意设计的"最新指令优先"）。要让多个用户同时用，就为每个会话建一台 Agent；要限制总并发、总费用，由你的应用做。核心包没有全局任务队列。
 
-**不替你管 MCP 连接的关闭时机。** 连接一直开着，直到你调用 `agent.mcp.close(name)` 或 `closeAll()`；取消只停掉客户端这一边，远端已经做完的事撤不回来。
+**不管 MCP 连接和技能。** 核心只接收通用工具对象。MCP 服务的连接、开关和关闭由你的应用管理，再用 `Agent.tool.adopt` 把工具交进来；技能提示词自己拼进 `system`。
 
 **不做工具的安全检查。** 工具子进程和 Agent 拥有完全相同的权限：读写任意文件、执行任意命令、联网、读到父进程的全部环境变量。这是有意的——电脑任务 agent 的工具本来就得能干这些。**沙箱、白名单、危险命令拦截属于你的应用层**，核心包只提供 `onPermission` 这一个挂钩点。
 

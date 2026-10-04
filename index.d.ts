@@ -11,7 +11,6 @@ AI SDK 的生成参数和 Zod 格式不进这个包的类型系统：它们原�
 // --- 连接配置 ---
 export type Protocol = 'chat' | 'responses' | 'anthropic' | 'gemini'
 
-// 模型既可以是名字（配合 baseURL / apiKey / protocol），也可以是调用方自建的 AI SDK 模型实例。
 export type Model = string | object
 
 export type ToolMode = 'native' | 'text' | 'auto'
@@ -27,7 +26,6 @@ export interface Capabilities {
     reasoning?: boolean
 }
 
-// 缓存开关：true / false，或自定义键、保留时间和额外请求体字段。
 export type CacheOption = boolean | { key?: string; retention?: string; body?: Record<string, unknown> }
 
 export interface Config {
@@ -54,7 +52,7 @@ export interface Config {
     requestTimeout?: number
     noToolPrompt?: string
     noToolRounds?: number
-    [key: string]: any // 连接字段和 provider 一样允许扩展；不认识的字段由底层忽略。
+    [key: string]: any
 }
 
 // --- 用量与返回值 ---
@@ -91,46 +89,35 @@ export interface Callbacks {
     onCompact?: (event: any) => void | Promise<void>
 }
 
-// --- 工具集合：scan / merge / agent.mcp.tools() 都返回这个形状 ---
+// --- 工具集合：scan / adopt / merge 都返回这个形状 ---
 export interface ToolSet {
     schema: Record<string, any>
     handlers: Record<string, any>
 }
 
-// --- MCP：一组带状态的服务，挂在 Agent 实例上 ---
-export type McpState = 'closed' | 'connecting' | 'open' | 'error'
-export interface McpStatus {
-    state: McpState
-    error?: string
-    tools?: number
-}
-export interface McpConfig {
-    transport: Record<string, unknown>
-    prefix?: string
+// 内存工具对象的形状（AI SDK tool() 产物、MCP client.tools() 的单项都符合这个形状）
+export interface ToolLike {
+    name?: string           // 数组形式时必填；record 形式时从键名取
+    description?: string
+    inputSchema?: any       // 裸 JSON Schema / zod / AI SDK jsonSchema() 三种都认
+    execute: (input: any, options?: { signal?: AbortSignal }) => Promise<any>
+    toModelOutput?: (value: any) => any
     timeout?: number
-    enabled?: boolean
-    signal?: AbortSignal
-}
-export interface McpManager {
-    status: {
-        (): Record<string, McpStatus>
-        (name: string): McpStatus
-    }
-    open: (name: string) => Promise<McpStatus>
-    close: (name: string) => Promise<McpStatus>
-    closeAll: () => Promise<void>
-    ready: () => Promise<Record<string, McpStatus>>
-    tools: () => ToolSet
+    [key: string]: any
 }
 
-export interface SkillSet extends ToolSet {
-    list: Array<{ name: string; description: string; path: string }>
-    prompt: string
-}
+// adopt 接受的所有输入形状
+export type ToolInput =
+    | ToolSet                          // 已归一化，原样通过
+    | ToolLike[]                       // 带 name 字段的工具对象数组
+    | Record<string, ToolLike>         // record，名字从键来（AI SDK / MCP toolset 形状）
+    | null
+    | undefined
 
-// --- 工具、技能的扫描与执行 ---
+// --- 工具的扫描、接纳与执行 ---
 export interface ToolModule {
     scan: (...directories: Array<string | URL>) => Promise<ToolSet>
+    adopt: (input: ToolInput) => ToolSet
     execute: (options: {
         name: string
         input?: Record<string, unknown>
@@ -141,10 +128,6 @@ export interface ToolModule {
         concurrency?: number
     }) => Promise<{ output: any; stop?: boolean; error?: string; interrupted?: boolean }>
     merge: (...sets: ToolSet[]) => ToolSet
-}
-
-export interface SkillModule {
-    scan: (...directories: Array<string | URL>) => Promise<SkillSet>
 }
 
 // --- 历史块 ---
@@ -200,8 +183,7 @@ export interface SendOptions {
     input?: string | any[]
     history?: Message[]
     config?: Partial<Config>
-    tools?: ToolSet
-    skills?: SkillSet | null
+    tools?: ToolInput
     callbacks?: Callbacks
     signal?: AbortSignal
 }
@@ -211,9 +193,7 @@ export interface AgentInstance {
     history: Message[]
     config: Config
     tools: ToolSet
-    skills: SkillSet | null
     callbacks: Callbacks
-    mcp: McpManager
     running: { controller: AbortController; task: Promise<Answer> } | null
     send: {
         (input: string | any[], options?: Omit<SendOptions, 'input'>): Promise<Answer>
@@ -227,24 +207,21 @@ export interface CreateOptions {
     id?: string
     history?: Message[]
     config?: Config
-    tools?: ToolSet
-    skills?: SkillSet | null
+    tools?: ToolInput
     callbacks?: Callbacks
-    mcp?: Record<string, McpConfig>
 }
 
 export interface Agent {
     version: string
     create: (options?: CreateOptions) => AgentInstance
     tool: ToolModule
-    skill: SkillModule
     history: HistoryModule
     context: ContextModule
     compact: CompactModule
     llm: LLMModule
     textTools: TextToolsModule
-    output: any // 包内 AI SDK 的 Output，原样再导出
-    schema: any // 包内 Zod
+    output: any
+    schema: any
 }
 
 declare const Agent: Agent

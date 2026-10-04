@@ -8,12 +8,11 @@
 
 隔着进程的约定是几条消息，工具作者和调用方都不需要手写它们：
     主线程 → 工具进程   { callId, url, name, input }             执行哪个文件里的哪个工具
-    主线程 → 工具进程   { callId, builtin, name, input, skills } 执行包内置的动作（目前只有按需加载技能）
     工具进程 → 主线程   { type: 'ready' }                        我起来了，可以派活
     工具进程 → 主线程   { callId, type: 'output', stream, data } 工具产生了一段实时输出
     工具进程 → 主线程   { callId, type: 'done', output, stop }   跑完了，output 已经是模型能直接读的形态
     工具进程 → 主线程   { callId, type: 'error', message }       工具抛错了
-MCP 工具不走这里：它们在主进程里由 features/mcp.js 直接调用。
+内存工具不走这里：它们在主进程里由 tool.js 的 memory 直接调用。
 
 它隔离的是生命周期，不是环境。工具在这里拥有和 Agent 完全相同的权限：
 读写任意文件、执行任意命令、联网、读到父进程的全部环境变量（包括 apiKey）。
@@ -149,7 +148,7 @@ const PART = new Set(['text', 'image', 'audio', 'video', 'file', 'file-data', 'f
 // --- 成形：在跨进程之前就把返回值变成模型能读的输出块 ---
 // 放在工具进程里而不是主线程，是因为这一步要执行工具作者写的 toModelOutput、要做 JSON 化、要校验块形状，
 // 三件事都可能抛错；抛在这里只是一条正常的工具失败，抛在主线程会让那次调用永远不结算。
-// 输出太长时的截断不在这里：本地工具和 MCP 工具共用主线程里同一条截断规则（见 tool.js 的 clip）。
+// 输出太长时的截断不在这里：截断在主线程里统一做（见 tool.js 的 clip），文件工具和内存工具共用同一条规则。
 const shape = (tool, result) => {
     const value = result?.output ?? result                              // 工具可以返回 { output } 对象，也可以直接返回值。
     const output = tool.toModelOutput ? tool.toModelOutput(value)       // 工具自带格式化函数时优先用它。
@@ -169,29 +168,10 @@ const shape = (tool, result) => {
 }
 
 
-// --- 内置动作：主线程把 handler.builtin 发过来时，跑包自己的一小段逻辑 ---
-// 目前只有「按需加载技能」这一个动作：技能正文在扫描时就读好了，这里按名字取出来交给模型。
-const builtin = data => {
-    if (data.name !== 'skill') throw new Error(`未知的内置动作：${data.name}`)             // 只认识 skill 一个动作。
-    // Object.fromEntries 建出的对象有原型链，名字是 constructor / toString 等时会取到继承的方法而不是 undefined。
-    // 用 hasOwn 挡住这条路，继承来的东西不算技能。
-    const skillName = data.input?.skill ?? ''
-    const body = Object.hasOwn(data.skills ?? {}, skillName) ? data.skills[skillName] : undefined
-    if (body === undefined) throw new Error(`找不到技能 "${skillName}"。可用的技能见系统提示词的「可用技能」列表。`) // 名字写错时告诉模型去哪里找对的名字。
-    return { type: 'text', value: body }                                                  // 正文原样交给模型。
-}
-
-
 // --- 收到一次执行请求：找工具 → 跑工具 → 把成形后的结果发回去 ---
 process.on('message', async data => {
     current = data.callId                                                       // 本次调用的身份，console 输出也归到它名下。
     try {
-        if (data.builtin) {                                                     // 内置动作不加载任何工具文件。
-            const output = builtin(data)
-            process.send({ callId: data.callId, type: 'done', output, stop: false }) // 内置动作不会要求停止循环。
-            return
-        }
-
         const module = await import(data.url)                                   // 工具进程是独立进程，工具文件在这里重新加载。
         const tool = [module.default].flat().find(one => one.name === data.name) // 按工具名找到文件里的那一个。
         const result = await collect(await tool.execute(data.input))            // 跑工具；生成器工具顺便把每个 yield 实时发出去。

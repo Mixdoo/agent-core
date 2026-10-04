@@ -1,0 +1,127 @@
+/*
+盯住内存工具这条路：Tool.adopt 把常规工具对象（数组 / record / AI SDK / MCP toolset 形状）
+归一化成和 scan 一样的 { schema, handlers }，执行结果和文件工具守同一套成形规则。
+*/
+
+import { expect, test, describe } from 'bun:test'
+import { jsonSchema } from 'ai'
+import { z } from 'zod'
+import Agent from '../index.js'
+import Tool from '../features/tool.js'
+import { TOOLS } from './helpers.js'
+
+const echo = { description: '回声', inputSchema: { type: 'object', properties: { value: { type: 'string' } } }, execute: async input => `echo:${input.value}` }
+
+describe('Tool.adopt 归一化', () => {
+    test('record 形状：名字从键来', () => {
+        const tools = Tool.adopt({ echo })
+        expect(tools.schema.echo.description).toBe('回声')
+        expect(tools.schema.echo.inputSchema.jsonSchema.properties.value.type).toBe('string')
+        expect(typeof tools.handlers.echo.execute).toBe('function')
+        expect(tools.schema.echo.execute).toBeUndefined() // 执行函数不给模型看。
+    })
+
+    test('数组形状：名字从 name 字段来', () => {
+        const tools = Tool.adopt([{ name: 'echo', ...echo }])
+        expect(Object.keys(tools.schema)).toEqual(['echo'])
+    })
+
+    test('三种 inputSchema 写法都认，缺字段补齐', () => {
+        const tools = Tool.adopt({
+            raw: { execute: async () => 1, inputSchema: { properties: { a: { type: 'string' } } } },
+            sdk: { execute: async () => 1, inputSchema: jsonSchema({ type: 'object', properties: { b: { type: 'number' } } }) },
+            zod: { execute: async () => 1, inputSchema: z.object({ c: z.string() }) },
+            none: { execute: async () => 1 },
+        })
+        expect(tools.schema.raw.inputSchema.jsonSchema).toEqual({ type: 'object', properties: { a: { type: 'string' } } })
+        expect(tools.schema.sdk.inputSchema.jsonSchema.properties.b.type).toBe('number')
+        expect(tools.schema.zod.inputSchema['~standard']).toBeDefined()
+        expect(tools.schema.none.inputSchema.jsonSchema).toEqual({ type: 'object', properties: {} })
+    })
+
+    test('已归一化的集合原样通过，null 变空集合，非工具跳过', async () => {
+        const scanned = await Tool.scan(TOOLS)
+        expect(Tool.adopt(scanned)).toBe(scanned)
+        expect(Object.keys(Tool.adopt(null).schema)).toEqual([])
+        expect(Object.keys(Tool.adopt({ junk: { description: '没有 execute' } }).schema)).toEqual([])
+    })
+
+    test('__proto__ 当工具名不会污染原型链', () => {
+        const tools = Tool.adopt([{ name: '__proto__', execute: async () => 1 }])
+        expect(Object.getPrototypeOf(tools.schema)).toBeNull()
+        expect({}.execute).toBeUndefined()
+    })
+})
+
+describe('内存工具执行', () => {
+    const run = (tools, name, input = {}, extra = {}) => Tool.execute({ name, input, handlers: Tool.adopt(tools).handlers, ...extra })
+
+    test('字符串、对象、空返回分别成形', async () => {
+        expect((await run({ echo }, 'echo', { value: 'x' })).output).toEqual({ type: 'text', value: 'echo:x' })
+        expect((await run({ obj: { execute: async () => ({ a: 1 }) } }, 'obj')).output).toEqual({ type: 'json', value: { a: 1 } })
+        expect((await run({ nil: { execute: async () => null } }, 'nil')).output.value).toContain('没有输出')
+    })
+
+    test('toModelOutput 接管成形（MCP CallToolResult 走这条路）', async () => {
+        const mcpLike = { execute: async () => ({ content: [{ type: 'text', text: 'hi' }] }), toModelOutput: result => ({ type: 'content', value: result.content }) }
+        expect((await run({ mcpLike }, 'mcpLike')).output).toEqual({ type: 'content', value: [{ type: 'text', text: 'hi' }] })
+    })
+
+    test('抛错变成工具失败，非法块也挡住', async () => {
+        const boom = await run({ boom: { execute: async () => { throw new Error('炸了') } } }, 'boom')
+        expect(boom.error).toBe('炸了')
+        expect(boom.output.type).toBe('error-text')
+        const bad = await run({ bad: { execute: async () => 1, toModelOutput: () => ({ type: 'nope' }) } }, 'bad')
+        expect(bad.output.type).toBe('error-text')
+    })
+
+    test('stop:true 透出，截断和文件工具同一条规则', async () => {
+        expect((await run({ done: { execute: async () => ({ output: '完成', stop: true }) } }, 'done')).stop).toBe(true)
+        const long = await run({ long: { execute: async () => 'x'.repeat(5000) } }, 'long', {}, { limit: 1000 })
+        expect(long.output.value).toContain('输出过长')
+    })
+
+    test('signal 透传给工具', async () => {
+        let got
+        const controller = new AbortController()
+        await run({ sig: { execute: async (input, { signal }) => { got = signal; return 'ok' } } }, 'sig', {}, { signal: controller.signal })
+        expect(got).toBe(controller.signal)
+    })
+})
+
+describe('Agent 自动归一化', () => {
+    const model = () => {
+        const server = Bun.serve({
+            port: 0,
+            async fetch(request) {
+                const body = await request.json()
+                const done = body.messages.filter(message => message.role === 'tool').length
+                const names = ['echo', 'file']
+                const message = done < names.length
+                    ? { role: 'assistant', content: null, tool_calls: [{ id: `c${done}`, type: 'function', function: { name: names[done], arguments: '{"value":"v"}' } }] }
+                    : { role: 'assistant', content: '好' }
+                return Response.json({ choices: [{ index: 0, message, finish_reason: done < names.length ? 'tool_calls' : 'stop' }], usage: {} })
+            },
+        })
+        return { server, config: { baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'k', model: 'm', stream: false } }
+    }
+
+    test('create 直接收 record，文件工具和内存工具合并后同一次 send 都调到', async () => {
+        const { server, config } = model()
+        const results = []
+        try {
+            const files = await Tool.scan(TOOLS)
+            const file = { file: { execute: async () => 'file-ok' } }
+            const agent = Agent.create({ config, tools: Tool.merge(files, Tool.adopt({ echo, ...file })), callbacks: { onToolResult: one => results.push(one) } })
+            await agent.send('跑')
+            expect(results.map(one => one.toolName)).toEqual(['echo', 'file'])
+            expect(results[0].output.value).toBe('echo:v')
+        } finally { server.stop(true) }
+    })
+
+    test('create 收数组、send 收 record 都自动归一化', () => {
+        const agent = Agent.create({ tools: [{ name: 'echo', ...echo }] })
+        expect(typeof agent.tools.handlers.echo.execute).toBe('function')
+        expect(Object.keys(Agent.create().tools.schema)).toEqual([])
+    })
+})
