@@ -146,6 +146,12 @@ const BLOCK = new Set(['text', 'json', 'content', 'error-text', 'error-json', 'e
 // 所以在这里挡住：非法块变成一条普通的工具失败，让模型知道并换个方式，而不是把会话毒死。
 const PART = new Set(['text', 'image', 'audio', 'video', 'file', 'file-data', 'file-url'])
 
+// 和主线程 utils/shape.js 里的同名判断保持一致（改一处要同步另一处）。
+const isBytes = value => value instanceof Uint8Array || value instanceof ArrayBuffer || (typeof Buffer !== 'undefined' && Buffer.isBuffer(value))
+const okMedia = value => typeof value === 'string' || value instanceof URL || isBytes(value)
+const okFileData = value => okMedia(value) || Boolean(value && typeof value === 'object' && ((value.type === 'data' && value.data != null) || (value.type === 'url' && value.url != null)))
+const jsonSafe = value => JSON.parse(JSON.stringify(value, (key, one) => one instanceof ArrayBuffer ? Buffer.from(new Uint8Array(one)).toString('base64') : one instanceof Uint8Array ? Buffer.from(one).toString('base64') : one))
+
 
 // --- 成形：在跨进程之前就把返回值变成模型能读的输出块 ---
 // 放在工具进程里而不是主线程，是因为这一步要执行工具作者写的 toModelOutput、要做 JSON 化、要校验块形状，
@@ -165,23 +171,24 @@ const shape = async (tool, result, input, toolCallId) => {
     // 顶层字段也必须齐：text/error-text 要字符串 value，json/error-json 要有 value。缺了写进 history 会让 AI SDK 本地拒收。
     if ((output.type === 'text' || output.type === 'error-text') && typeof output.value !== 'string') throw new TypeError(`${output.type} 输出块必须有字符串 value`)
     if ((output.type === 'json' || output.type === 'error-json') && output.value === undefined) throw new TypeError(`${output.type} 输出块必须有 value`)
+    if (output.type === 'content' && !Array.isArray(output.value)) throw new TypeError('content 输出块的 value 必须是数组')
     const bad = output.type === 'content' && output.value.find(part => !PART.has(part?.type))
     if (bad) throw new TypeError(`content 块里的 ${JSON.stringify(bad.type)} 部件不合法，只能是 ${[...PART].join(' / ')}。媒体可以用旧 image/audio/video，也可以用 AI SDK 当前的 file`)
-    // 类型对了、字段缺了也不行：各媒体部件缺必需字段，写进 history 一样会让 AI SDK 本地拒收。
+    // 类型对了、值也要对：各媒体部件的值必须是字符串 / URL / 二进制（file 的 data 还允许带标签），否则 AI SDK 本地拒收、毒死 history。
     const broken = output.type === 'content' && output.value.find(part => {
         if (part.type === 'text') return typeof part.text !== 'string'
-        if (part.type === 'image') return part.image == null
-        if (part.type === 'audio') return part.audio == null
-        if (part.type === 'video') return part.video == null
-        if (part.type === 'file-data') return part.data == null
-        if (part.type === 'file-url') return part.url == null
-        return !part.mediaType || part.data == null // file
+        if (part.type === 'image') return !okMedia(part.image)
+        if (part.type === 'audio') return !okMedia(part.audio)
+        if (part.type === 'video') return !okMedia(part.video)
+        if (part.type === 'file-data') return !okMedia(part.data)
+        if (part.type === 'file-url') return !okMedia(part.url)
+        return !part.mediaType || !okFileData(part.data) // file
     })
-    if (broken) throw new TypeError(`content 块里的 ${JSON.stringify(broken.type)} 部件缺少必需字段：text 要 text；image/audio/video 各自的字段；file-data 要 data；file-url 要 url；file 要 mediaType 和 data`)
+    if (broken) throw new TypeError(`content 块里的 ${JSON.stringify(broken.type)} 部件的值不合法：text 要 text；媒体要是字符串 / URL / 二进制；file 的 data 还要 mediaType`)
 
     // 跨进程只传纯 JSON，自带格式化的那条路也一样要过这一关：
-    // Date 变字符串、NaN 变 null、循环引用在这里变成一条正常的工具错误，不会写进 history 把 Agent 毒死。
-    return JSON.parse(JSON.stringify(output))
+    // Date 变字符串、NaN 变 null、二进制转 base64、循环引用在这里变成一条正常的工具错误，不会写进 history 把 Agent 毒死。
+    return jsonSafe(output)
 }
 
 

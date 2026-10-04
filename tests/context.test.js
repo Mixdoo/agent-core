@@ -58,6 +58,13 @@ describe('Context 裁剪', () => {
         expect(text.indexOf('a1')).toBeLessThan(text.indexOf('u2')) // 顺序不能因为"目标/现场"分段而错乱。
     })
 
+    test('只剩总结的历史不会把总结当 user 消息再发一遍', () => {
+        const { messages } = Context.build({ history: [History.compact({ content: '总结内容XYZ' })] })
+        expect(messages.some(message => message.role !== 'system')).toBe(true)                        // 仍要有可发的消息。
+        const nonSystem = messages.filter(message => message.role !== 'system').map(message => JSON.stringify(message.content))
+        expect(nonSystem.some(text => text.includes('总结内容XYZ'))).toBe(false)                       // 总结只折进 system，别当 user 消息重发。
+    })
+
     test('压缩后不再切断 tool-call 与 tool-result 的配对', () => {
         const history = withTurns(5)
         history.push(History.compact({ content: '前面读了 5 个文件' }))

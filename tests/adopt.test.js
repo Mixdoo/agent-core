@@ -145,6 +145,23 @@ describe('内存工具执行', () => {
         expect(() => Tool.adopt(Promise.resolve([]))).toThrow(/Promise|await/)
     })
 
+    test('record 里的非对象条目报错，不静默丢掉', () => {
+        expect(() => Tool.adopt({ x: 'nope' })).toThrow(/execute/) // 显式传进来的东西，不是工具就报错。
+    })
+
+    test('媒体值非法时变成工具失败，而不是毒死 history', async () => {
+        const tools = Tool.adopt([{ name: 'bad', execute: async () => ({ output: { type: 'content', value: [{ type: 'file', mediaType: 'image/png', data: { type: 'url' } }] } }) }])
+        const result = await Tool.execute({ name: 'bad', input: {}, handlers: tools.handlers })
+        expect(result.output.type).toBe('error-text') // 缺 url 的 file.data 被挡在边界。
+        expect(result.error).toBeTruthy()
+    })
+
+    test('二进制媒体转成 base64，不被 JSON 化毁掉', async () => {
+        const tools = Tool.adopt([{ name: 'bin', execute: async () => ({ output: { type: 'content', value: [{ type: 'file', mediaType: 'image/png', data: new Uint8Array([1, 2, 3]) }] } }) }])
+        const result = await Tool.execute({ name: 'bin', input: {}, handlers: tools.handlers })
+        expect(result.output.value[0].data).toBe(Buffer.from([1, 2, 3]).toString('base64')) // 不是 {"0":1,...}。
+    })
+
     test('数组里的工具没 name 时给出对应报错', () => {
         expect(() => Tool.adopt([{ execute: async () => 1 }])).toThrow(/name/)
     })

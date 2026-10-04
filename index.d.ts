@@ -102,7 +102,7 @@ export interface ToolLike {
     description?: string
     inputSchema?: any       // 裸 JSON Schema / zod / AI SDK jsonSchema() 三种都认
     execute: (input: any, options?: { signal?: AbortSignal; abortSignal?: AbortSignal }) => any | Promise<any>
-    toModelOutput?: (options: { output: any; input?: any }) => any
+    toModelOutput?: (options: { output: any; input?: any; toolCallId?: string }) => any
     timeout?: number
     [key: string]: any
 }

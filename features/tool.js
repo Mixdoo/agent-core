@@ -174,11 +174,8 @@ const adopt = (input) => {
 
     for (const [name, tool] of entries) {
         if (!name) { nameless.push(tool); continue }                 // 数组里的工具没写 name：单独报，别和"缺 execute"混在一起。
-        // 看起来像工具（有描述或参数）却没有 execute，是写漏了，直接报错而不是悄悄丢掉。
-        if (typeof tool?.execute !== 'function') {
-            if (tool && (tool.description || tool.inputSchema)) dropped.push(name)
-            continue
-        }
+        // 没有 execute 的条目（含字符串、数字这类根本不是工具的）一律报错，不静默丢掉——adopt 收的是显式传进来的工具。
+        if (typeof tool?.execute !== 'function') { dropped.push(name); continue }
 
         const { execute, toModelOutput, timeout, ...modelTool } = tool
 

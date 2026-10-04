@@ -102,11 +102,10 @@ const build = ({ history, system = '', tools = {}, budget, ratio = DEFAULT_RATIO
         // 所以最后按 turns 的原始顺序过滤一遍——三段都取自 turns，用引用去重即可。
         const chosen = new Set([...goal, ...recent, ...turns.slice(summaryIndex + 1)])
         selected = turns.filter(turn => chosen.has(turn))                                                       // 时间顺序由 turns 本身保证。
-        // 兜底：预算太紧时上面三段可能都为空，context 就只剩一条 system——模型会拒收"没有消息"的请求。
-        // 无论如何保底留一条真实回合（优先总结前最后那一条），内容大也照发，交由服务端判断收不收。
+        // 兜底：预算太紧时上面三段可能都为空。保底留一条真实回合，但别选总结本身（它已经折进 system 了）。
         if (!selected.length) {
-            const last = turns[summaryIndex - 1] ?? turns[0]                                                     // 总结前一条；没有前一条就用总结本身垫一条。
-            if (last) selected = [last]
+            const before = turns.slice(0, Math.max(summaryIndex, 0)).filter(turn => turn[0].compact !== true) // 总结之前、非总结的回合。
+            if (before.length) selected = [before.at(-1)]
         }
     }
 
@@ -121,10 +120,11 @@ const build = ({ history, system = '', tools = {}, budget, ratio = DEFAULT_RATIO
     ]
 
     // 摘空之后可能一条非 system 都不剩（用户只发了一张被 strip 掉的图、或压缩后现场全是空回合），
-    // 模型拒收"没有消息"的请求，这里补一条兜底文字消息，保证请求发得出去。
-    const messages = !built.some(message => message.role !== 'system') && flat.length
-        ? [...built, { role: 'user', content: [{ type: 'text', text: '（上下文已压缩，请继续）' }] }]
-        : built
+    // 模型拒收"没有消息"的请求，这里补一条兜底文字消息，保证请求发得出去。注意不接受"总结本身当 user 消息"——
+    // 那正是折进 system 要避免的（模型会把总结读成用户塞的表、从头重做）。
+    const messages = built.some(message => message.role !== 'system')
+        ? built
+        : [...built, { role: 'user', content: [{ type: 'text', text: '（上下文已压缩，请继续）' }] }]
 
     // Token 只在真的有人读的时候才算：没设 maxTokens 时 Loop 压根不看它。
     // 估算只是一次字符计数（毫秒级），但这份惰性语义保留着，调用方不读就不算。
