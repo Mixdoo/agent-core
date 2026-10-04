@@ -140,7 +140,7 @@ export type Role = 'user' | 'assistant' | 'tool'
 export interface Message {
     id: string
     role: Role
-    content: string | any[]
+    content: string | any[] | null
     compact?: boolean
 }
 

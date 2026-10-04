@@ -124,24 +124,31 @@ const answeredCalls = messages => new Set(messages.flatMap(message => parts(mess
 // 历史原样保存，只有发给模型的副本做转换；这样换模型不会破坏数据库里的原始消息。
 // AI SDK v7 的 file 块要求 data 是带标签的形状：{type:'data',data} 或 {type:'url',url}，
 // 直接给裸字符串会被它在本地拒收（尤其在工具结果里），于是 history 一写进去就永久毒死会话。
-const media = (part, value, fallback) => ({
-    type: 'file',                                  // AI SDK 现在统一用 file 装媒体。
-    mediaType: part.mediaType ?? fallback,         // 没写类型时按调用方给的默认值。
-    // URL 对象 / http(s) 网址 / data URL 走 url 分支（AI SDK 要 URL 对象，且不接受把 data URL 当内联数据）；
-    // 其余（纯 base64 或字节）走 data 分支。裸字符串在这两处都会被 AI SDK 本地拒收，从而毒死 history。
-    data: value instanceof URL ? { type: 'url', url: value }
-        : typeof value === 'string' && /^(https?:|data:)/i.test(value) ? { type: 'url', url: new URL(value) }
-        : { type: 'data', data: value },
-    ...(part.filename ? { filename: part.filename } : {}), // 有文件名就带上。
-})
+const media = (part, value, fallback) => {
+    const url = toUrl(value)
+    return {
+        type: 'file',                              // AI SDK 现在统一用 file 装媒体。
+        mediaType: part.mediaType ?? fallback,     // 没写类型时按调用方给的默认值。
+        data: url ? { type: 'url', url } : { type: 'data', data: value }, // 网址 / data URL 走 url（要 URL 对象），其余走 data。
+        ...(part.filename ? { filename: part.filename } : {}), // 有文件名就带上。
+    }
+}
+
+// URL 对象 / http(s) 网址 / data URL 才当 URL；解析失败退回 null（免得 new URL 抛错，而这时坏块已写进 history）。
+const toUrl = value => {
+    if (value instanceof URL) return value
+    if (typeof value !== 'string' || !/^(https?:|data:)/i.test(value)) return null
+    try { return new URL(value) } catch { return null }
+}
 
 // 看一个内容块装的是什么媒体。认不出来返回 null，说明它根本不是媒体块。
 const mediaKind = part => {
     if (part.type === 'image' || part.type === 'audio' || part.type === 'video') return part.type // 旧写法：类型直接写在块上。
     if (part.type !== 'file' && part.type !== 'file-data' && part.type !== 'file-url') return null // 不是任何媒体块。
-    if (part.mediaType?.startsWith('image/')) return 'image' // 新写法：看 mediaType 判断媒体种类。
-    if (part.mediaType?.startsWith('audio/')) return 'audio'
-    if (part.mediaType?.startsWith('video/')) return 'video'
+    if (typeof part.mediaType !== 'string') return 'file' // mediaType 不是字符串（畸形输入）就当普通文件，别在 .startsWith 上抛。
+    if (part.mediaType.startsWith('image/')) return 'image' // 新写法：看 mediaType 判断媒体种类。
+    if (part.mediaType.startsWith('audio/')) return 'audio'
+    if (part.mediaType.startsWith('video/')) return 'video'
     return 'file'                                  // 认得出是文件，但不是图音视，按普通文件算。
 }
 
@@ -166,11 +173,13 @@ const preparePart = (part, options) => {
     if (part.type === 'file-url') return media(part, part.url ?? part.data, part.mediaType ?? 'application/octet-stream')
     // 已经是 file：分三种。data 带标签且是内联字节 → 原样；data 带标签但里面是网址 / data URL → 改成 url（AI SDK 不接受把它们当内联数据）；data 还是裸值（旧写法）→ 补成带标签的形状。
     if (part.type === 'file') {
-        const tagged = part.data && typeof part.data === 'object' && 'type' in part.data
+        const tagged = part.data && typeof part.data === 'object' && 'type' in part.data && !(part.data instanceof URL)
         if (!tagged) return media(part, part.data ?? part.url, part.mediaType ?? 'application/octet-stream')
-        const inner = part.data.type === 'data' ? part.data.data : undefined
-        if (inner instanceof URL || (typeof inner === 'string' && /^(https?:|data:)/i.test(inner))) return media(part, inner, part.mediaType ?? 'application/octet-stream')
-        return part
+        // 带标签的 url / data 都重新交给 media()：它会把字符串网址重新包成 URL 对象（AI SDK 要 URL 对象），
+        // data URL 也会挪到 url 分支。不重包的话，jsonSafe 留下的字符串 url 会在这里直接穿过去、被 AI SDK 拒收。
+        const inner = part.data.type === 'url' ? part.data.url : part.data.type === 'data' ? part.data.data : undefined
+        if (inner === undefined) return part
+        return media(part, inner, part.mediaType ?? 'application/octet-stream')
     }
     return part                                        // 到这里只剩不认识的块，原样。 
 }

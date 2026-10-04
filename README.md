@@ -815,6 +815,8 @@ await agent.send({
 
 能不能看懂取决于模型本身。实测 `kimi-k2.6` 可以，`gpt-oss-120b` 没有视觉能力、会直接报 `content must be a string`——是大声失败，不是静默忽略。
 
+> 直接 `send` 的内容块形状由你保证（工具返回的媒体会在边界自动校验并归一化；用户直接发的内容块不做校验）。图片块用 `{ type: 'image', image: <data URL 或 base64 或 URL 对象> }`，或 AI SDK 当前的 `{ type: 'file', mediaType, data }`。
+
 #### `agent.stop()`
 
 停止正在运行的 Agent。

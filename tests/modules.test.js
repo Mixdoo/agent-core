@@ -1,3 +1,8 @@
+/*
+盯住几个底层模块直接拼起来用时对不对：History 造块、Context 裁剪、Tool 扫描执行、LLM/Compact、Retry、Loop 组装。
+这层测试不走 Agent 入口，专测"模块单独拿出来也能用"。
+*/
+
 import { expect, test, describe } from 'bun:test'
 import Agent from '../index.js'
 import History from '../features/history.js'

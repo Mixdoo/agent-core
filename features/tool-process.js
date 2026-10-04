@@ -149,8 +149,23 @@ const PART = new Set(['text', 'image', 'audio', 'video', 'file', 'file-data', 'f
 // 和主线程 utils/shape.js 里的同名判断保持一致（改一处要同步另一处）。
 const isBytes = value => value instanceof Uint8Array || value instanceof ArrayBuffer || (typeof Buffer !== 'undefined' && Buffer.isBuffer(value))
 const okMedia = value => typeof value === 'string' || value instanceof URL || isBytes(value)
-const okFileData = value => okMedia(value) || Boolean(value && typeof value === 'object' && ((value.type === 'data' && value.data != null) || (value.type === 'url' && value.url != null)))
+const okFileData = value => {
+    if (okMedia(value)) return true
+    if (!value || typeof value !== 'object' || value instanceof URL) return false
+    if (value.type === 'data') return typeof value.data === 'string' || isBytes(value.data)
+    if (value.type === 'url') return value.url instanceof URL || typeof value.url === 'string'
+    return false
+}
 const jsonSafe = value => JSON.parse(JSON.stringify(value, (key, one) => one instanceof ArrayBuffer ? Buffer.from(new Uint8Array(one)).toString('base64') : one instanceof Uint8Array ? Buffer.from(one).toString('base64') : one))
+const badPart = part => {
+    if (part.type === 'text') return typeof part.text !== 'string'
+    if (part.type === 'image') return !okMedia(part.image)
+    if (part.type === 'audio') return !okMedia(part.audio)
+    if (part.type === 'video') return !okMedia(part.video)
+    if (part.type === 'file-data') return !okMedia(part.data)
+    if (part.type === 'file-url') return !okMedia(part.url)
+    return !okFileData(part.data) || (part.mediaType !== undefined && typeof part.mediaType !== 'string') || (part.filename !== undefined && typeof part.filename !== 'string') // file
+}
 
 
 // --- 成形：在跨进程之前就把返回值变成模型能读的输出块 ---
@@ -160,11 +175,14 @@ const jsonSafe = value => JSON.parse(JSON.stringify(value, (key, one) => one ins
 const shape = async (tool, result, input, toolCallId) => {
     const value = result?.output ?? result                              // 工具可以返回 { output } 对象，也可以直接返回值。
     // 工具自带格式化时优先用它；AI SDK 允许它返回 Promise，所以 await（和主线程那边的内存工具一致）。
-    const output = tool.toModelOutput ? await tool.toModelOutput({ output: value, input, toolCallId })
+    const produced = tool.toModelOutput ? await tool.toModelOutput({ output: value, input, toolCallId })
         : BLOCK.has(result?.output?.type) ? result.output               // 工具自己就给了成形的输出块——图片和多模态结果走的就是这条路。
         : value === undefined || value === null || value === '' ? { type: 'text', value: '工具执行成功，但没有输出' } // 空返回也给一句交代。
         : typeof value === 'string' ? { type: 'text', value }           // 返回字符串，直接当文字给模型。
         : { type: 'json', value }                                       // 其余结构化值转成 JSON 块。
+
+    // 先纯 JSON 化（Date→字符串、NaN→null、二进制→base64、URL→字符串），再对最终形状校验——别让“校验通过”和“发出去的形状”不一致。
+    const output = jsonSafe(produced)
 
     // 边界校验：形状不对就在这里变成工具失败，绝不让它穿过去写进 history。
     if (!BLOCK.has(output?.type)) throw new TypeError(`工具输出块的 type 不合法：${JSON.stringify(output?.type)}，只能是 ${[...BLOCK].join(' / ')}`)
@@ -175,20 +193,10 @@ const shape = async (tool, result, input, toolCallId) => {
     const bad = output.type === 'content' && output.value.find(part => !PART.has(part?.type))
     if (bad) throw new TypeError(`content 块里的 ${JSON.stringify(bad.type)} 部件不合法，只能是 ${[...PART].join(' / ')}。媒体可以用旧 image/audio/video，也可以用 AI SDK 当前的 file`)
     // 类型对了、值也要对：各媒体部件的值必须是字符串 / URL / 二进制（file 的 data 还允许带标签），否则 AI SDK 本地拒收、毒死 history。
-    const broken = output.type === 'content' && output.value.find(part => {
-        if (part.type === 'text') return typeof part.text !== 'string'
-        if (part.type === 'image') return !okMedia(part.image)
-        if (part.type === 'audio') return !okMedia(part.audio)
-        if (part.type === 'video') return !okMedia(part.video)
-        if (part.type === 'file-data') return !okMedia(part.data)
-        if (part.type === 'file-url') return !okMedia(part.url)
-        return !part.mediaType || !okFileData(part.data) // file
-    })
+    const broken = output.type === 'content' && output.value.find(badPart)
     if (broken) throw new TypeError(`content 块里的 ${JSON.stringify(broken.type)} 部件的值不合法：text 要 text；媒体要是字符串 / URL / 二进制；file 的 data 还要 mediaType`)
 
-    // 跨进程只传纯 JSON，自带格式化的那条路也一样要过这一关：
-    // Date 变字符串、NaN 变 null、二进制转 base64、循环引用在这里变成一条正常的工具错误，不会写进 history 把 Agent 毒死。
-    return jsonSafe(output)
+    return output
 }
 
 

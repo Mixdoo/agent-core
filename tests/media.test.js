@@ -102,6 +102,19 @@ describe('多模态', () => {
         expect(rendered[0].data.url.href).toContain('data:image/png') // 原样搬到 url 字段。
     })
 
+    test('工具结果里带标签的 URL 对象经过 jsonSafe 后仍是 URL 对象', async () => {
+        const tools = Tool.adopt([{ name: 'u', execute: async () => ({ output: { type: 'content', value: [{ type: 'file', mediaType: 'image/png', data: { type: 'url', url: new URL('https://x/a.png') } }] } }) }])
+        const result = await Tool.execute({ name: 'u', input: {}, handlers: tools.handlers })
+        const rendered = History.model({ role: 'tool', content: [{ type: 'tool-result', toolCallId: 'c1', toolName: 'u', output: result.output }] }, {}).content[0].output.value
+        expect(rendered[0].data.url).toBeInstanceOf(URL) // jsonSafe 会把它变字符串，Context 这一层要重新包回 URL。
+    })
+
+    test('媒体 mediaType 不是字符串时变成工具失败，而不是毒死 history', async () => {
+        const tools = Tool.adopt([{ name: 'bad', execute: async () => ({ output: { type: 'content', value: [{ type: 'file', mediaType: 123, data: 'x' }] } }) }])
+        const result = await Tool.execute({ name: 'bad', input: {}, handlers: tools.handlers })
+        expect(result.output.type).toBe('error-text')
+    })
+
     test('工具结果里的旧 image 块会被转成合法 file 块，不再毒死会话', async () => {
         const server = Bun.serve({ port: 0, async fetch() { return Response.json({ choices: [{ index: 0, message: { role: 'assistant', content: '好' }, finish_reason: 'stop' }], usage: {} }) } })
         try {
