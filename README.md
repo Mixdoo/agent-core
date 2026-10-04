@@ -10,8 +10,11 @@
 ## 目录
 
 - [这个包是干什么的](#这个包是干什么的)
+- [核心设计：为什么是它](#核心设计为什么是它)
 - [安装](#安装)
 - [5 分钟快速上手](#5-分钟快速上手)
+- [三种用法：从纯聊天到接 MCP 和技能](#三种用法从纯聊天到接-mcp-和技能)
+- [接入 MCP 和技能](#接入-mcp-和技能)
 - [项目架构](#项目架构)
 - [自定义工具：从零到完整](#自定义工具从零到完整)
 - [API 参考](#api-参考)
@@ -37,6 +40,73 @@
 ```
 
 模型每次回复要么"调用某个工具"，要么"我做完了"。这个包负责把这个循环跑起来，你只需要写工具文件就行。
+
+---
+
+## 核心设计：为什么是它
+
+两件事是这个包真正想做的，别的都围着它们转。**看清这两条，就理解了这个包的全部取舍。**
+
+### 一、独特的 Agent 循环
+
+循环骨架很简单（建上下文 → 问模型 → 要调工具就执行再回上去），难的是**什么时候停下来**。这个包在"停"这件事上有几个和别人不一样的决定。
+
+<div style="max-width:720px;padding:14px;border:1px solid rgba(255,255,255,.16);border-radius:14px;font-family:system-ui;line-height:1.6">
+  <div style="padding:8px 10px;border:1px solid rgba(255,255,255,.2);border-radius:8px">1 建上下文（太长就先压缩一次）</div>
+  <div style="text-align:center;margin:4px 0">↓</div>
+  <div style="padding:8px 10px;border:1px solid rgba(255,255,255,.2);border-radius:8px">2 问一次模型</div>
+  <div style="text-align:center;margin:4px 0">↓ 模型要调工具？</div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap">
+    <div style="flex:1;min-width:180px;padding:8px 10px;border:1px solid rgba(96,165,250,.45);border-radius:8px"><b>要</b> → 并行执行所有工具，结果写回 history，回到第 1 步</div>
+    <div style="flex:1;min-width:180px;padding:8px 10px;border:1px solid rgba(244,114,182,.45);border-radius:8px"><b>不要</b> → 走结束判定，决定这次 send 是不是做完了</div>
+  </div>
+</div>
+
+**① 模型不调工具，不会立刻结束。** 很多模型在任务没做完时会"礼貌地"给一段总结就停下。直接结束会把没干完的活丢掉。所以有工具时，模型不调工具会先**临时**插一句提醒（`noToolPrompt`）再问一次，连续 `noToolRounds` 轮（默认 3）都不调才结束。这句提醒只挂在那一次请求上，**不写进 `history`**。不想要这个行为，把它设成 `Infinity`。
+
+**② `history` 是唯一的权威数据来源，只增不删。** 循环从不修改历史，模型消息、工具结果按发生的顺序追加。连压缩也只追加一条总结。原因：`history` 归你的应用所有（存库、渲染、多会话），核心替它丢弃数据是不可逆的错误——该留多少由持有它的你决定。
+
+**③ 一轮里的工具并行执行。** 模型经常一次要求调好几个工具；串行会让任务慢好几倍。所以同一轮的工具同时开跑，结果按原顺序收齐再写回历史。每个工具独占一个子进程，所以死循环的工具能被一刀杀掉，崩溃的工具不会拖垮 Agent。
+
+**④ 每次 `send` 只跑一个任务，"最新指令优先"。** 新的 `send` 会先停掉上一个（同一次 tick 里发出的请求，后者一定看得见前者并把它停掉）。原因：一台 Agent 只有一份 `history`，两个任务同时写会乱序。
+
+**⑤ 每个出口都补一条模型能读的结果。** 取消 → 一条"已中断"结果；工具失败 → 一条错误结果；模型点了不存在的工具 → 一条"调用无效"结果。**绝不留下"有调用、没结果"的残缺记录**。原因：这种残缺序列会被 OpenAI / Anthropic 直接 400，而 `history` 只增不删，一次残缺就永久毒死这个会话，重启装回历史也一样。
+
+### 二、独特的上下文压缩保留方案
+
+大多数做法是"上下文满了就丢掉旧消息"。这个包**不丢，只追加总结**——它改的是"这一次发给模型的内容有多大"，不是"历史能留多少"。
+
+`history` 里原文一条不少；每次发请求时，只从里面**现挑**该带哪些回合：
+
+<div style="max-width:720px;padding:14px;border:1px solid rgba(255,255,255,.16);border-radius:14px;font-family:system-ui;line-height:1.6">
+  <div style="display:flex;gap:12px;flex-wrap:wrap">
+    <div style="flex:1;min-width:220px">
+      <div style="color:rgba(255,255,255,.6);margin-bottom:6px">history（只增不删）</div>
+      <div style="padding:6px 8px;border:1px solid rgba(255,255,255,.18);border-radius:6px">用户最初的目标</div>
+      <div style="padding:6px 8px;margin-top:4px;border:1px dashed rgba(255,255,255,.18);border-radius:6px;color:rgba(255,255,255,.45)">……很早的回合（已被总结覆盖）……</div>
+      <div style="padding:6px 8px;margin-top:4px;border:1px solid rgba(255,255,255,.18);border-radius:6px">compact：一条总结</div>
+      <div style="padding:6px 8px;margin-top:4px;border:1px solid rgba(255,255,255,.18);border-radius:6px">总结之后的全部新回合</div>
+    </div>
+    <div style="flex:1;min-width:220px">
+      <div style="color:rgba(255,255,255,.6);margin-bottom:6px">这一次发给模型的上下文</div>
+      <div style="padding:6px 8px;border:1px solid rgba(96,165,250,.45);border-radius:6px">最初目标（最多 3 个用户回合，≤20% 预算）</div>
+      <div style="padding:6px 8px;margin-top:4px;border:1px solid rgba(244,114,182,.45);border-radius:6px">最近现场（最多 3 个回合，≤30% 预算）</div>
+      <div style="padding:6px 8px;margin-top:4px;border:1px solid rgba(96,165,250,.45);border-radius:6px">总结后的新回合（全部保留，不限）</div>
+      <div style="padding:6px 8px;margin-top:4px;border:1px dashed rgba(255,255,255,.35);border-radius:6px">总结 → 折进 system</div>
+    </div>
+  </div>
+</div>
+
+几个关键取舍，以及为什么：
+
+- **裁剪的最小单位是「回合」，不是「消息」。** 一个回合 = 用户一次发言，或模型的一次响应连同它发起的全部工具调用和结果。工具结果按 `toolCallId` 回到发起它的回合，**同进同出**。所以裁剪结果永远不会切断"调用 / 结果"的配对——那种残缺会被供应商 400。
+- **最新那条总结折进 system，而不是当成一条消息塞进对话。** 裸的 `role:'user'` 总结会被模型读成"用户塞给我一张表"，于是从头重做整个任务。实测 `gpt-oss-120b` 折进 system 前只有 1/6 能正确接着做，之后 6/6。
+- **总结里保留最初目标。** 挑内容时，最初那几轮用户发言（说不出的话）单独钉住，最多 3 个回合、占 20% 预算。就算预算装不下，总结本身也被要求保留"用户最初的目标"，而总结在 `system` 里永远不会被裁掉。
+- **二次压缩不会忘掉上一次的总结。** 压缩请求会把上一版总结作为"背景"并进提示词，新总结必须保留其中仍然有效的事实。直接丢掉旧总结，会越压越忘。
+- **按预算保留，不按条数。** 用户第一条消息就粘一大段日志时，只按条数留会让压缩永远收敛不了（实测 120/120 轮压完仍超阈值）。所以旧内容按预算分：目标 20%、最近现场 30%。
+- **每轮最多压一次。** 不为"压到达标"而连续调用模型——那样一轮能烧掉上千次请求（实测）。压完还超限就照常发出去，由服务端判断；下一轮还超自然会再压一次。
+
+> 一句话：**history 永不删、总结折进 system、裁剪按回合。** 这三条一起保证——发给模型的永远是合法上下文，模型永远能"接着做"而不是"重做"，而你的完整历史一条都没丢。
 
 ---
 
@@ -121,6 +191,148 @@ console.log('Agent 结束，原因:', result.reason)   // 'finished' 模型认�
 ```bash
 bun main.js
 ```
+
+---
+
+## 三种用法：从纯聊天到接 MCP 和技能
+
+先看清自己属于哪一种，再往下读：
+
+| 你想做什么 | 怎么写 | 去哪看 |
+|------------|--------|--------|
+| 只聊天，不用工具 | `Agent.create({ config })` 然后 `agent.send('...')` | 上面的快速上手 |
+| 用普通工具（自己写的文件） | `tools = await Agent.tool.from('./tools')`，传给 `create` | 「自定义工具」「`Agent.tool`」 |
+| 用 MCP 工具、用技能（skills） | 应用自己连 MCP、读技能，再用 `Agent.tool.from(...)` 汇进来 | 下一节「接入 MCP 和技能」 |
+
+一句话记住：**这个包只负责"循环 + 执行工具"**。MCP 的连接、技能的读取都不是它的事——你把它们变成普通工具对象交进来就行。
+
+---
+
+## 接入 MCP 和技能
+
+MCP 和技能（skills）都由**你的应用**负责，核心只接收通用工具对象。两者的做法一样：先拿到"工具对象"，再交给 `Agent.tool.from`。
+
+<div style="max-width:720px;padding:14px;border:1px solid rgba(255,255,255,.16);border-radius:14px;font-family:system-ui;line-height:1.6">
+  <div style="display:flex;gap:8px;flex-wrap:wrap">
+    <div style="flex:1;min-width:140px;padding:10px;border:1px solid rgba(255,255,255,.2);border-radius:10px"><b>文件工具</b><br><code>./tools/*.js</code></div>
+    <div style="flex:1;min-width:140px;padding:10px;border:1px solid rgba(255,255,255,.2);border-radius:10px"><b>MCP 工具</b><br><code>mcp.tools()</code></div>
+    <div style="flex:1;min-width:140px;padding:10px;border:1px solid rgba(255,255,255,.2);border-radius:10px"><b>技能工具</b><br><code>skills.readTool()</code></div>
+  </div>
+  <div style="text-align:center;margin:8px 0">↓ <code>await Agent.tool.from(…)</code> ↓</div>
+  <div style="padding:10px;border:1px solid rgba(255,255,255,.3);border-radius:10px;text-align:center"><code>Agent.create({ config:{ system }, tools })</code></div>
+</div>
+
+### 接 MCP
+
+MCP 是"模型调用外部服务"的标准协议。用官方客户端 `@ai-sdk/mcp` 连上服务后，它给出的工具对象**直接就能用**，不需要任何包装：
+
+```js
+import { createMCPClient } from '@ai-sdk/mcp'
+import { Experimental_StdioMCPTransport as Stdio } from '@ai-sdk/mcp/mcp-stdio' // stdio 传输要从子路径导入
+
+// 连接由你的应用管理：什么时候连、连哪个、什么时候关
+const mcp = await createMCPClient({
+    transport: new Stdio({ command: 'bun', args: ['./mcp-server.js'] }),
+})
+
+const tools = await Agent.tool.from('./tools', mcp.tools())   // 就这一句
+const agent = Agent.create({ config, tools })
+
+// ... 用完后
+await mcp.close()
+```
+
+> MCP 工具的返回值（文字、图片）会自动转成模型能读的块。想自己改写，见「`Agent.tool.adopt`」。
+
+### 接技能（skills）
+
+技能是"现成的操作步骤"：一个文件夹放一份 `SKILL.md`，开头写名字和说明，下面是正文。约定见 [agentskills.io](https://agentskills.io)。
+
+```
+skills/
+└── review-pr/
+    └── SKILL.md      # 开头是 name 和 description，下面是步骤正文
+```
+
+社区有现成的库负责**读取和校验**这些文件，比如 `agent-skills-ts-sdk`。它给你两样东西：一段"技能清单"（放进 `system` 让模型知道有哪些技能）和一个"按需读正文"的工具。扫描、组装仍由你写，就是下面这几行：
+
+```js
+import { createSkillRegistry, skillSourceFromEntries } from 'agent-skills-ts-sdk'
+
+const sources = []
+for await (const file of new Bun.Glob('skills/*/SKILL.md').scan()) {
+    sources.push(skillSourceFromEntries(
+        [{ name: 'SKILL.md', content: await Bun.file(file).text() }],
+        { id: file, location: file },
+    ))
+}
+const skills = await createSkillRegistry(sources)
+const decl = skills.readTool()          // 技能清单 + 一个"读正文"的工具声明
+
+const skillTool = {
+    description: decl.description,
+    inputSchema: decl.parametersJsonSchema,
+    execute: async args => {
+        const r = await skills.read(args)
+        return r.ok ? r.content : { output: { type: 'error-text', value: r.error } }
+    },
+}
+
+// 清单进 system，正文等模型需要时用 skill 工具读
+const system = ['你是一个编程助手。', skills.systemPrompt()].filter(Boolean).join('\n\n')
+const tools = await Agent.tool.from({ [decl.name]: skillTool })
+const agent = Agent.create({ config: { ...config, system }, tools })
+
+await agent.send('按 review-pr 技能审查这个改动')
+```
+
+### MCP 和技能一起用
+
+一次性汇进去就行：
+
+```js
+const tools = await Agent.tool.from(
+    './tools',                          // 文件工具
+    mcp.tools(),                        // MCP 工具
+    { [decl.name]: skillTool },         // 技能加载工具
+)
+```
+
+<details>
+<summary>不想引库？自己读 SKILL.md 也就十几行</summary>
+
+`SKILL.md` 的开头是一小段用 `---` 包起来的说明（`name` 和 `description`），下面是正文。自己切开即可：
+
+```js
+const skills = {}
+for await (const path of new Bun.Glob('skills/*/SKILL.md').scan()) {
+    const text = await Bun.file(path).text()
+    const name = text.match(/name:\s*(.+)/)?.[1]?.trim()
+    const description = text.match(/description:\s*(.+)/)?.[1]?.trim()
+    const body = text.replace(/^---[\s\S]*?---/, '').trim()   // 去掉说明段，只留正文
+    if (name) skills[name] = { description, body }
+}
+
+const names = Object.keys(skills)
+const system = names.length
+    ? '可用技能（需要时用 skill 工具读正文）：\n' + names.map(n => `- ${n}：${skills[n].description}`).join('\n')
+    : ''
+
+const skillTool = {
+    skill: {
+        description: '按名字读取一个技能的完整步骤',
+        inputSchema: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] },
+        execute: async ({ name }) => {
+            if (!Object.hasOwn(skills, name)) throw new Error(`没有技能 ${name}`)
+            return skills[name].body
+        },
+    },
+}
+```
+
+完整约定（frontmatter 字段、目录名等于技能名、正文按需加载）见 [agentskills.io](https://agentskills.io)。想要省事就直接用上面的 `agent-skills-ts-sdk` 之类的库。
+
+</details>
 
 ---
 
@@ -688,7 +900,7 @@ Agent 当前的完整历史消息数组，可直接读写。
 const tools = await Agent.tool.from(
     './tools',                 // 目录：文件工具跑在子进程里
     mcpClient.tools(),         // 内存工具：MCP / AI SDK 给的工具对象，主进程直接调
-    { skill: skillTool },      // record：自定义函数；也可以传 [{ name, ... }, ...]
+    { skill: skillTool },      // record（一个对象，键是工具名）：自定义函数；也可以传数组 [{ name, ... }, ...]
 )
 const agent = Agent.create({ config, tools })
 ```
@@ -729,20 +941,9 @@ Agent.tool.adopt(await mcpClient.tools())                                       
 
 文件工具和内存工具可以合并：`Agent.tool.merge(await Agent.tool.scan('./tools'), Agent.tool.adopt(mcpTools))`，或者直接用 `Agent.tool.from('./tools', mcpTools)`（见上）。
 
-**MCP 工具直接可用，不需要包装。** `@ai-sdk/mcp` 的 `client.tools()` 返回值本身带 `execute` 和 `toModelOutput`，核心按 AI SDK 的签名调用它们，所以文字、图片都会正确交给模型：
+**MCP 工具直接可用，不需要包装**：`@ai-sdk/mcp` 的 `client.tools()` 自带 `execute` 和 `toModelOutput`，核心按 AI SDK 的签名调用它们，文字、图片都会正确交给模型。完整接入例子见前面的[「接入 MCP 和技能」](#接入-mcp-和技能)。
 
-```js
-import { createMCPClient } from '@ai-sdk/mcp'
-import { Experimental_StdioMCPTransport as Stdio } from '@ai-sdk/mcp/mcp-stdio' // stdio 传输要从子路径导入
-
-const mcpClient = await createMCPClient({ transport: new Stdio({ command: 'bun', args: ['/abs/server.js'] }) })
-const tools = await Agent.tool.from('./tools', mcpClient.tools())   // 就这一句
-const agent = Agent.create({ config, tools })
-// ...
-await mcpClient.close()   // 连接、开关、关闭都由你的应用管理
-```
-
-想自己改写工具结果时，给工具加一个 `toModelOutput`，签名和 AI SDK 一致（拿到的是 `{ output, input }`）：`toModelOutput: ({ output }) => ({ type: 'content', value: output.content })`。
+想自己改写某个工具的返回结果时，给它加一个 `toModelOutput`，签名和 AI SDK 一致（拿到的是 `{ output, input }`）：`toModelOutput: ({ output }) => ({ type: 'content', value: output.content })`。
 
 > 从 0.16 升级：`Agent.create({ mcp })`、`agent.mcp`、`Agent.skill` 和 `create({ skills })` 已删除。MCP 改为自己用 `@ai-sdk/mcp` 连接，再把工具传进 `tools`；技能的提示词自己拼进 `config.system`。
 >
