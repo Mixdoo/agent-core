@@ -118,9 +118,10 @@ const connect = ({ baseURL, apiKey, model, protocol, system, headers, cache, bod
     // 默认开启。chat / responses 发 prompt_cache_key；个别不认这个字段的中转站会 400，设 cache:false 即可关掉。
     const cacheOptions = cache === true ? {} : cache || {}
     const cacheBody = cache && ['chat', 'responses'].includes(protocol)
-        ? { prompt_cache_key: cacheKey({ baseURL, model, system }, cacheOptions), ...(cacheOptions.retention ? { prompt_cache_retention: cacheOptions.retention } : {}), ...cacheOptions.body }
+        ? { prompt_cache_key: cacheKey({ baseURL, model, system }, cacheOptions), ...(cacheOptions.retention ? { prompt_cache_retention: cacheOptions.retention } : {}) }
         : {}
-    const finalBody = { ...cacheBody, ...bodyOverrides } // 自定义 body 可以覆盖默认缓存字段。
+    const cacheExtra = cache ? cacheOptions.body ?? {} : {} // cache.body 是"额外原始请求体字段"，和协议无关，四个协议都要并进去。
+    const finalBody = { ...cacheBody, ...cacheExtra, ...bodyOverrides } // 自定义 body 可以覆盖默认缓存字段。
 
     // 只有自己创建的 Provider 才能接管 fetch，并入调用方要求的原始请求体字段。
     // stripToolChoice：AI SDK 在带 tools 时会自动补 tool_choice，光在 input 里删不掉，只能在这一层从最终请求体里删。
@@ -210,7 +211,7 @@ const request = async ({ input, stream, requestTimeout, markAttempt, onLLMEvent,
 
 // --- 给抛出去的错误贴一个稳定的分类 ---
 // 只按错误自己带的证据判断，不改 isRetryable：能重试仍然只有"错误自己说能"这一个来源。
-const label = (error, timeout) => {
+const classifyError = (error, timeout) => {
     if (error?.kind) return error                                // 已经分过类，不重复贴。
     if (timeout?.aborted) error.kind = 'timeout'                 // 我们自己的限时先判，避免被当成用户取消。
     else if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') error.kind = 'aborted'
@@ -302,7 +303,7 @@ const chat = async ({
         delete input.toolChoice                                            // 没工具时单独发 toolChoice 会被部分服务拒收。
     }
 
-    let attempt = null // 本笔请求的限时信号；label 靠它区分"限时到点"和"用户取消"。
+    let attempt = null // 本笔请求的限时信号；classifyError 靠它区分"限时到点"和"用户取消"。
     const once = () => request({ input, stream, requestTimeout, markAttempt: timeout => { attempt = timeout }, onLLMEvent, baseSignal: signal }) // 流式和非流式在 request 里分叉，对外表现一致。
 
     // 重试包在这里，而不是让每个调用方各自包一层：这样"发一次模型请求"在整个项目里只有一条路，
@@ -314,11 +315,11 @@ const chat = async ({
             operation: async () => {
                 await Notify.tell(onLLMStart, { messages, tools }) // 每一次真实请求都通知一次；重试也是真实请求。
                 try { return await once() }
-                catch (error) { throw label(error, attempt) } // 分类只在这里做一次，流式和非流式共用同一个出口。
+                catch (error) { throw classifyError(error, attempt) } // 分类只在这里做一次，流式和非流式共用同一个出口。
             },
             signal, onRetry, maxDelay: retryMaxDelay, maxElapsed: retryMaxElapsed,
         })
-    } catch (error) { throw label(error, attempt) }
+    } catch (error) { throw classifyError(error, attempt) }
 }
 
 export default { chat }

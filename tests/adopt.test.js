@@ -144,6 +144,13 @@ describe('内存工具执行', () => {
     test('adopt 收到 Promise 时明确报错，不静默变空表', () => {
         expect(() => Tool.adopt(Promise.resolve([]))).toThrow(/Promise|await/)
     })
+
+    test('同步生成器 function* 也能流式收集', async () => {
+        const seen = []
+        const result = await run({ sgen: { execute: function* () { yield 'a'; yield 'b' } } }, 'sgen', {}, { onOutput: output => seen.push(output.data) })
+        expect(result.output).toEqual({ type: 'json', value: ['a', 'b'] })
+        expect(seen).toEqual(['a', 'b'])
+    })
 })
 
 describe('Tool.from 一行拼装', () => {

@@ -93,6 +93,12 @@ describe('请求里到底发了什么', () => {
         expect(body).not.toHaveProperty('tool_choice')                          // AI SDK 默认会补 auto，这里必须真的拿掉。
     })
 
+    test('cache.body 的额外字段四个协议都带（不只在 chat）', async () => {
+        recorded.length = 0
+        await LLM.chat({ baseURL: `http://127.0.0.1:${echo.port}/v1`, apiKey: 'k', model: 'm', protocol: 'anthropic', messages: [{ role: 'user', content: 'hi' }], stream: false, cache: { body: { cache_namespace: 'ns' } }, ...noRetry }).catch(() => {}) // 假服务返回的形状 anthropic 解析不了，只看请求体。
+        expect(recorded[0].cache_namespace).toBe('ns') // 以前只有 chat/responses 会带上它。
+    })
+
     test('显式关闭 cache 时不发缓存字段', async () => {
         const body = await send({ cache: false })
         expect(body).not.toHaveProperty('prompt_cache_key')

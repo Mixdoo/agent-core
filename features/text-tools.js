@@ -301,11 +301,13 @@ const read = (result, spec, options) => {
 
 
 // --- auto 模式：记住"这个模型不认原生工具字段"，同一模型之后直接走文字，不再撞墙 ---
-// 进程级记忆：同一个进程里所有 Agent 共用，条目是模型的标识字符串，很小。
-const refusing = new Set()
-const modelName = ({ model, protocol, baseURL }) => typeof model === 'string' ? `${protocol}:${baseURL}:${model}` : `instance:${model.provider}:${model.modelId}` // 这里只用于记住"哪个模型拒收过原生工具"，和 tokens.js 的 modelKey 不是一回事。
-const remember = llm => refusing.add(modelName(llm))
-const remembered = llm => refusing.has(modelName(llm))
+// 进程级记忆，同一进程里所有 Agent 共用。字符串模型按 协议:地址:模型名 记；模型实例按对象身份记——
+// 实例不一定有 provider/modelId，用字符串键会撞成同一个，一个实例被降级会连累全部。
+const refusedNames = new Set()
+const refusedInstances = new WeakSet()
+const modelName = ({ model, protocol, baseURL }) => `${protocol}:${baseURL}:${model}`
+const remember = llm => typeof llm.model === 'string' ? refusedNames.add(modelName(llm)) : refusedInstances.add(llm.model)
+const remembered = llm => typeof llm.model === 'string' ? refusedNames.has(modelName(llm)) : refusedInstances.has(llm.model)
 
 // 这个错误是不是接口拒收了工具字段：必须是请求被拒（4xx）或服务端报错（5xx），
 // 而且错误信息里确实提到 tool / function——不能只凭一个 4xx 就认定，否则上下文超长、

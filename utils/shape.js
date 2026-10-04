@@ -1,6 +1,11 @@
 /*
 把一次工具调用的返回值变成模型能直接读的输出块。
 
+调用：shape(tool, result, input)。示例：
+    shape({}, '你好', {})                       // → { type: 'text', value: '你好' }
+    shape({}, { a: 1 }, {})                     // → { type: 'json', value: { a: 1 } }
+    shape({ toModelOutput: ({ output }) => output }, { output: { type: 'text', value: 'x' } }, {}) // 工具自己接管
+
 主线程里的内存工具用它。文件工具在工具进程里做同一件事，那边有一份自己的副本
 （tool-process.js 以文本喂进子进程、不能 import），改这里的规则时要同步改那边。
 

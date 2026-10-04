@@ -651,4 +651,32 @@ describe('取消在工具边界', () => {
             expect(error.kind).toBe('aborted') // 不挂死，按取消结束。
         } finally { mock.stop(true) }
     })
+
+    test('权限等待中取消，写进历史的是"已取消"而不是"被拒绝"', async () => {
+        const mock = Bun.serve({
+            port: 0,
+            async fetch() {
+                return Response.json({ choices: [{ index: 0, message: { role: 'assistant', content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'echo', arguments: '{}' } }] }, finish_reason: 'tool_calls' }], usage: {} })
+            },
+        })
+        const history = [History.user({ content: '跑' })]
+        const controller = new AbortController()
+        setTimeout(() => controller.abort(), 20) // 权限还在等的时候取消。
+        try {
+            await Loop.run({
+                history,
+                system: '',
+                tools: { echo: { description: 'e', inputSchema: jsonSchema({ type: 'object', properties: {} }) } },
+                llm: { baseURL: `http://127.0.0.1:${mock.port}/v1`, apiKey: 'k', model: 'm', stream: false },
+                buildContext: Context.build,
+                compact: async () => '总结',
+                executeTool: async () => ({ output: { type: 'text', value: 'x' } }),
+                onPermission: () => new Promise(() => {}), // 永远不答。
+                signal: controller.signal,
+            }).catch(() => {})
+            const toolMessage = JSON.stringify(history.find(message => message.role === 'tool'))
+            expect(toolMessage).toContain('已取消')
+            expect(toolMessage).not.toContain('拒绝') // 取消不能被写成"用户拒绝"，那会永远留在历史里。
+        } finally { mock.stop(true) }
+    })
 })

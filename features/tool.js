@@ -353,13 +353,14 @@ const inProcess = async ({ name, input, handler, signal, onOutput, limit }) => {
 
         // 跑工具：签名和 AI SDK 一致（execute(input, { abortSignal, ... })），并顺带给 signal 一个别名，
         // 兼容按我们早期文档写成 execute(input, { signal }) 的工具（@ai-sdk/mcp 读的是 abortSignal）。
-        // 生成器工具（async *execute）和文件工具一样：每个 yield 实时发出去，全部片段一起作为返回值。
+        // 生成器工具（async *execute，同步的 function* 也行）和文件工具一样：每个 yield 实时发出去，全部片段一起作为返回值。
+        // 注意：生成器要在两次 yield 之间 await 一下，否则它会占着事件循环不停转，连超时/取消都插不进来——那是工具自己的写法问题。
         const task = (async () => {
             const result = await handler.execute(input, { signal: stop, abortSignal: stop }) // 同步返回值也能被 await 接住。
-            if (result && typeof result[Symbol.asyncIterator] === 'function') {
+            if (result && typeof result.next === 'function') { // 生成器 / 迭代器：数组没有 .next，不会被误当成生成器。
                 const chunks = []
-                for await (const chunk of result) {
-                    if (settled) { try { await result.return?.() } catch {} break } // 已经结算就别再往下跑（不理会取消的生成器否则会永远转）。
+                for await (const chunk of result) { // for await 对同步生成器和异步生成器都适用。
+                    if (settled) { try { await result.return?.() } catch {} break } // 已经结算就别再往下跑（不理会取消的生成器否则会一直转）。
                     chunks.push(chunk)
                     Notify.tell(onOutput, { toolName: name, stream: 'result', data: chunk }) // 逐段实时送达。
                 }

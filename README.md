@@ -649,7 +649,7 @@ const agent = Agent.create({
 })
 ```
 
-`image`、`audio`、`video` 和 `file` 控制内容块；`tools` 控制是否发送工具描述；`structuredOutput` 控制是否发送 `response_format`；`toolChoice:false` 让请求完全省略 `tool_choice`；`reasoning:true` 才会把历史里的思考块发给模型；`usage:false` 关掉流式请求里的 `stream_options.include_usage`（个别不认这个字段的中转站会 400，关掉即可，代价是 token 估算拿不到真实数据、只能靠粗估）。旧式 `image`、`audio`、`video` 内容块会在真正请求模型时转换成 AI SDK 当前使用的 `file`，历史数组仍保留原始形状。
+`image`、`audio`、`video` 和 `file` 控制内容块；`tools` 控制是否发送工具描述；`structuredOutput` 控制是否发送 `response_format`；`toolChoice:false` 让请求省略 `tool_choice`（只对字符串模型 + `chat`/`responses`/`anthropic` 完整生效；`gemini` 与传模型实例时按各自默认、不强制）；`reasoning:true` 才会把历史里的思考块发给模型；`usage:false` 关掉流式请求里的 `stream_options.include_usage`（个别不认这个字段的中转站会 400，关掉即可，代价是 token 估算拿不到真实数据、只能靠粗估）。旧式 `image`、`audio`、`video` 内容块会在真正请求模型时转换成 AI SDK 当前使用的 `file`，历史数组仍保留原始形状。
 
 `provider` 直接放 AI SDK 的生成参数，例如：
 
@@ -668,7 +668,7 @@ const agent = Agent.create({
 })
 ```
 
-在 `agent.send({ input, config: { provider: { ... } } })` 里传入时，`provider` **整份替换**原值，其他未传的配置字段继续保留。`maxTokens` 是上下文预算，和 `provider.maxOutputTokens`（单次生成量）不是一回事。
+在 `agent.send({ input, config: { ... } })` 里传入的配置会**写回 Agent**、之后的 send 继续生效。合并规则分三种：`provider` **整份替换**（传了就只用新的，未写的字段不再保留）；`capabilities` 和 `compact` **按字段浅合并**（只传其中一项不丢另外的）；其余字段直接覆盖。`maxTokens` 是上下文预算，和 `provider.maxOutputTokens`（单次生成量）不是一回事。
 
 `cache` 默认开启。四种协议各按自己的方式让服务端复用固定的开头（system、工具描述、历史），命中后那部分不再重新计算，长会话能明显变快、变便宜：
 
@@ -745,13 +745,13 @@ console.log(answer.text)
 | `onLLMEvent` | 流式事件（每个 token） | AI SDK 原生事件 |
 | `onPermission` | 工具执行前 | `{ toolName, input, sessionId, toolCallId, signal }` → 返回 `true/false` |
 | `onToolCall` | 工具即将执行 | `{ toolCallId, toolName, input }` |
-| `onToolOutput` | 工具有流式输出 | `{ toolName, stream, data, toolCallId }` |
+| `onToolOutput` | 工具有流式输出 | `{ toolName, stream, data, toolCallId, input? }`；`data` 是工具 yield / 打印出来的原值，类型不定 |
 | `onToolResult` | 工具执行完成 | `{ toolName, output, ... }` |
 | `onStep` | 一轮模型和工具都完成后 | `{ step, result, toolCalls, toolResults }` |
 | `onRetry` | 请求失败重试 | `{ attempt, error, delay }`（主请求和压缩请求共用） |
 | `onCompact` | 上下文压缩 | `compact-start` / AI SDK 事件 / `compact-finish` |
 
-除了 `onPermission`，所有回调都只是通知：回调自己抛错会被忽略，任务照常进行，工具结果也不会被改写。`onPermission` 的返回值决定放不放行，所以它抛错时这次 `send` 会失败，交给你的 `.catch()`。
+除了 `onPermission`，所有回调都只是通知：回调自己抛错会被忽略，任务照常进行，工具结果也不会被改写。`onPermission` 的返回值决定放不放行，所以它抛错时这次 `send` 会失败，交给你的 `.catch()`。注意它按"非 `true` 即拒绝"处理：**每个分支都要显式 `return true`**，忘了返回会让那次工具被拒。
 
 #### `agent.send(input)` / `agent.send(options)`
 
@@ -1272,7 +1272,7 @@ export default {
 有两种方式：
 
 1. 写一个 `finish` 工具，让它 `return { stop: true }`，并在系统提示词里告诉模型"完成任务时调用 finish 工具"。
-2. 不写 finish 工具，依赖默认行为：有工具时模型连续 `noToolRounds` 轮（默认 3，第 2 轮会被提醒一次）不调用任何工具，Loop 自动返回 `{ reason: 'no-tool' }`。想让模型一不调工具就结束，设 `noToolRounds: 1`。
+2. 不写 finish 工具，依赖默认行为：有工具时模型连续 `noToolRounds` 轮（默认 3，最后一轮请求前会插一次提醒）不调用任何工具，Loop 自动返回 `{ reason: 'no-tool' }`。想让模型一不调工具就结束，设 `noToolRounds: 1`。
 
 ---
 

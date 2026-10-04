@@ -1,6 +1,10 @@
 /*
 归一化一个工具的 inputSchema 字段：接受三种写法，统一输出 AI SDK 认识的 Schema 对象。
 
+调用：normalizeInputSchema(tool.inputSchema)。示例：
+    normalizeInputSchema({ type: 'object', properties: { a: { type: 'string' } } })  // 裸 JSON Schema
+    normalizeInputSchema(z.object({ a: z.string() }))                                // zod，原样通过
+
     1. 已经是 AI SDK Schema（带 jsonSchema 字段）→ 原样返回。
     2. 实现了 ~standard 接口的 zod / valibot schema → 原样返回（AI SDK 认识它）。
     3. 裸 JSON Schema 对象 / undefined / null → 用 jsonSchema() 包一层，补上 type:'object' 和空 properties。

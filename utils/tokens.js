@@ -1,6 +1,12 @@
 /*
 本地 token 估算：不装分词器，改用"字符数 × 每字符多少 token"来估。
 
+调用示例：
+    estimate({ messages, tools })                                   // 估一段内容的 token 数（用默认比例）
+    const meter = createMeter()                                     // 一个按模型记账、会自校准的估算器
+    meter.observe(modelKey(llm), payload, usage.inputTokens)        // 用真实 usage 校准这个模型的比例
+    meter.ratio(modelKey(llm))                                      // 取这个模型当前的比例，交给 estimate
+
 比例是**会自校准**的：每轮模型都会回 usage.inputTokens（这一次请求真实的总输入 token 数），
 拿它除以这次发出去内容的字符数，就得到这个模型真实的"每字符 token 比"，记下来给下一轮用。
 换模型就换一条记录，越用越准——不需要内置任何分词表。

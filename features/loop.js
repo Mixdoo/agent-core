@@ -181,6 +181,8 @@ const run = async ({
             if (signal?.aborted) return { call, output: { type: 'error-text', value: '工具执行已取消' }, stop: true }
 
             const allowed = await waitForPermission(Notify.decide(onPermission, { sessionId, toolCallId: call.toolCallId, toolName: call.toolName, input: call.input, signal }, true), signal) // 没权限回调时按无人值守模式直接放行；有回调时取消不吊死。
+            // 等待期间被取消：也按"已取消"结算，别写成"用户拒绝"——拒绝和取消是两回事，历史只增不删，写错了会永远留着。
+            if (signal?.aborted) return { call, output: { type: 'error-text', value: '工具执行已取消' }, stop: true }
             if (!allowed) return { call, output: { type: 'execution-denied', reason: '工具执行被用户拒绝' } } // 拒绝也是一条结果，模型需要知道。
 
             let value
