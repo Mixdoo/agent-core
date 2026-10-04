@@ -119,10 +119,10 @@ flowchart TD
 bun add https://github.com/kernel4632/agent-core/releases/latest/download/agent-core.tgz
 ```
 
-想锁死某个版本（比如 `0.23.1`），把链接里的 `latest/download` 换成 `download/v0.23.1`：
+想锁死某个版本（比如 `0.24.0`），把链接里的 `latest/download` 换成 `download/v0.24.0`：
 
 ```bash
-bun add https://github.com/kernel4632/agent-core/releases/download/v0.23.1/agent-core.tgz
+bun add https://github.com/kernel4632/agent-core/releases/download/v0.24.0/agent-core.tgz
 ```
 
 以后升级到最新版，再运行一次第一条命令就行。

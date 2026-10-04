@@ -238,10 +238,15 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = null, callba
     agent.send = (input, options = {}) => {
         if (typeof input === 'object' && input !== null && !Array.isArray(input)) ({ input, ...options } = input)
 
-        const empty = typeof input === 'string' ? !input.trim() : !Array.isArray(input) || !input.length
         const badConfig = 'config' in options && (typeof options.config !== 'object' || options.config === null || Array.isArray(options.config))
+        const badHistory = 'history' in options && !Array.isArray(options.history) // 覆盖会写回 Agent，坏值必须先挡在门外，否则这台 Agent 之后每次 send 都崩。
+        const badCallbacks = 'callbacks' in options && (typeof options.callbacks !== 'object' || options.callbacks === null || Array.isArray(options.callbacks))
         const limits = { ...agent.config, ...(badConfig ? {} : options.config ?? {}) }
-        const invalid = badConfig ? new TypeError('config must be an object') : inputProblem(input, limits)
+        const invalid =
+            badConfig ? new TypeError('config must be an object')
+            : badHistory ? new TypeError('history must be an array')
+            : badCallbacks ? new TypeError('callbacks must be an object')
+            : inputProblem(input, limits)
         if (invalid) return Promise.reject(invalid)
 
         return start(agent, async signal => {

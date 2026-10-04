@@ -60,6 +60,15 @@ import { createMeter, modelKey } from '../utils/tokens.js'
 
 const aborted = () => Object.assign(new DOMException('Agent loop aborted', 'AbortError'), { kind: 'aborted' }) // 取消错误也带 kind，调用方能和模型错误一样按 error.kind 分支。
 
+// 等权限回调，但取消信号一到就不再等它。onPermission 是用户代码，可能永远不返回，
+// 不让它把 stop() 吊死（内存工具那边也是同样的"不等了"做法）。
+const waitForPermission = async (asked, signal) => {
+    if (!signal) return asked
+    let onAbort
+    const stopped = new Promise(resolve => { onAbort = () => resolve(false); signal.addEventListener('abort', onAbort, { once: true }) })
+    try { return await Promise.race([asked, stopped]) } finally { signal.removeEventListener('abort', onAbort) }
+}
+
 // --- 把一次请求的用量加进合计 ---
 // 各供应商给的字段不一定齐全（有的不报缓存，有的连 total 都没有），缺的按 0 算，不让一个 undefined 把合计变成 NaN。
 const add = (total, usage = {}) => {
@@ -170,7 +179,7 @@ const run = async ({
             // 模型已经产生了完整工具调用。即使此刻被取消，也要给它补一条取消结果。
             if (signal?.aborted) return { call, output: { type: 'error-text', value: '工具执行已取消' }, stop: true }
 
-            const allowed = await Notify.decide(onPermission, { sessionId, toolCallId: call.toolCallId, toolName: call.toolName, input: call.input, signal }, true) // 没有权限回调时按无人值守模式直接放行。
+            const allowed = await waitForPermission(Notify.decide(onPermission, { sessionId, toolCallId: call.toolCallId, toolName: call.toolName, input: call.input, signal }, true), signal) // 没权限回调时按无人值守模式直接放行；有回调时取消不吊死。
             if (!allowed) return { call, output: { type: 'execution-denied', reason: '工具执行被用户拒绝' } } // 拒绝也是一条结果，模型需要知道。
 
             let value

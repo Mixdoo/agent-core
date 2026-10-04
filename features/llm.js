@@ -292,22 +292,30 @@ const chat = async ({
     if (typeof model !== 'string' && headers) input.headers = headers // 已创建的模型按 AI SDK 请求级参数发送额外请求头。
     if (hasTools) {
         input.tools = tools
-        if (sendToolChoice) input.toolChoice = call.toolChoice ?? toolChoice // provider 是 AI SDK 参数的归属地；兼容开关可完全省略这个字段。
-    } else delete input.toolChoice // 没工具时单独发 toolChoice 会被部分服务拒收。
+        if (sendToolChoice) input.toolChoice = call.toolChoice ?? toolChoice
+        else delete input.toolChoice                                        // 关掉 toolChoice 时，provider 里可能带进来的同名字段也要删掉。
+    } else {
+        delete input.tools                                                 // capabilities.tools=false 时，provider 里带进来的 tools 也要删掉，否则请求照样带着它。
+        delete input.toolChoice                                            // 没工具时单独发 toolChoice 会被部分服务拒收。
+    }
 
     let attempt = null // 本笔请求的限时信号；label 靠它区分"限时到点"和"用户取消"。
     const once = () => request({ input, stream, requestTimeout, markAttempt: timeout => { attempt = timeout }, onLLMEvent, baseSignal: signal }) // 流式和非流式在 request 里分叉，对外表现一致。
 
     // 重试包在这里，而不是让每个调用方各自包一层：这样"发一次模型请求"在整个项目里只有一条路，
     // 主循环和上下文压缩自动走同一套重试、同一套退避、同一个 onRetry 通知。
-    return Retry.run({
-        operation: async () => {
-            await Notify.tell(onLLMStart, { messages, tools }) // 每一次真实请求都通知一次；重试也是真实请求。
-            try { return await once() }
-            catch (error) { throw label(error, attempt) } // 分类只在这里做一次，流式和非流式共用同一个出口。
-        },
-        signal, onRetry, maxDelay: retryMaxDelay, maxElapsed: retryMaxElapsed,
-    })
+    // 外面再包一次 label：退避等待期间被取消时，p-retry 直接抛 AbortError、不经过 operation 的分类，
+    // 从这里兜住，保证"取消一定带 kind=aborted"这条承诺没有缺口。
+    try {
+        return await Retry.run({
+            operation: async () => {
+                await Notify.tell(onLLMStart, { messages, tools }) // 每一次真实请求都通知一次；重试也是真实请求。
+                try { return await once() }
+                catch (error) { throw label(error, attempt) } // 分类只在这里做一次，流式和非流式共用同一个出口。
+            },
+            signal, onRetry, maxDelay: retryMaxDelay, maxElapsed: retryMaxElapsed,
+        })
+    } catch (error) { throw label(error, attempt) }
 }
 
 export default { chat }

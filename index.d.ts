@@ -110,6 +110,7 @@ export interface ToolLike {
 // adopt 接受的所有输入形状
 export type ToolInput =
     | ToolSet                          // 已归一化，原样通过
+    | ToolLike                         // 单个工具对象
     | ToolLike[]                       // 带 name 字段的工具对象数组
     | Record<string, ToolLike>         // record，名字从键来（AI SDK / MCP toolset 形状）
     | null
@@ -186,7 +187,7 @@ export interface SendOptions {
     input?: string | any[]
     history?: Message[]
     config?: Partial<Config>
-    tools?: ToolInput
+    tools?: ToolSource     // 目录字符串 / URL 也可以，send 时会现扫
     callbacks?: Callbacks
     signal?: AbortSignal
 }

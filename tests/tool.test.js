@@ -78,6 +78,12 @@ describe('Tool 执行', () => {
         expect(result.output.value.length).toBeLessThan(200) // 不是把 500 字原样返回。
     })
 
+    test('工具读子进程输出时不静默截断（超过内部缓冲上限也完整）', async () => {
+        const tools = await Tool.scan(new URL('./fixtures/bigout', import.meta.url))
+        const result = await Tool.execute({ name: 'bigout', input: {}, handlers: tools.handlers })
+        expect(result.output.value.length).toBe(9 * 1024 * 1024) // 9MB 一块不少；曾经超过 8MB 缓冲就丢。
+    })
+
     test('json 块没有 value 时，截断不抛错', async () => {
         const tools = Tool.adopt([{ name: 'j', execute: async () => ({ output: { type: 'json' } }) }])
         const result = await Tool.execute({ name: 'j', input: {}, handlers: tools.handlers, limit: 100 })

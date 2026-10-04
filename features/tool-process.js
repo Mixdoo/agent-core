@@ -69,11 +69,12 @@ const relay = (source, stream) => {
     void (async () => {                                                 // 后台一路读原始管道，读到什么就转发什么。
         try {
             for await (const chunk of source) {
-                const text = typeof chunk === 'string' ? chunk : decoder.decode(chunk, { stream: true }) // 字节流转文字。
+                let text = typeof chunk === 'string' ? chunk : decoder.decode(chunk, { stream: true }) // 字节流转文字。
                 report(stream, text)                                    // 实时转发给主线程，发完即走，不占内存。
+                if (text.length > KEEP) text = text.slice(-KEEP)        // 单块就超过上限时，留给工具的只保留尾部（转发给主线程的那份仍是完整的）。
                 kept.push(text)                                         // 同一段也留给工具，它可能自己要读。
                 size += text.length
-                while (size > KEEP) size -= kept.shift().length         // 工具不读时丢最旧的，内存有明确上限。
+                while (size > KEEP && kept.length) size -= kept.shift().length // 工具不读时丢最旧的，内存有明确上限；size 和 kept 必须同步加减。
                 wake?.()                                                // 有新数据了，叫醒正在等的工具。
             }
         } catch {}                                                      // 管道被重置、孙进程被杀：当成流结束，不能让读这条流的工具永远等下去。
@@ -85,7 +86,7 @@ const relay = (source, stream) => {
     return new ReadableStream({
         async pull(controller) {
             while (!kept.length && !ended) await new Promise(resolve => { wake = resolve }) // 没有新数据就挂起，等 relay 唤醒。
-            if (kept.length) controller.enqueue(encoder.encode(kept.shift()))               // 有数据就给它一段。
+            if (kept.length) { const item = kept.shift(); size -= item.length; controller.enqueue(encoder.encode(item)) } // 交给工具，同时把已消费的量从 size 里减掉（不减会误判超上限、提前关流丢数据）。
             else controller.close()                                     // 数据取完且子进程已结束，工具读到流尾。
         },
     })

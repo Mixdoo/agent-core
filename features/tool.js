@@ -307,17 +307,17 @@ const borrow = async () => {
 
 
 // --- 截断 ---
-const cut = (text, limit) => {
+const cutText = (text, limit) => {
     if (text.length <= limit) return text
     const tailSize = Math.floor(limit * 0.3) // limit 很小时可能算成 0；slice(-0) 会返回整段，所以要单独挡一下。
     return `${text.slice(0, Math.floor(limit * 0.7))}\n\n……[输出过长，中间省略 ${text.length - limit} 个字符。请缩小范围或分页重新获取]……\n\n${tailSize ? text.slice(-tailSize) : ''}`
 }
 
-const clip = (output, limit) => {
+const cutOutput = (output, limit) => {
     if (!Number.isFinite(limit)) return output
-    if (output.type === 'content') return { ...output, value: output.value.map(part => part.type === 'text' ? { ...part, text: cut(part.text, limit) } : part) }
+    if (output.type === 'content') return { ...output, value: output.value.map(part => part.type === 'text' ? { ...part, text: cutText(part.text, limit) } : part) }
     const text = typeof output.value === 'string' ? output.value : JSON.stringify(output.value) ?? String(output.value) // 无 value 的 json 块（JSON.stringify 返回 undefined）按空串处理，别让 .length 抛错。
-    return text.length <= limit ? output : { type: 'text', value: cut(text, limit) }
+    return text.length <= limit ? output : { type: 'text', value: cutText(text, limit) }
 }
 
 
@@ -329,7 +329,7 @@ const execute = async ({ name, input, handlers, signal, onOutput, limit = Infini
     const result = handler.execute
         ? await inProcess({ name, input, handler, signal, onOutput, limit })
         : await runInSubprocess({ name, input, handler, signal, onOutput, limit, concurrency })
-    return { ...result, output: clip(result.output, limit) }
+    return { ...result, output: cutOutput(result.output, limit) }
 }
 
 

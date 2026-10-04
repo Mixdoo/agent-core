@@ -307,7 +307,9 @@ const modelName = ({ model, protocol, baseURL }) => typeof model === 'string' ? 
 const remember = llm => refusing.add(modelName(llm))
 const remembered = llm => refusing.has(modelName(llm))
 
-// 这个错误是不是接口拒收了工具字段：4xx 是"请求本身被拒"；5xx 只有在错误信息明确提到工具时才算——部分网关对不认识的字段报 500。
-const refused = error => error?.kind === 'request' || (error?.kind === 'server' && /tool|function/i.test(`${error.message} ${error.responseBody ?? ''}`))
+// 这个错误是不是接口拒收了工具字段：必须是请求被拒（4xx）或服务端报错（5xx），
+// 而且错误信息里确实提到 tool / function——不能只凭一个 4xx 就认定，否则上下文超长、
+// 参数写错这类和工具无关的 400 也会让这个模型在本进程里被永久降级成文字协议。
+const refused = error => (error?.kind === 'request' || error?.kind === 'server') && /tool|function/i.test(`${error.message ?? ''} ${error.responseBody ?? ''}`)
 
 export default { prepare, parse, downgrade, wrap, read, refused, remember, remembered }
