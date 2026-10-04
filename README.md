@@ -356,7 +356,8 @@ const skillTool = {
     ├── retry.js          ← 失败自动重试（指数退避）
     ├── notify.js         ← 所有回调的统一出口
     ├── schema.js         ← 工具参数格式归一化（scan 和 adopt 共用）
-    └── shape.js          ← 工具返回值变成输出块（内存工具用；子进程里有一份副本）
+    ├── shape.js          ← 工具返回值变成输出块（内存工具用；子进程里有一份副本）
+    └── tokens.js         ← 上下文 token 估算：字符数 × 每字符 token 比，比例由真实 usage 自校准
 ```
 
 `tool.js` 和 `tool-process.js` 是同一件事的两半，所以放在一起：前者在主线程里找工具、管工具进程，

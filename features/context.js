@@ -46,7 +46,7 @@ const RECENT_SHARE = 0.3
 // 「怎么判断一条消息的内容块」这件事由 History 定义，这里直接用它的，不再自己写一份。
 
 // 一个回合有多大。用字符数而不是 token：裁剪要对每个候选回合都量一次，
-// 而 countTokens 是重活（实测一段三万字的连续串能跑六秒）。字符数用来分预算足够了。
+// 逐条估算 token 是没必要的开销。字符数用来在候选回合之间分预算足够了。
 const size = turn => turn.reduce((total, message) => total + JSON.stringify(message.content).length, 0)
 
 // --- 在预算内按给定顺序挑回合，装不下就到此为止 ---
