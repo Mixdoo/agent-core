@@ -155,7 +155,7 @@ export interface HistoryModule {
 
 // --- 上下文、压缩、底层 LLM ---
 export interface ContextModule {
-    build: (options: { history: Message[]; system?: string; tools?: Record<string, any>; budget?: number; capabilities?: Capabilities; mediaFallback?: 'error' | 'strip' }) => { messages: any[]; readonly token: number }
+    build: (options: { history: Message[]; system?: string; tools?: Record<string, any>; budget?: number; ratio?: number; capabilities?: Capabilities; mediaFallback?: 'error' | 'strip' }) => { messages: any[]; readonly token: number }
 }
 export interface CompactModule {
     run: (options: Record<string, any>) => Promise<string>

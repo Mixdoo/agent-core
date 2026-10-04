@@ -622,7 +622,7 @@ import Agent from '@kernel4632/agent-core'
 | `mediaFallback` | `'error'` | 媒体能力关闭时的处理方式；改成 `'strip'` 后保留文字并丢掉不支持的媒体 |
 | `provider` | `{}` | AI SDK 的生成参数，整份交给 AI SDK；不设时用模型自己的默认值 |
 | `maxToolOutput` | `undefined` | 默认不截断工具输出；主动设置后超出部分从中间截断并告知模型 |
-| `maxTokens` | `undefined` | 默认不估算或压缩上下文；主动设置后超过预算触发自动压缩（注意区别于 `provider.maxOutputTokens`：那是单次生成上限） |
+| `maxTokens` | `128000` | 上下文预算，**默认开启自动压缩**：估算的上下文超过预算的 `compactThreshold` 比例时就压缩一次。设 `Infinity` 关闭。注意区别于 `provider.maxOutputTokens`（那是单次生成上限） |
 | `compactThreshold` | `0.8` | 压缩触发比例，0.8 表示到达 80% 时压缩 |
 | `compact` | `undefined` | 压缩单独用一套模型时写在这里，例如 `{ model: '便宜的小模型' }`；不写就和主模型共用 |
 | `output` | `undefined` | 结构化输出格式，例如 `Agent.output.object({ schema })`；不写就返回普通文字 |
@@ -940,6 +940,8 @@ Agent.tool.adopt(await mcpClient.tools())                                       
 > 从 0.16 升级：`Agent.create({ mcp })`、`agent.mcp`、`Agent.skill` 和 `create({ skills })` 已删除。MCP 改为自己用 `@ai-sdk/mcp` 连接，再把工具传进 `tools`；技能的提示词自己拼进 `config.system`。
 >
 > 从 0.19 升级：`onPermission` 的 `arguments` 字段改名为 `input`；结束原因多了一个 `'finished'`（没注册工具、或结构化输出已校验成功，原先是 `'no-tool'`）。工具对象的 `execute(input, { abortSignal })`、`toModelOutput({ output, input })` 现在按 AI SDK 签名调用。
+>
+> 从 0.21 升级：去掉了 `gpt-tokenizer`，上下文 token 改用**自校准估算**（字符数 × 每字符 token 比，比例由真实 `usage` 学到，跟着模型走）；`maxTokens` 默认变为 `128000`，**自动压缩默认开启**（想关掉设 `maxTokens: Infinity`）。产物从 ~3.9 MB 降到 ~1.3 MB。
 
 #### `Agent.tool.execute(options)`
 
@@ -1023,7 +1025,7 @@ const { messages, token } = Agent.context.build({
     tools: tools.schema,
 })
 // messages → 可以直接传给 LLM.chat 的消息数组
-// token    → 估算的 token 数（用 gpt-tokenizer 计算）
+// token    → 估算的 token 数（不装分词器：字符数 × 每字符 token 比，比例由 Loop 从真实 usage 自校准）
 ```
 
 裁剪的最小单位是**回合**，不是消息。一个回合 = 模型的一次响应 + 它发起的全部工具调用 + 这些调用的结果，
@@ -1174,7 +1176,9 @@ const agent = Agent.create({ config: { /* ... */ }, tools })
 
 **Q：上下文太长会怎样？**
 
-上下文超过 `config.maxTokens` 的 80%（可用 `compactThreshold` 调整）时，Loop 会自动调用 Compact 把历史压缩成一段总结，然后继续运行。
+上下文超过 `config.maxTokens` 的 `compactThreshold`（默认 0.8，即 80%）时，Loop 会自动调用 Compact 把历史压缩成一段总结，然后继续运行。**默认就开着**：`maxTokens` 默认 `128000`，不配置也会在接近上限时自动压缩，避免把上下文撑爆。你的模型窗口比这小就把它调小；想彻底关掉设 `maxTokens: Infinity`。
+
+**上下文 token 怎么估**：不装分词器，用"字符数 × 每字符多少 token"。这个比例是**会自校准**的——每轮模型都会回 `usage.inputTokens`（这次请求真实的输入 token 数），拿它反推这个模型真实的"每字符 token 比"记下来给下一轮。换模型（`config.compact` 的压缩模型、`send` 时覆盖 `model`、换 provider）就换一条记录，越用越准，也不怕分词器对不上模型。
 
 **压缩只往 `agent.history` 里追加一条总结，永远不删任何东西。** `history` 是唯一权威数据来源，该保留多少由持有它的你来决定——压缩控制的是"这一轮发给模型的内容有多大"，不是"历史能留多少"。
 

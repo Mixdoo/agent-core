@@ -25,7 +25,7 @@ maxTokens?, compactThreshold, maxSteps?, maxToolOutput?, maxToolConcurrency?, re
 //         写在配置顶层（它回答"要什么形状的结果"），底层会并进 provider 交给 AI SDK。
 // compact: 压缩单独用一套模型时写在这里，比如 { model: '便宜的小模型' }；也能换 baseURL / apiKey。
 //              不写就和主模型共用；自动压缩和手动 compact() 都用它。
-// 带 ? 的策略默认不限制；只有调用方主动填写才会启用对应保护。
+// 带 ? 的策略默认不限制；只有调用方主动填写才会启用对应保护。例外是 maxTokens：默认 128000，自动压缩默认开着，避免上下文被撑爆；设 Infinity 关闭。
 maxTokens 和 provider.maxOutputTokens 名字像但是两回事：前者是这个包的上下文预算（超了就压缩），
 后者是"这次最多生成多少 token"。改其中一个不会影响另一个。
 
@@ -121,6 +121,7 @@ import Tool from './features/tool.js'         // 负责扫描、接纳和执行�
 import LLM from './features/llm.js'           // 底层模型请求封装，也暴露给调用方直接使用
 import TextTools from './features/text-tools.js' // 纯对话模型的文字工具协议，直接用 LLM.chat 时也能自己调
 import History from './features/history.js'   // 负责创建标准格式的历史消息块
+import { createMeter, modelKey } from './utils/tokens.js' // 本地 token 估算器：按模型记账，用真实 usage 自校准
 import { version } from './package.json'      // 版本号只在 package.json 里写一次，打包时会被内联进产物
 
 
@@ -138,6 +139,7 @@ const buildCompact = config => buildLLM(config, config.compact)
 // --- 默认值只有这一处 ---
 const DEFAULT_CAPABILITIES = { ...History.mediaDefaults, tools: true, structuredOutput: true, toolChoice: true, reasoning: false }
 const DEFAULT_COMPACT_THRESHOLD = 0.8
+const DEFAULT_MAX_TOKENS = 128000 // 默认上下文预算：不设也能在接近上限时自动压缩，避免把上下文撑爆。设 Infinity 关闭。
 const DEFAULT_NO_TOOL_ROUNDS = 3
 const DEFAULT_NO_TOOL_PROMPT = '[错误] 你刚才的响应中没有使用工具！请继续使用工具（这是一条系统提醒消息，请勿以对话形式回复）'
 
@@ -168,6 +170,7 @@ const start = (agent, work, outside) => {
 // 创建一台独立 Agent。
 // tools 接受 scan()/adopt() 的返回值、数组、record 或 null，内部自动归一化。
 const create = ({ id = nanoid(), history = [], config = {}, tools = null, callbacks = {} } = {}) => {
+    const meter = createMeter()   // 这台 Agent 的 token 估算器：按模型自校准，跨 send 复用。放闭包里，不进公开状态。
     const agent = {
         id,
         history,
@@ -181,7 +184,6 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = null, callba
             mediaFallback: 'error',
             maxToolOutput: undefined,
             maxToolConcurrency: undefined,
-            maxTokens: undefined,
             maxSteps: undefined,
             retryMaxDelay: undefined,
             retryMaxElapsed: undefined,
@@ -195,6 +197,7 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = null, callba
             ...config,
             provider: { ...config.provider },
             capabilities: { ...DEFAULT_CAPABILITIES, ...config.capabilities },
+            maxTokens: config.maxTokens ?? DEFAULT_MAX_TOKENS, // 默认开启自动压缩；想关掉设 maxTokens: Infinity。
             compactThreshold: config.compactThreshold ?? DEFAULT_COMPACT_THRESHOLD,
             noToolRounds: config.noToolRounds ?? DEFAULT_NO_TOOL_ROUNDS,
         },
@@ -215,7 +218,7 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = null, callba
             empty ? new TypeError('input must be a non-empty string or a non-empty content array')
             : badConfig ? new TypeError('config must be an object')
             : !positive(limits.maxSteps) ? new RangeError('maxSteps must be a positive integer')
-            : !positive(limits.maxTokens) ? new RangeError('maxTokens must be a positive integer') // 字符串 '1000' 会让压缩永远不触发，当场拦下。
+            : !positive(limits.maxTokens, false) ? new RangeError('maxTokens must be a positive integer or Infinity') // 字符串 '1000' 会让压缩永远不触发，当场拦下；Infinity 表示不压缩。
             : !positive(limits.noToolRounds, false) ? new RangeError('noToolRounds must be a positive integer or Infinity')
             : !positive(limits.maxToolConcurrency, false) ? new RangeError('maxToolConcurrency must be a positive integer or Infinity')
             : !['native', 'text', 'auto'].includes(limits.toolMode) ? new TypeError("toolMode must be 'native', 'text' or 'auto'") // 拼错的 toolMode 会被默默当成 native，不如直接报错。
@@ -242,6 +245,7 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = null, callba
                 compact: request => Compact.run({ ...request, llm: compactLLM, stream: compactLLM.stream }),
                 executeTool: request => Tool.execute({ ...request, handlers: tools.handlers, limit: agent.config.maxToolOutput, concurrency: agent.config.maxToolConcurrency }),
                 sessionId: agent.id,
+                meter,                            // token 估算器：跨 send 复用，按模型记住自校准的比例。
                 ...callbacks,
                 signal,
             })
@@ -260,7 +264,7 @@ const create = ({ id = nanoid(), history = [], config = {}, tools = null, callba
 
 
     agent.compact = ({ onCompact = agent.callbacks.onCompact, onRetry = agent.callbacks.onRetry, ...options } = {}) => start(agent, async signal => {
-        const context = Context.build({ history: agent.history, system: agent.config.system, tools: agent.tools.schema, capabilities: agent.config.capabilities, mediaFallback: agent.config.mediaFallback })
+        const context = Context.build({ history: agent.history, system: agent.config.system, tools: agent.tools.schema, ratio: meter.ratio(modelKey(agent.config)), capabilities: agent.config.capabilities, mediaFallback: agent.config.mediaFallback })
         const compactLLM = buildCompact(agent.config)
         const content = await Compact.run({
             ...options,

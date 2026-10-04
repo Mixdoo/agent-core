@@ -134,7 +134,7 @@ const connect = ({ baseURL, apiKey, model, protocol, system, headers, cache, bod
         }
     }
 
-    if (protocol === 'chat') return createOpenAICompatible({ ...settings, name: 'agent', supportsStructuredOutputs: Boolean(generation.output) }).chatModel(model) // 显式选择结构化输出时把 schema 一起发给服务端。
+    if (protocol === 'chat') return createOpenAICompatible({ ...settings, name: 'agent', includeUsage: true, supportsStructuredOutputs: Boolean(generation.output) }).chatModel(model) // 显式选择结构化输出时把 schema 一起发给服务端；includeUsage 让流式响应也带上 usage（token 估算器靠它自校准）。
     if (protocol === 'responses') return createOpenAI(settings).responses(model)         // 官方 OpenAI Responses 接口。
     if (protocol === 'anthropic') return createAnthropic(settings).languageModel(model)   // Anthropic 原生接口。
     if (protocol === 'gemini') return createGoogle(settings).languageModel(model)         // Google 原生接口。

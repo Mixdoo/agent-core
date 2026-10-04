@@ -19,8 +19,8 @@ const result = await Loop.run({
             body: {},
         },
         // 下面这些值由 Agent 组装好再传进来（见 index.js 的默认值），Loop 直接使用，不再自己补默认。
-        maxTokens: undefined,      // 不限制上下文；设置后才启用 token 估算和压缩
-        compactThreshold: 0.8,     // 设置 maxTokens 后使用的压缩比例
+        maxTokens: 128000,         // 上下文预算；默认开启自动压缩，设 Infinity 关闭
+        compactThreshold: 0.8,     // 上下文估算达到预算的这个比例时压缩
         maxSteps: undefined,       // 不设上限；调用方主动传入正整数时才限制模型轮数
         stream: true,              // 主请求和压缩都流式输出
         noToolPrompt: "请继续使用工具", // 结束前一轮临时发给模型的提醒
@@ -56,6 +56,7 @@ import History from './history.js'
 import LLM from './llm.js'
 import TextTools from './text-tools.js'
 import Notify from '../utils/notify.js'
+import { createMeter, modelKey } from '../utils/tokens.js'
 
 // --- 把一次请求的用量加进合计 ---
 // 各供应商给的字段不一定齐全（有的不报缓存，有的连 total 都没有），缺的按 0 算，不让一个 undefined 把合计变成 NaN。
@@ -94,7 +95,7 @@ const ask = async (request, llm) => {
 }
 
 const run = async ({
-    history, system, tools, llm, buildContext, compact, executeTool, sessionId, signal,                                 // 数据、LLM 参数、功能模块和取消信号
+    history, system, tools, llm, buildContext, compact, executeTool, sessionId, signal, meter = createMeter(),                       // 数据、LLM 参数、功能模块、取消信号、token 估算器
     onStart, onLLMStart, onLLMFinish, onPermission, onLLMEvent, onRetry, onToolCall, onToolOutput, onToolResult, onStep, onCompact, // 全部回调，没传的自动跳过
 }) => {
     await Notify.tell(onStart) // 外部需要时知道循环已经开始了。
@@ -104,6 +105,7 @@ const run = async ({
     let steps = 0              // 一次 send 发给模型的轮数；重试属于同一轮，压缩不算任务轮次。
     let temporaryPrompt = null  // 工具提示只临时发送给模型，不写入 history。
     const usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 } // 整次 send 的用量合计；算钱、看缓存命中都从这里读，不用自己在回调里累加。
+    const key = modelKey(llm)   // 换模型（baseURL / 协议 / 模型名 / provider 任意一项变了）就换一条估算记录。
 
     while (true) {
         // --- 每轮开始：先响应取消信号 ---
@@ -115,11 +117,11 @@ const run = async ({
         // 循环只会一轮一轮地烧钱——实测 maxTokens 配小时能烧到 5500 次请求，
         // 每轮降一点点的情况下加了"没变小就停"的护栏也还能烧 122 次。
         // 压一次之后仍然超限就照常发出去，由模型服务判断收不收；下一轮如果还超，自然会再压一次。
-        let context = buildContext({ history, system, tools, budget: llm.maxTokens })
+        let context = buildContext({ history, system, tools, budget: llm.maxTokens, ratio: meter.ratio(key) })
         if (Number.isFinite(llm.maxTokens) && context.token >= llm.maxTokens * compactThreshold) {
             const content = await compact({ messages: context.messages, llm, stream: llm.stream, onCompact, onRetry, signal }) // 自动压缩只在接近上限时触发；Compact 本身不判断上下文大小。
             history.push(History.compact({ content }))                       // 总结写回 history。
-            context = buildContext({ history, system, tools, budget: llm.maxTokens })                // 用压缩后的历史重建上下文。
+            context = buildContext({ history, system, tools, budget: llm.maxTokens, ratio: meter.ratio(key) })                // 用压缩后的历史重建上下文。
         }
         // 压缩只往 history 里追加一条总结，永远不删任何东西：
         // history 是这个项目唯一的权威数据来源，该保留多少由持有它的上层决定，核心包无权替它丢数据。
@@ -132,6 +134,7 @@ const run = async ({
         const result = await ask(request, llm)
         steps += 1            // 模型完整回答后才算这一轮，失败重试由 LLM.chat 自己处理。
         add(usage, result.usage)
+        meter.observe(key, { messages: request.messages, tools }, result.usage?.inputTokens) // 用这个模型刚回的真实输入 token 数校准"每字符 token 比"，越用越准。
         await Notify.tell(onLLMFinish, result) // 上层拿到完整 result，自行选择 usage 或其他字段。
         const answer = { text: result.text, ...('output' in result ? { output: result.output } : {}), steps, usage: { ...usage } } // 最终对象和文字来自同一轮，不能从旧历史猜结果。用量是到这一轮为止的合计。
         temporaryPrompt = null      // 提示已经用过，下一轮默认不再携带。

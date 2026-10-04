@@ -29,8 +29,8 @@ build() 一进来就把平铺历史读成回合：工具结果按 toolCallId 回
 剩下的 messages 顺序是：最初目标 → 总结前的最近现场 → 总结之后的全部新回合。
 */
 
-import { countTokens } from 'gpt-tokenizer'
 import History from './history.js' // 「什么是一个回合」由 History 定义，这里只是它的使用者
+import { estimate, DEFAULT_RATIO } from '../utils/tokens.js' // token 估算：字符数 × 每字符 token 比（比例由 Loop 从真实 usage 自校准）
 
 // 开场留住用户最初说过的话（按用户回合数），总结前留住当前任务的最近现场（按回合数）。
 // 这两个数字是上限，真正能留多少还要看预算——光按条数留，一条巨大的消息就能让压缩永远收敛不了。
@@ -41,10 +41,6 @@ const KEEP_BEFORE_SUMMARY = 3
 // 它涨起来是正常的，Loop 会在下一次超阈值时再压一次。
 const GOAL_SHARE = 0.2
 const RECENT_SHARE = 0.3
-
-// 粗略的"一个 token 大约几个字符"。只用来在候选回合之间分预算，不用来判断超没超阈值——
-// 那件事由出口那次真实的 countTokens 说了算。这里宁可估小（多留余量）也不估大。
-const PER_TOKEN = 2
 
 // AI SDK 的 content 既可以是内容块数组，也可以是一段纯文本；纯文本里不会有工具调用。
 // 「怎么判断一条消息的内容块」这件事由 History 定义，这里直接用它的，不再自己写一份。
@@ -76,13 +72,13 @@ const brief = (system, summary) => summary
 
 // History 只比 AI SDK 多了 id、compact 这些顶层内部字段，兼容规则交给 History.model 集中处理。
 // 默认去掉思考和未完成的工具调用；切换到支持它们的模型时只改 capabilities，不改裁剪流程。
-const build = ({ history, system = '', tools = {}, budget, capabilities = {}, mediaFallback = 'error' }) => {
+const build = ({ history, system = '', tools = {}, budget, ratio = DEFAULT_RATIO, capabilities = {}, mediaFallback = 'error' }) => {
     // --- 还原回合：从这里开始，历史只以回合为单位被处理 ---
     const turns = History.turns(history)                 // 一个回合 = 一次用户发言，或模型的一次响应连同它的工具调用和结果。
 
     // --- 定位最新总结：从后往前找，多次压缩后只有最后那一条算数 ---
     const summaryIndex = turns.findLastIndex(turn => turn[0].compact === true) // 最后一次压缩留下的那条总结。
-    const room = Number.isFinite(budget) ? budget * PER_TOKEN : Infinity // 旧内容能用的字符预算。没设预算就不限制。
+    const room = Number.isFinite(budget) ? budget / ratio : Infinity // 旧内容能用的字符预算：token 预算 ÷ 每字符 token 比。没设预算就不限制。
     let selected = turns                                                 // 没有总结时，完整历史就是最准确的上下文。
     let summary = ''                                                     // 有总结时，总结文本折进 system，不占消息位置。
 
@@ -116,13 +112,13 @@ const build = ({ history, system = '', tools = {}, budget, capabilities = {}, me
         ...flat.map(message => History.model(message, { answered, capabilities, reasoning: capabilities.reasoning ?? false, mediaFallback, normalizeMedia: false })).filter(message => message.content.length), // 被摘空的消息（只剩思考、媒体或没人应答的调用）整条丢掉。
     ]
 
-    // Token 只在真的有人读的时候才算：没设 maxTokens 时 Loop 压根不看它，
-    // 而 countTokens 要把整段上下文重新分词一遍（2000 条历史约 120ms），每轮都白烧一次。
+    // Token 只在真的有人读的时候才算：没设 maxTokens 时 Loop 压根不看它。
+    // 估算只是一次字符计数（毫秒级），但这份惰性语义保留着，调用方不读就不算。
     let counted
     return {
         messages,                                                            // 这次要发给模型的完整消息。
         get token() {                                                        // 估出来的 token 数，第一次读的时候才算。
-            counted ??= countTokens(JSON.stringify({ messages, tools }))     // 工具定义不属于 messages，但模型请求仍会携带它们，所以估算时一并计算。
+            counted ??= estimate({ messages, tools }, ratio)                 // 工具定义不属于 messages，但模型请求仍会携带它们，所以估算时一并计入。
             return counted
         },
     }

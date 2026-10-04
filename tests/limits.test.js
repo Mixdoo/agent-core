@@ -135,8 +135,8 @@ describe('常驻加固', () => {
         expect(result.output.value.length).toBeLessThan(40000)
     })
 
-    test('默认不加上下文和工具输出上限，调用方可以主动设置', () => {
-        expect(Agent.create().config.maxTokens).toBeUndefined()
+    test('默认带上下文预算（自动压缩开启），工具输出上限默认不设', () => {
+        expect(Agent.create().config.maxTokens).toBe(128000) // 默认压缩；设 Infinity 关闭。
         expect(Agent.create().config.maxToolOutput).toBeUndefined()
     })
 

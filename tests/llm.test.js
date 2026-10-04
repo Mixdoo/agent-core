@@ -80,6 +80,12 @@ describe('请求里到底发了什么', () => {
         expect(body).toHaveProperty('prompt_cache_key') // 默认开启：命中率 0% → 99% 全靠它，实测中转站按这个键路由到同一台机器。
     })
 
+    test('流式 chat 请求带上 include_usage，token 估算器才有真实数据可校准', async () => {
+        recorded.length = 0
+        await LLM.chat({ baseURL: `http://127.0.0.1:${echo.port}/v1`, apiKey: 'k', model: 'm', messages: [{ role: 'user', content: 'hi' }], stream: true, ...noRetry }).catch(() => {}) // 假服务只回普通 JSON、解析不了流，这里只关心发出去的请求体。
+        expect(recorded[0].stream_options).toEqual({ include_usage: true }) // 不加这个，多数 OpenAI 兼容端点流式响应里根本没有 usage。
+    })
+
     test('显式关闭 cache 时不发缓存字段', async () => {
         const body = await send({ cache: false })
         expect(body).not.toHaveProperty('prompt_cache_key')
