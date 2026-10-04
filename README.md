@@ -649,7 +649,7 @@ const agent = Agent.create({
 })
 ```
 
-`image`、`audio`、`video` 和 `file` 控制内容块；`tools` 控制是否发送工具描述；`structuredOutput` 控制是否发送 `response_format`；`toolChoice:false` 让请求省略 `tool_choice`（只对字符串模型 + `chat`/`responses`/`anthropic` 完整生效；`gemini` 与传模型实例时按各自默认、不强制）；`reasoning:true` 才会把历史里的思考块发给模型；`usage:false` 关掉流式请求里的 `stream_options.include_usage`（个别不认这个字段的中转站会 400，关掉即可，代价是 token 估算拿不到真实数据、只能靠粗估）。旧式 `image`、`audio`、`video` 内容块会在真正请求模型时转换成 AI SDK 当前使用的 `file`，历史数组仍保留原始形状。
+`image`、`audio`、`video` 和 `file` 控制内容块；`tools` 控制是否发送工具描述；`structuredOutput` 控制是否发送 `response_format`；`toolChoice:false` 让请求省略 `tool_choice`（只对字符串模型 + `chat`/`responses`/`anthropic` 完整生效；`gemini` 按自身默认、不强制；传模型实例时会报错，因为它需要改写请求体）；`reasoning:true` 才会把历史里的思考块发给模型；`usage:false` 关掉流式请求里的 `stream_options.include_usage`（个别不认这个字段的中转站会 400，关掉即可，代价是 token 估算拿不到真实数据、只能靠粗估）。旧式 `image`、`audio`、`video` 内容块会在真正请求模型时转换成 AI SDK 当前使用的 `file`，历史数组仍保留原始形状。
 
 `provider` 直接放 AI SDK 的生成参数，例如：
 
@@ -730,7 +730,7 @@ const answer = await agent.send('你好')
 console.log(answer.text)
 ```
 
-模型实例的额外请求头仍可写在 `provider.headers`；`provider.body` 和自定义的 `cache` 对象需要本包创建连接，不能用于已创建的模型实例，设置时会明确报错。默认的 `cache: true` 对模型实例会安静跳过——实例的缓存设置由创建它的人负责。
+模型实例的额外请求头仍可写在 `provider.headers`；`provider.body`、自定义的 `cache` 对象、以及 `capabilities.toolChoice: false`（它要改写请求体才能生效）都需要本包创建连接，不能用于已创建的模型实例，设置时会明确报错。默认的 `cache: true` 对模型实例会安静跳过——实例的缓存设置由创建它的人负责。
 
 > `provider.toolChoice` 保持 `auto` 时，模型才能在任务做完后正常收尾，`{ reason: 'no-tool' }` 这个结束方式也才有意义。
 > 改成 `required` 会强制模型每轮都调工具，而且部分服务（实测 gpt-oss-120b）在模型不想调工具时会直接返回 `tool_use_failed`。

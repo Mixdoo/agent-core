@@ -89,6 +89,12 @@ describe('多模态', () => {
         expect(media.mediaType).toBe('image/png')
     })
 
+    test('image 的 URL 对象也能转成合法 file 块', () => {
+        const parts = History.model({ role: 'user', content: [{ type: 'image', image: new URL('https://x/a.png') }] }, {}).content
+        expect(parts[0].type).toBe('file')
+        expect(parts[0].data).toEqual({ type: 'url', url: new URL('https://x/a.png') }) // URL 对象也要走 url 分支，不能当字节。
+    })
+
     test('工具结果里的旧 image 块会被转成合法 file 块，不再毒死会话', async () => {
         const server = Bun.serve({ port: 0, async fetch() { return Response.json({ choices: [{ index: 0, message: { role: 'assistant', content: '好' }, finish_reason: 'stop' }], usage: {} }) } })
         try {

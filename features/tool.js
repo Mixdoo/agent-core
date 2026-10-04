@@ -158,6 +158,8 @@ const adopt = (input) => {
     }
 
     // 直接给一个工具对象（{ name, execute }）就当成单元素数组，不要求调用方自己包一层。
+    // 但单个对象必须有 name；AI SDK tool() 的产物天生没有 name，只能放进 record / 数组并补上名字。
+    if (typeof input.execute === 'function' && !input.name) throw new TypeError('单个工具对象必须带 name；AI SDK tool() 产物本身没有 name，请用 record（{ 名字: tool }）或数组并补上 name')
     const list = typeof input.execute === 'function' ? [input] : input
 
     // 把 record 或数组都统一成条目列表

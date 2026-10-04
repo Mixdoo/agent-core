@@ -32,6 +32,7 @@ describe('Agent 入口', () => {
         expect(first.history).toBe(history)     // 直接保存外部传入的数组，外部和 Agent 共同修改它。
         expect(second.history).toEqual([])      // 不传就是各自新建的，两台 Agent 不共享。
         expect(first.config.protocol).toBe('chat')
+        expect(first.config.capabilities).toMatchObject({ image: true, audio: true, video: true, file: true, usage: true }) // 媒体默认值来自 History.mediaDefaults，不能漏。
         expect(first.config.maxSteps).toBeUndefined() // 默认不限制 Agent 运行轮数，是否限制由调用方决定。
         expect(first.running).toBeNull()
     })

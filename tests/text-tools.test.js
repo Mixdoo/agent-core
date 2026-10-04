@@ -16,6 +16,15 @@ const chatReply = text => Response.json({ choices: [{ index: 0, message: { role:
 const nativeCall = (name, args) => Response.json({ choices: [{ index: 0, message: { role: 'assistant', content: null, tool_calls: [{ id: 'call_native', type: 'function', function: { name, arguments: JSON.stringify(args) } }] }, finish_reason: 'tool_calls' }], usage: {} })
 
 
+describe('refused 判断接口是不是拒收了工具字段', () => {
+    test('认 tools / function / tool_calls，但不误判普通词', () => {
+        expect(TextTools.refused({ kind: 'request', message: 'tools is not supported' })).toBe(true)
+        expect(TextTools.refused({ kind: 'request', message: 'tool_calls is not supported' })).toBe(true) // 下划线变体也要认。
+        expect(TextTools.refused({ kind: 'request', message: 'context length exceeded' })).toBe(false)
+        expect(TextTools.refused({ kind: 'server', message: 'internal server malfunction' })).toBe(false) // malfunction 里的 function 不能误伤。
+    })
+})
+
 describe('从文字里读回工具调用', () => {
     const spec = { names: ['add', 'read_file'], params: { add: { a: 'number', b: 'number' }, read_file: { path: 'string' } } }
 

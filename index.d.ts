@@ -98,7 +98,7 @@ export interface ToolSet {
 
 // 内存工具对象的形状（AI SDK tool() 产物、MCP client.tools() 的单项都符合这个形状）
 export interface ToolLike {
-    name?: string           // 数组形式时必填；record 形式时从键名取
+    name?: string           // 数组形式必填；record 形式从键名取；单个对象直接传时也必填
     description?: string
     inputSchema?: any       // 裸 JSON Schema / zod / AI SDK jsonSchema() 三种都认
     execute: (input: any, options?: { signal?: AbortSignal; abortSignal?: AbortSignal }) => any | Promise<any>
@@ -154,6 +154,7 @@ export interface HistoryModule {
     model: (message: Message, options?: Record<string, any>) => { role: Role; content: any }
     parts: (message: Message) => any[]
     answeredCalls: (messages: Message[]) => Set<string>
+    mediaDefaults: Record<string, boolean>
 }
 
 // --- 上下文、压缩、底层 LLM ---

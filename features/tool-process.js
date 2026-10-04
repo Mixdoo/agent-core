@@ -163,9 +163,17 @@ const shape = (tool, result, input) => {
     if (!BLOCK.has(output?.type)) throw new TypeError(`工具输出块的 type 不合法：${JSON.stringify(output?.type)}，只能是 ${[...BLOCK].join(' / ')}`)
     const bad = output.type === 'content' && output.value.find(part => !PART.has(part?.type))
     if (bad) throw new TypeError(`content 块里的 ${JSON.stringify(bad.type)} 部件不合法，只能是 ${[...PART].join(' / ')}。媒体可以用旧 image/audio/video，也可以用 AI SDK 当前的 file`)
-    // 类型对了、字段缺了也不行：text 部件没 text、file 部件没 mediaType/data，写进 history 一样会让 AI SDK 本地拒收。
-    const broken = output.type === 'content' && output.value.find(part => (part.type === 'text' && typeof part.text !== 'string') || (part.type === 'file' && (!part.mediaType || part.data == null)))
-    if (broken) throw new TypeError(`content 块里的 ${JSON.stringify(broken.type)} 部件缺少必需字段：text 要有 text；file 要有 mediaType 和 data`)
+    // 类型对了、字段缺了也不行：各媒体部件缺必需字段，写进 history 一样会让 AI SDK 本地拒收。
+    const broken = output.type === 'content' && output.value.find(part => {
+        if (part.type === 'text') return typeof part.text !== 'string'
+        if (part.type === 'image') return part.image == null
+        if (part.type === 'audio') return part.audio == null
+        if (part.type === 'video') return part.video == null
+        if (part.type === 'file-data') return part.data == null
+        if (part.type === 'file-url') return part.url == null
+        return !part.mediaType || part.data == null // file
+    })
+    if (broken) throw new TypeError(`content 块里的 ${JSON.stringify(broken.type)} 部件缺少必需字段：text 要 text；image/audio/video 各自的字段；file-data 要 data；file-url 要 url；file 要 mediaType 和 data`)
 
     // 跨进程只传纯 JSON，自带格式化的那条路也一样要过这一关：
     // Date 变字符串、NaN 变 null、循环引用在这里变成一条正常的工具错误，不会写进 history 把 Agent 毒死。

@@ -127,9 +127,11 @@ const answeredCalls = messages => new Set(messages.flatMap(message => parts(mess
 const media = (part, value, fallback) => ({
     type: 'file',                                  // AI SDK 现在统一用 file 装媒体。
     mediaType: part.mediaType ?? fallback,         // 没写类型时按调用方给的默认值。
-    // http(s) / data URL 走 url 分支（AI SDK 要求 url 是 URL 对象，且不接受把 data URL 当内联数据）；
+    // URL 对象 / http(s) 网址 / data URL 走 url 分支（AI SDK 要 URL 对象，且不接受把 data URL 当内联数据）；
     // 其余（纯 base64 或字节）走 data 分支。裸字符串在这两处都会被 AI SDK 本地拒收，从而毒死 history。
-    data: typeof value === 'string' && /^(https?:|data:)/i.test(value) ? { type: 'url', url: new URL(value) } : { type: 'data', data: value },
+    data: value instanceof URL ? { type: 'url', url: value }
+        : typeof value === 'string' && /^(https?:|data:)/i.test(value) ? { type: 'url', url: new URL(value) }
+        : { type: 'data', data: value },
     ...(part.filename ? { filename: part.filename } : {}), // 有文件名就带上。
 })
 
@@ -263,4 +265,4 @@ const render = history => history
     .join('\n')
 
 
-export default { user, assistant, tool, compact, stored, turns, render, model, parts, answeredCalls }
+export default { user, assistant, tool, compact, stored, turns, render, model, parts, answeredCalls, mediaDefaults }
