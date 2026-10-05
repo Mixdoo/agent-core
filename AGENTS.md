@@ -43,12 +43,16 @@ bun run build
 bun run release patch     # 或 minor / major
 ```
 
-推送标签后，GitHub Actions（`.github/workflows/release.yml`）自动构建、打包、建 Release 并上传附件。
-本机不需要登录 gh，进度在 https://github.com/kernel4632/agent-core/actions 看。
+推送标签后，GitHub Actions（`.github/workflows/release.yml`）自动构建、打包、建 Release、上传附件，
+并**用 Trusted Publishing（OIDC）自动发布到 npm**——不需要任何 npm token，也不需要验证码。
+本机不需要登录 gh 和 npm，进度在 https://github.com/kernel4632/agent-core/actions 看。
 
 安装链接固定用 `releases/latest/download/agent-core.tgz`，所以**发新版不需要改 README**。
 带版本号的包 `kernel4632-agent-core-X.Y.Z.tgz` 也会一起传上去，需要锁版本时用它。
 
 依赖的新版本由 Dependabot 每周开 PR（`.github/dependabot.yml`），CI 绿了合并即可。
 
-npm 那边有账号后，可以改用 `bun run publish:npm` 发到 npm。
+npm 发布走 Trusted Publishing，配置是**一次性**的：在 npmjs.com 的包设置里把仓库
+`kernel4632/agent-core` 和工作流 `release.yml` 设为可信发布者（已配好）。之后每次推标签都会
+自动发到 npm，并带上 provenance 来源证明。`bun run publish:npm` 只在包**第一次**还没上 npm 时
+手动用一次；日常发版不需要它。（本机 npm 需 ≥ 11.21、Node ≥ 22.14 才能用 `npm trust` 配置可信发布者。）
