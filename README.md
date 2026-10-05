@@ -18,6 +18,10 @@
 - [项目架构](#项目架构)
 - [自定义工具：从零到完整](#自定义工具从零到完整)
 - [API 参考](#api-参考)
+- [上生产前](#上生产前)
+- [可观测性](#可观测性)
+- [示例](#示例)
+- [长跑压测](#长跑压测)
 - [运行测试](#运行测试)
 - [打包成单文件](#打包成单文件)
 - [这个包不做什么](#这个包不做什么)
@@ -127,7 +131,7 @@ bun add https://github.com/kernel4632/agent-core/releases/download/v0.24.0/agent
 
 以后升级到最新版，再运行一次第一条命令就行。
 
-> `bun add @kernel4632/agent-core` 现在**还不能用**：这个包尚未发布到 npm，那个名字在 npm 上不存在，运行会报 404。等发到 npm 后才能改用这条短命令，代码不用改。
+> `bun add @kernel4632/agent-core` 现在**还不能用**：这个包尚未发布到 npm，那个名字在 npm 上不存在，运行会报 404。现在先用上面的 GitHub tgz 安装；等有 npm 账号后，`bun run publish:npm` 一条命令就能发上去，之后才能改用这条短命令，代码不用改。
 
 ---
 
@@ -1087,6 +1091,76 @@ History.turns(agent.history)   // 折成回合：[[user], [assistant, tool], [us
 想自己排版的，用 `turns()` 拿到回合，再按内容块类型（`text` / `reasoning` / `tool-call` / `tool-result` / `image` / `file`）自己拼。
 
 ---
+
+## 上生产前
+
+下面这些旋钮**默认都不限制**，本地玩没问题，生产必须显式设置。每个配一句为什么：
+
+| 旋钮 | 默认 | 为什么生产必须设 |
+|------|------|------------------|
+| `maxToolOutput` | 不截断 | 工具输出不截断有 31 万 token 风险：一个 1MB 的文本（`cat` 一个日志文件）就够，超过多数模型的整个窗口，还会永久留在历史里，压缩也救不回来。设个字符数，比如 `32000`。 |
+| `maxToolConcurrency` | 不限制 | 默认不限文件工具并发：模型偶尔一轮返回几十个工具调用，会瞬间起几十个进程。设个上限，比如 `8`。 |
+| `requestTimeout` | 不限制 | 默认不限单笔时长：卡住的请求会一直等下去。设毫秒数，到点中断这一笔。 |
+| `retryMaxElapsed` | 不限制 | 默认不限重试总时长，等于无限重试。设毫秒数，到点把错误交给上层。 |
+| `maxTokens` | `128000` | 上下文预算，要按你模型的窗口调。比窗口大会撑爆，比需求小会频繁压缩。 |
+
+## 可观测性
+
+每一轮里模型花了多久、工具花了多久、什么时候压缩，用现成的回调就能拼出来。它们只是通知，抛错也不影响任务：
+
+```js
+const startedAt = new Map()   // toolCallId → 开始时间
+
+const agent = Agent.create({
+    config,
+    callbacks: {
+        // 一次模型请求的耗时和用量
+        onLLMStart: () => { startedAt.set('llm', performance.now()) },
+        onLLMFinish: result => {
+            console.log('模型耗时', (performance.now() - startedAt.get('llm')).toFixed(0), 'ms', result.usage)
+        },
+        // 每个工具的耗时和结果
+        onToolCall: ({ toolCallId, toolName, input }) => {
+            startedAt.set(toolCallId, performance.now())
+            console.log('工具开始', toolName, input)
+        },
+        onToolResult: ({ toolCallId, toolName, output }) => {
+            console.log('工具结束', toolName, (performance.now() - startedAt.get(toolCallId)).toFixed(0), 'ms', output)
+        },
+        // 一轮（模型 + 全部工具）结束
+        onStep: ({ step, toolCalls }) => {
+            console.log('第', step, '轮结束', toolCalls.length, '个工具')
+        },
+        // 压缩开始 / 完成
+        onCompact: event => console.log('压缩', event.type, event),
+    },
+})
+```
+
+把这些按 `step` 或 `toolCallId` 串起来写进日志或时序库，就是每一轮的完整观测数据。
+
+想直接接 AI SDK 的 OpenTelemetry，把 `experimental_telemetry` 放进 `config.provider` 即可——本包把 `provider` 整份转给模型调用，不截留字段：
+
+```js
+config: {
+    // ...
+    provider: {
+        experimental_telemetry: { isEnabled: true, functionId: 'my-agent' },
+    },
+}
+```
+
+## 示例
+
+[`examples/minimal/`](examples/minimal/) 是一个能直接跑起来的最小项目：用本地假模型，不需要任何密钥，注册一个工具跑完一圈，适合拿来当起点。
+
+```bash
+bun examples/minimal/main.js
+```
+
+## 长跑压测
+
+`bun scripts/stress.js` 会跑多会话 × 多轮，打印完成情况和内存增量。生产长期运行前，先在你自己的负载上压一遍。
 
 ## 运行测试
 

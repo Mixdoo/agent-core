@@ -101,12 +101,11 @@ const build = ({ history, system = '', tools = {}, budget, ratio = DEFAULT_RATIO
         // 目标取的是最早的几个用户回合，最近现场取的是靠后的窗口，中间夹着没被选中的、早于目标的回合。
         // 所以最后按 turns 的原始顺序过滤一遍——三段都取自 turns，用引用去重即可。
         const chosen = new Set([...goal, ...recent, ...turns.slice(summaryIndex + 1)])
+        // 当前这一轮（最后一条真实回合）无论如何都要在：预算再紧也不能把"正在做的事"剪掉。
+        // 一次 send 里连续压缩多次时，这条会被压到总结之前，光靠 recent 的预算可能装不下，所以这里硬加回来。
+        const current = before.filter(turn => turn[0].compact !== true).at(-1)
+        if (current) chosen.add(current)
         selected = turns.filter(turn => chosen.has(turn))                                                       // 时间顺序由 turns 本身保证。
-        // 兜底：预算太紧时上面三段可能都为空。保底留一条真实回合，但别选总结本身（它已经折进 system 了）。
-        if (!selected.length) {
-            const before = turns.slice(0, Math.max(summaryIndex, 0)).filter(turn => turn[0].compact !== true) // 总结之前、非总结的回合。
-            if (before.length) selected = [before.at(-1)]
-        }
     }
 
     // --- 出口：回合只是 Context 内部的形状，交给模型的仍然是平铺消息 ---

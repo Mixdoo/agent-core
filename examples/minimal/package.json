@@ -1,0 +1,5 @@
+{
+  "name": "agent-core-minimal",
+  "private": true,
+  "type": "module"
+}
