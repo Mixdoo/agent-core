@@ -117,21 +117,31 @@ flowchart TD
 
 这个包需要 [Bun](https://bun.sh) 运行时（不支持 Node.js）。
 
-从 GitHub Release 安装，永远拿到最新版：
+从 npm 安装：
+
+```bash
+bun add @kernel4632/agent-core
+```
+
+想锁死某个版本（比如 `0.24.16`），在包名后写版本号：
+
+```bash
+bun add @kernel4632/agent-core@0.24.16
+```
+
+也可以从 GitHub Release 安装，永远拿到最新版：
 
 ```bash
 bun add https://github.com/kernel4632/agent-core/releases/latest/download/agent-core.tgz
 ```
 
-想锁死某个版本（比如 `0.24.0`），把链接里的 `latest/download` 换成 `download/v0.24.0`：
+想锁死某个 GitHub 版本，把链接里的 `latest/download` 换成 `download/v0.24.16`：
 
 ```bash
-bun add https://github.com/kernel4632/agent-core/releases/download/v0.24.0/agent-core.tgz
+bun add https://github.com/kernel4632/agent-core/releases/download/v0.24.16/agent-core.tgz
 ```
 
-以后升级到最新版，再运行一次第一条命令就行。
-
-> `bun add @kernel4632/agent-core` 现在**还不能用**：这个包尚未发布到 npm，那个名字在 npm 上不存在，运行会报 404。现在先用上面的 GitHub tgz 安装；等有 npm 账号后，`bun run publish:npm` 一条命令就能发上去，之后才能改用这条短命令，代码不用改。
+以后升级到最新版，再运行一次安装命令就行。
 
 ---
 
