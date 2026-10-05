@@ -1158,6 +1158,12 @@ config: {
 bun examples/minimal/main.js
 ```
 
+[`examples/app/`](examples/app/) 是一个更完整的 chat 服务示例：同样的本地假模型，演示会话管理 / 持久化 / 流式 / 权限 / 观测 / 取消 / 生产设置，适合要写真实应用的人参考。
+
+```bash
+bun examples/app/server.js
+```
+
 ## 长跑压测
 
 `bun scripts/stress.js` 会跑多会话 × 多轮，打印完成情况和内存增量。生产长期运行前，先在你自己的负载上压一遍。
