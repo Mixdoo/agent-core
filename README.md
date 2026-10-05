@@ -123,10 +123,10 @@ flowchart TD
 bun add @kernel4632/agent-core
 ```
 
-想锁死某个版本（比如 `0.24.16`），在包名后写版本号：
+想锁死某个版本（比如 `0.24.18`），在包名后写版本号：
 
 ```bash
-bun add @kernel4632/agent-core@0.24.16
+bun add @kernel4632/agent-core@0.24.18
 ```
 
 也可以从 GitHub Release 安装，永远拿到最新版：
@@ -135,10 +135,10 @@ bun add @kernel4632/agent-core@0.24.16
 bun add https://github.com/kernel4632/agent-core/releases/latest/download/agent-core.tgz
 ```
 
-想锁死某个 GitHub 版本，把链接里的 `latest/download` 换成 `download/v0.24.16`：
+想锁死某个 GitHub 版本，把链接里的 `latest/download` 换成 `download/v0.24.18`：
 
 ```bash
-bun add https://github.com/kernel4632/agent-core/releases/download/v0.24.16/agent-core.tgz
+bun add https://github.com/kernel4632/agent-core/releases/download/v0.24.18/agent-core.tgz
 ```
 
 以后升级到最新版，再运行一次安装命令就行。
