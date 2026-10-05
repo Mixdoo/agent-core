@@ -141,65 +141,25 @@ const collect = async result => {
 // 认出来才不会给它再套一层 json —— 套了之后模型看到的是 {"type":"json","value":{"type":"text",...}}。
 const BLOCK = new Set(['text', 'json', 'content', 'error-text', 'error-json', 'execution-denied'])
 
-// content 块里允许出现的部件类型。不在这张表里的部件会被 AI SDK 在本地拒绝，
-// 而且是在 standardizePrompt 里抛、请求根本发不出去、Retry 认不出来——一旦写进 history 就是永久的。
-// 所以在这里挡住：非法块变成一条普通的工具失败，让模型知道并换个方式，而不是把会话毒死。
-const PART = new Set(['text', 'image', 'audio', 'video', 'file', 'file-data', 'file-url'])
-
-// 和主线程 utils/shape.js 里的同名判断保持一致（改一处要同步另一处）。
-const isBytes = value => value instanceof Uint8Array || value instanceof ArrayBuffer || (typeof Buffer !== 'undefined' && Buffer.isBuffer(value))
-const okMedia = value => typeof value === 'string' || value instanceof URL || isBytes(value)
-const okFileData = value => {
-    if (okMedia(value)) return true
-    if (!value || typeof value !== 'object' || value instanceof URL) return false
-    if (value.type === 'data') return typeof value.data === 'string' || isBytes(value.data)
-    if (value.type === 'url') return value.url instanceof URL || typeof value.url === 'string'
-    return false
-}
 const jsonSafe = value => JSON.parse(JSON.stringify(value, (key, one) => one instanceof ArrayBuffer ? Buffer.from(new Uint8Array(one)).toString('base64') : one instanceof Uint8Array ? Buffer.from(one).toString('base64') : one))
-const badPart = part => {
-    if (part.mediaType !== undefined && typeof part.mediaType !== 'string') return true // mediaType / filename 非字符串：旧形状也一样要查。
-    if (part.filename !== undefined && typeof part.filename !== 'string') return true
-    if (part.type === 'text') return typeof part.text !== 'string'
-    if (part.type === 'image') return !okMedia(part.image)
-    if (part.type === 'audio') return !okMedia(part.audio)
-    if (part.type === 'video') return !okMedia(part.video)
-    if (part.type === 'file-data') return !okMedia(part.data)
-    if (part.type === 'file-url') return !okMedia(part.url)
-    return !okFileData(part.data) // file
-}
 
 
-// --- 成形：在跨进程之前就把返回值变成模型能读的输出块 ---
-// 放在工具进程里而不是主线程，是因为这一步要执行工具作者写的 toModelOutput、要做 JSON 化、要校验块形状，
-// 三件事都可能抛错；抛在这里只是一条正常的工具失败，抛在主线程会让那次调用永远不结算。
-// 输出太长时的截断不在这里：截断在主线程里统一做（见 tool.js 的 cutOutput），文件工具和内存工具共用同一条规则。
+// --- 成形：把返回值变成模型能读的输出块，转成纯 JSON 后发回主线程 ---
+// 这里只做两件事：跑工具作者写的 toModelOutput、做 JSON 化。形状校验不在这一层——
+// 校验统一在主线程 Tool.execute 里做一次（见 utils/shape.js 的 outputProblem），
+// 这样规则只有一处，不用在子进程里抄一份、也就不会和主线程漂移。
+// 输出太长时的截断也不在这里：截断在主线程里统一做（见 tool.js 的 cutOutput）。
 const shape = async (tool, result, input, toolCallId) => {
     const value = result?.output ?? result                              // 工具可以返回 { output } 对象，也可以直接返回值。
     // 工具自带格式化时优先用它；AI SDK 允许它返回 Promise，所以 await（和主线程那边的内存工具一致）。
-    const produced = tool.toModelOutput ? await tool.toModelOutput({ output: value, input, toolCallId })
+    const output = tool.toModelOutput ? await tool.toModelOutput({ output: value, input, toolCallId })
         : BLOCK.has(result?.output?.type) ? result.output               // 工具自己就给了成形的输出块——图片和多模态结果走的就是这条路。
         : value === undefined || value === null || value === '' ? { type: 'text', value: '工具执行成功，但没有输出' } // 空返回也给一句交代。
         : typeof value === 'string' ? { type: 'text', value }           // 返回字符串，直接当文字给模型。
         : { type: 'json', value }                                       // 其余结构化值转成 JSON 块。
 
-    // 先纯 JSON 化（Date→字符串、NaN→null、二进制→base64、URL→字符串），再对最终形状校验——别让“校验通过”和“发出去的形状”不一致。
-    const output = jsonSafe(produced)
-
-    // 边界校验：形状不对就在这里变成工具失败，绝不让它穿过去写进 history。
-    if (!BLOCK.has(output?.type)) throw new TypeError(`工具输出块的 type 不合法：${JSON.stringify(output?.type)}，只能是 ${[...BLOCK].join(' / ')}`)
-    // 顶层字段也必须齐：text/error-text 要字符串 value，json/error-json 要有 value。缺了写进 history 会让 AI SDK 本地拒收。
-    if ((output.type === 'text' || output.type === 'error-text') && typeof output.value !== 'string') throw new TypeError(`${output.type} 输出块必须有字符串 value`)
-    if ((output.type === 'json' || output.type === 'error-json') && output.value === undefined) throw new TypeError(`${output.type} 输出块必须有 value`)
-    if (output.type === 'execution-denied' && output.reason !== undefined && typeof output.reason !== 'string') throw new TypeError('execution-denied 输出块的 reason 必须是字符串')
-    if (output.type === 'content' && !Array.isArray(output.value)) throw new TypeError('content 输出块的 value 必须是数组')
-    const bad = output.type === 'content' && output.value.find(part => !PART.has(part?.type))
-    if (bad) throw new TypeError(`content 块里的 ${JSON.stringify(bad.type)} 部件不合法，只能是 ${[...PART].join(' / ')}。媒体可以用旧 image/audio/video，也可以用 AI SDK 当前的 file`)
-    // 类型对了、值也要对：各媒体部件的值必须是字符串 / URL / 二进制（file 的 data 还允许带标签），否则 AI SDK 本地拒收、毒死 history。
-    const broken = output.type === 'content' && output.value.find(badPart)
-    if (broken) throw new TypeError(`content 块里的 ${JSON.stringify(broken.type)} 部件的值不合法：text 要 text；媒体要是字符串 / URL / 二进制；file 的 data 还要 mediaType`)
-
-    return output
+    // 跨进程只传纯 JSON：Date 变字符串、NaN 变 null、二进制转 base64、循环引用在这里变成一条正常的工具错误。
+    return jsonSafe(output)
 }
 
 

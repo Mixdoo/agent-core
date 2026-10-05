@@ -7,21 +7,20 @@
 
 import { expect, test, describe } from 'bun:test'
 import Tool from '../features/tool.js'
-import { BLOCK, PART } from '../utils/shape.js'
+import { BLOCK } from '../utils/shape.js'
 import { BROKEN, CYCLIC_FORMAT, PROTO, TOOLS } from './helpers.js'
 
-// 工具进程不能 import（它是从 stdin 喂进去的匿名程序），所以那半边自己抄了一份输出块类型表。
-// 这里盯住两份别悄悄跑偏。
+// 工具进程不能 import（它是从 stdin 喂进去的匿名程序），BLOCK 这个"认不认得成形的输出块"的表两边各有一份。
+// 校验本身只有一处（主线程的 utils/shape.js，子进程不做校验），这里只盯住 BLOCK 别悄悄跑偏。
 const extractSet = (source, name) => {
     const body = source.match(new RegExp(`const ${name} = new Set\\(\\[([\\s\\S]*?)\\]\\)`))?.[1] ?? ''
     return new Set([...body.matchAll(/'([^']+)'/g)].map(match => match[1]))
 }
 
 describe('输出块类型表', () => {
-    test('主线程和工具进程两份完全一致', async () => {
+    test('主线程和工具进程的 BLOCK 完全一致', async () => {
         const source = await Bun.file(new URL('../features/tool-process.js', import.meta.url)).text()
         expect(extractSet(source, 'BLOCK')).toEqual(BLOCK)
-        expect(extractSet(source, 'PART')).toEqual(PART)
     })
 })
 

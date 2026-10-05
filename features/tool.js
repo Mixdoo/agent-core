@@ -56,7 +56,7 @@ import PQueue from 'p-queue'
 import toolProcessSource from './tool-process.js' with { type: 'text' }
 import Notify from '../utils/notify.js'
 import normalizeInputSchema from '../utils/schema.js'
-import shape from '../utils/shape.js'
+import shape, { outputProblem } from '../utils/shape.js'
 
 // 工具进程要用一个"能跑脚本的 bun"来启动。宿主自己通常就是，用它比在 PATH 上碰运气可靠：
 // 不依赖环境变量，也不会和宿主用的 bun 版本不一致。
@@ -334,6 +334,9 @@ const execute = async ({ name, input, toolCallId, handlers, signal, onOutput, li
     const result = handler.execute
         ? await inProcess({ name, input, toolCallId, handler, signal, onOutput, limit })
         : await runInSubprocess({ name, input, toolCallId, handler, signal, onOutput, limit, concurrency })
+    // 形状校验只在这一处做（内存工具和文件工具都过这里）：非法块变成一条正常的工具失败，绝不写进只增不删的 history。
+    const problem = outputProblem(result.output)
+    if (problem) return { output: { type: 'error-text', value: problem }, error: problem }
     return { ...result, output: cutOutput(result.output, limit) }
 }
 
