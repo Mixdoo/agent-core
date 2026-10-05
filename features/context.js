@@ -101,9 +101,10 @@ const build = ({ history, system = '', tools = {}, budget, ratio = DEFAULT_RATIO
         // 目标取的是最早的几个用户回合，最近现场取的是靠后的窗口，中间夹着没被选中的、早于目标的回合。
         // 所以最后按 turns 的原始顺序过滤一遍——三段都取自 turns，用引用去重即可。
         const chosen = new Set([...goal, ...recent, ...turns.slice(summaryIndex + 1)])
-        // 当前这一轮（最后一条真实回合）无论如何都要在：预算再紧也不能把"正在做的事"剪掉。
-        // 一次 send 里连续压缩多次时，这条会被压到总结之前，光靠 recent 的预算可能装不下，所以这里硬加回来。
-        const current = before.filter(turn => turn[0].compact !== true).at(-1)
+        // 本次 send 的用户输入无论如何都要在：预算再紧也不能把"正在做的事"剪掉。
+        // 一次 send 里连续压缩多次时，它会落到最新总结之前、且可能不在最初目标里、又装不进最近现场的预算，
+        // 于是被整条丢掉——模型看不到任务就开始瞎猜。这里按"最后一条用户回合"硬加回来（工具轮不算，那是结果不是指令）。
+        const current = before.filter(turn => turn[0].role === 'user' && !turn[0].compact).at(-1)
         if (current) chosen.add(current)
         selected = turns.filter(turn => chosen.has(turn))                                                       // 时间顺序由 turns 本身保证。
     }

@@ -202,4 +202,22 @@ describe('总结怎么进上下文', () => {
         const { messages } = Context.build({ history, budget: 10 })             // 预算小到几乎为零。
         expect(messages.filter(message => String(message.content).startsWith('新消息')).length).toBe(8)
     })
+
+    test('一次 send 里连续压缩多次，本次的用户输入仍然在上下文里', () => {
+        // 长跑压测发现的：一次 send 里压缩触发两次以上时，本次用户输入会落到最新总结之前。
+        // 它既不在最初目标里（用户说得多了，超出 KEEP_FIRST），又装不进最近现场的预算（这条消息很大），
+        // 于是被整条丢掉——模型收不到任务，只能瞎猜。这条消息是本次 send 的指令，任何预算下都必须留下。
+        const history = [
+            History.user({ content: '最初目标' }),
+            History.compact({ content: '第一次总结' }),
+            History.user({ content: `重要指令：${'Z'.repeat(5000)}` }),   // 本次的用户输入，大到装不进 20% / 30% 的任何一段预算。
+            History.assistant({ content: null, toolCalls: [{ id: 'c1', name: 'read', arguments: { path: 'a' } }] }),
+            History.tool({ toolCallId: 'c1', toolName: 'read', content: '读到的内容' }),
+            History.compact({ content: '第二次总结' }),                    // 同一个 send 里又压了一次，把用户输入压到总结之前。
+        ]
+        const { messages } = Context.build({ history, budget: 1000, ratio: 0.6 })
+
+        expect(JSON.stringify(messages).includes('重要指令')).toBe(true)          // 本次任务必须还在。
+        expect(pairing(messages)).toEqual({ ok: true })                          // 硬加回来后配对仍然完整。
+    })
 })
