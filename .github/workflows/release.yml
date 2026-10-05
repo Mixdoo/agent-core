@@ -1,8 +1,12 @@
-# 推一个 vX.Y.Z 的标签时自动发版：跑测试、构建、打包、建 GitHub Release。
+# 推一个 vX.Y.Z 的标签时自动发版：跑测试、构建、打包、建 GitHub Release，并发布到 npm。
 # 发布包里的版本号和标签对不上就直接失败，避免发错版本。
 #
 # 本地等价的做法是 `bun run release`：它负责升版本号、提交、打标签、推标签，发布仍由这里完成。
 # 走的是 GitHub 自己的权限，不需要你在电脑上登录 gh。
+#
+# 发 npm 走 Trusted Publishing（OIDC）：用 GitHub 的短期身份令牌换发布权限，
+# 不需要任何 npm token，也不需要验证码。前提是在 npmjs.com 的包设置里把
+# 本仓库（kernel4632/agent-core）和本文件名（release.yml）配成可信发布者。
 
 name: Release
 
@@ -12,6 +16,7 @@ on:
 
 permissions:
   contents: write        # 建 Release、传附件需要
+  id-token: write        # Trusted Publishing（OIDC）需要：让工作流能签出身份令牌
 
 # 同一个标签只跑一个：偶尔的重复触发会排队而不是各建一次 Release。
 concurrency:
@@ -54,4 +59,22 @@ jobs:
             gh release create "$GITHUB_REF_NAME" "${files[@]}" \
               --title "$GITHUB_REF_NAME" \
               --notes "轻量的 AI Agent 核心：给它模型地址和工具（文件目录或内存对象），自动循环「问模型 → 执行工具 → 再问模型」。支持 OpenAI Chat / Responses、Anthropic、Gemini 四种协议，上下文压缩保留、提示词缓存；纯对话模型也能用工具。"
+          fi
+
+      # --- 发布到 npm（Trusted Publishing，免 token / 验证码）---
+      # 放在建 Release 之后：即使 npm 这步因为还没配可信发布者而失败，GitHub Release 也已经建好了。
+      # npm publish 会自动触发 prepack（bun run build）和 prepublishOnly（bun test），所以这里不用再重复。
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false   # 发布构建不使用缓存
+      - name: 发布到 npm（这个版本已经在 npm 上就跳过）
+        run: |
+          name="$(bun -e "console.log(require('./package.json').name)")"
+          ver="$(bun -e "console.log(require('./package.json').version)")"
+          if npm view "$name@$ver" version >/dev/null 2>&1; then
+            echo "$name@$ver 已经在 npm 上，跳过发布"
+          else
+            npm publish --access public
           fi
