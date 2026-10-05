@@ -28,6 +28,7 @@ auto 模式还要记住"哪个模型不认原生工具字段"，下次直接走�
 
 import { asSchema } from 'ai'
 import { nanoid } from 'nanoid'
+import { jsonrepair } from 'jsonrepair' // 模型写出来的 JSON 常不标准（围栏、尾逗号、未闭合、无引号键），交给它修，不自己写正则。
 import History from './history.js' // 「消息内容怎么变成块数组」由 History 定义，这里直接用它的
 
 
@@ -96,9 +97,6 @@ const prepare = tools => {
 // 把工具名里的特殊字符转义，才能安全地拼进正则（工具名一般是字母数字，这里是保险）。
 const escape = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
-// 去掉 ```json 围栏，模型经常习惯性套一层。开头和结尾各去一次。
-const stripFence = raw => raw.trim().replace(/^```(?:json|JSON)?\s*/,'').replace(/\s*```$/,'').trim()
-
 // 把 XML 里读到的字符串参数转回它该有的类型：schema 说这个参数是 number，就转成数字。
 // 不转换的话，工具收到的 {"a": "1"} 和模型想表达的 {"a": 1} 对不上，工具可能算错。
 const toType = (value, type) => {
@@ -108,19 +106,18 @@ const toType = (value, type) => {
     return value                                                                                              // 其余（string）原样返回。
 }
 
-// --- 一个 <tool_call> 块里的 JSON 体 ---
-// 模型写出来的 JSON 不一定标准，这里尽量把它读出来；实在读不出来就返回一条"无效调用"，
-// 让模型重写，而不是当成普通回答悄悄丢掉。
-const readJson = raw => {
-    const body = stripFence(raw)                                                                                  // 先去掉可能的 Markdown 围栏。
-    if (!body) return null                                                                                         // 空的块，不算调用。
+// 读不出来的参数：至少把名字抠出来，让模型知道是哪次调用坏了，而不是当成普通回答悄悄丢掉。
+const brokenCall = raw => ({ toolName: /"name"\s*:\s*"([^"]+)"/.exec(raw)?.[1], input: {}, invalid: true, error: new Error('工具调用里的 JSON 解析失败') })
 
+// --- 一个 <tool_call> 块里的 JSON 体 ---
+// 模型写出来的 JSON 不一定标准，交给 jsonrepair 修（围栏、尾逗号、未闭合、无引号键、注释都能修）。
+// 实在修不出对象（比如整块就是一段普通文字）就返回一条"无效调用"，让模型重写。
+const readJson = raw => {
+    if (!raw?.trim()) return null // 空的块，不算调用（jsonrepair 对空串会抛，先挡掉）。
     let obj
-    try { obj = JSON.parse(body) } catch {                                                                        // 先按标准 JSON 解析。
-        try { obj = JSON.parse(body.replace(/,\s*([}\]])/g, '$1')) }                                              // 尾逗号是最常见的坏法，先修一次。
-        catch { return { toolName: /"name"\s*:\s*"([^"]+)"/.exec(body)?.[1], input: {}, invalid: true, error: new Error('工具调用里的 JSON 解析失败') } } // 实在读不出来，至少把名字抠出来，让模型知道是哪次调用坏了。
-    }
+    try { obj = JSON.parse(jsonrepair(raw)) } catch { return brokenCall(raw) } // 修不回来 → 无效调用。
     if (Array.isArray(obj)) obj = obj[0] // 模型偶尔套一层数组，取第一个。
+    if (!obj || typeof obj !== 'object') return brokenCall(raw) // 修出来不是对象（纯文本等），不是一次调用。
 
     // 工具名可能在几个不同的位置：标准写法直接在顶层，OpenAI 风格套一层 function。
     const fn = obj?.function ?? obj?.tool ?? obj
@@ -130,7 +127,7 @@ const readJson = raw => {
     // 参数也在几个位置，按常见程度依次找。
     let args = fn?.arguments ?? fn?.parameters ?? fn?.input ?? fn?.args ?? fn?.arguments_json
     if (typeof args === 'string') {
-        try { args = JSON.parse(args) } catch { return { toolName: name, input: {}, invalid: true, error: new Error('工具参数不是合法的 JSON 字符串') } } // OpenAI 风格里 arguments 常是字符串。
+        try { args = JSON.parse(jsonrepair(args)) } catch { return { toolName: name, input: {}, invalid: true, error: new Error('工具参数不是合法的 JSON 字符串') } } // OpenAI 风格里 arguments 常是字符串。
     }
     if (args === undefined) {
         // 有的模型把参数平铺在同一层：{"name":"add","a":1,"b":2}。把名字相关的字段剔掉，剩下的就是参数。

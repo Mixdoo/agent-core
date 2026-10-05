@@ -65,8 +65,14 @@ describe('从文字里读回工具调用', () => {
         expect(parsed.calls[0].toolName).toBe('add')
     })
 
-    test('坏 JSON 变成 invalid 调用，让模型自己重来，而不是悄悄当成普通回答', () => {
-        const parsed = TextTools.parse('<tool_call>{"name":"add","arguments":{a:1}}</tool_call>', spec)
+    test('无引号键 / 尾逗号这类不标准 JSON，交给 jsonrepair 读出来', () => {
+        const parsed = TextTools.parse('<tool_call>{"name":"add","arguments":{a:1,}}</tool_call>', spec)
+        expect(parsed.calls[0].input).toEqual({ a: 1 })   // 修好了，不是无效调用。
+        expect(parsed.calls[0].invalid).toBeUndefined()
+    })
+
+    test('真读不出来的 JSON 变成 invalid 调用，让模型自己重来', () => {
+        const parsed = TextTools.parse('<tool_call>{"name":"add"} oops</tool_call>', spec) // 后面跟了非 JSON 字符，修不回来。
         expect(parsed.calls[0].toolName).toBe('add')
         expect(parsed.calls[0].invalid).toBe(true)
     })
